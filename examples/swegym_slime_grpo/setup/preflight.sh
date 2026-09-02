@@ -8,6 +8,7 @@
 #   NEED_CUDA_TOOLKIT  no CUDA 13 nvcc (Transformer Engine builds from source)
 #   NEED_APPTAINER     no apptainer/singularity binary; install unprivileged
 #   NEED_UV            uv missing; bootstrap into WORKROOT/bin
+#   NEED_PIXI          pixi missing (only relevant with NEED_CUDA_TOOLKIT); bootstrap into WORKROOT/pixi
 #
 # Nothing here installs or modifies anything.
 set -euo pipefail
@@ -73,9 +74,19 @@ for cand in "${CUDA_HOME:+${CUDA_HOME}/bin/nvcc}" "$(command -v nvcc 2>/dev/null
 done
 if [ "${NEED_CUDA_TOOLKIT}" = 1 ]; then
     row nvcc "NEEDED: no CUDA ${REQUIRED_CUDA_MAJOR}.x nvcc found${NVCC_VERSION:+ (found ${NVCC_VERSION})} → conda-forge toolkit via pixi"
+    # The toolkit install runs through pixi; find it or plan to bootstrap it.
+    if [ -x "${PIXI_HOME:-${WORKROOT}/pixi}/bin/pixi" ]; then
+        row pixi "${PIXI_HOME:-${WORKROOT}/pixi}/bin/pixi"
+    elif command -v pixi >/dev/null 2>&1; then
+        row pixi "$(command -v pixi)"
+    else
+        NEED_PIXI=1
+        row pixi "NEEDED: not found → bootstrap into ${PIXI_HOME:-${WORKROOT}/pixi}"
+    fi
 else
     row nvcc "${NVCC_BIN} (${NVCC_VERSION})"
 fi
+NEED_PIXI="${NEED_PIXI:-0}"
 
 # ── Compiler (TE's torch bindings always build from source) ───────────────
 for c in gcc g++; do
@@ -98,6 +109,11 @@ if [ -n "${APPTAINER_FOUND}" ]; then
 else
     NEED_APPTAINER=1
     row apptainer "NEEDED: none on PATH → unprivileged install into WORKROOT"
+    # The unprivileged installer unpacks RPMs: needs cpio and rpm2cpio (or busybox to shim it).
+    command -v cpio >/dev/null 2>&1 || fatal "cpio not found; the unprivileged Apptainer install needs it (or set POLAR_APPTAINER_BIN)."
+    if ! command -v rpm2cpio >/dev/null 2>&1 && ! command -v busybox >/dev/null 2>&1; then
+        fatal "neither rpm2cpio nor busybox found; cannot unpack Apptainer RPMs (or set POLAR_APPTAINER_BIN)."
+    fi
 fi
 # Unprivileged apptainer (and a non-setuid system install) need user namespaces.
 if unshare -U true 2>/dev/null; then
@@ -162,6 +178,18 @@ done
 if [ "${NEED_CUDA_COMPAT}" = 1 ] && ! reach https://developer.download.nvidia.com; then
     fatal "developer.download.nvidia.com unreachable (needed for cuda-compat libraries)."
 fi
+if [ "${NEED_PIXI}" = 1 ] && ! reach https://pixi.sh; then
+    fatal "pixi.sh unreachable (needed to bootstrap pixi for the CUDA toolkit)."
+fi
+if [ "${NEED_CUDA_TOOLKIT}" = 1 ] && ! reach https://conda.anaconda.org; then
+    fatal "conda.anaconda.org unreachable (needed for the conda-forge CUDA toolkit)."
+fi
+if [ "${NEED_APPTAINER}" = 1 ] && ! reach https://raw.githubusercontent.com; then
+    fatal "raw.githubusercontent.com unreachable (needed for the Apptainer installer)."
+fi
+if [ "${NEED_UV}" = 1 ] && ! reach https://astral.sh; then
+    fatal "astral.sh unreachable (needed to bootstrap uv)."
+fi
 
 # ── Verdict ───────────────────────────────────────────────────────────────
 log "preflight: decisions"
@@ -169,10 +197,11 @@ row NEED_CUDA_COMPAT "${NEED_CUDA_COMPAT}"
 row NEED_CUDA_TOOLKIT "${NEED_CUDA_TOOLKIT}"
 row NEED_APPTAINER "${NEED_APPTAINER}"
 row NEED_UV "${NEED_UV}"
+row NEED_PIXI "${NEED_PIXI}"
 if [ "${#FATAL[@]}" -gt 0 ]; then
     printf '\npreflight FAILED (%d problem(s) this example cannot fix):\n' "${#FATAL[@]}" >&2
     for f in "${FATAL[@]}"; do printf '  - %s\n' "$f" >&2; done
     exit 1
 fi
-export NEED_CUDA_COMPAT NEED_CUDA_TOOLKIT NEED_APPTAINER NEED_UV HOME_WRITABLE COMPUTE_CAP GPU_COUNT NVCC_BIN
+export NEED_CUDA_COMPAT NEED_CUDA_TOOLKIT NEED_APPTAINER NEED_UV NEED_PIXI HOME_WRITABLE COMPUTE_CAP GPU_COUNT NVCC_BIN
 echo "preflight OK"

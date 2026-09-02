@@ -39,7 +39,7 @@ if [ "${NEED_CUDA_TOOLKIT:-0}" = 1 ]; then
     emit_export PIXI_HOME "${PIXI_HOME:-${WORKROOT}/pixi}"
     emit_export PIXI_CACHE_DIR "${PIXI_CACHE_DIR:-${WORKROOT}/pixi-cache}"
     prepend_path PATH "${PIXI_HOME}/bin"
-    if ! command -v pixi >/dev/null 2>&1; then
+    if [ "${NEED_PIXI:-0}" = 1 ] || ! command -v pixi >/dev/null 2>&1; then
         curl -fsSL https://pixi.sh/install.sh | bash
     fi
     tk="${WORKROOT}/cuda-toolkit-${CUDA_TOOLKIT_VERSION}"
