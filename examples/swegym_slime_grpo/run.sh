@@ -89,13 +89,22 @@ fi
 
 # ── Parallelism / sizing ───────────────────────────────────────────
 # NUM_NODES Ray nodes with GPUS_PER_NODE GPUs each. The trainer takes
-# ACTOR_NUM_NODES × ACTOR_NUM_GPUS_PER_NODE of them; every remaining GPU serves
-# an SGLang engine unless ROLLOUT_NUM_GPUS is set. Generation is usually the
-# bottleneck, so give it the larger share (e.g. 2 nodes: 4 train / 12 serve).
+# ACTOR_NUM_GPUS of them, packed onto as few nodes as possible (whole nodes
+# when ACTOR_NUM_GPUS ≥ GPUS_PER_NODE, otherwise sharing one node with
+# engines); every remaining GPU serves an SGLang engine unless ROLLOUT_NUM_GPUS
+# is set. Generation is usually the bottleneck, so give it the larger share
+# (2 nodes: 4 train / 12 serve by default).
 NUM_NODES="${NUM_NODES:-1}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')}"
-ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
-ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-4}"
+ACTOR_NUM_GPUS="${ACTOR_NUM_GPUS:-4}"
+if [ "${ACTOR_NUM_GPUS}" -ge "${GPUS_PER_NODE}" ]; then
+    [ $((ACTOR_NUM_GPUS % GPUS_PER_NODE)) -eq 0 ] || { echo "ERROR: ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be a multiple of GPUS_PER_NODE=${GPUS_PER_NODE} when it spans nodes"; exit 1; }
+    ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-$((ACTOR_NUM_GPUS / GPUS_PER_NODE))}"
+    ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-${GPUS_PER_NODE}}"
+else
+    ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
+    ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-${ACTOR_NUM_GPUS}}"
+fi
 ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-$((NUM_NODES * GPUS_PER_NODE - ACTOR_NUM_NODES * ACTOR_NUM_GPUS_PER_NODE))}"
 [ "${ROLLOUT_NUM_GPUS}" -ge 1 ] || { echo "ERROR: no GPUs left for rollout (${NUM_NODES}×${GPUS_PER_NODE} total, ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} train)"; exit 1; }
 ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
@@ -151,7 +160,7 @@ Polar rollout/gateway ${POLAR_ROLLOUT_URL} / ${POLAR_GATEWAY_URL} (bind ${POLAR_
 SGLang router:        ${SGLANG_ROUTER_BASE_URL}
 Apptainer:            ${POLAR_APPTAINER_BIN}; images ${APPTAINER_IMAGE_DIR}
 Model / args:         ${HF_CHECKPOINT} / ${MODEL_ARGS_FILE}
-Layout:               ${NUM_NODES} node(s) × ${GPUS_PER_NODE} GPUs: train ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}), rollout ${ROLLOUT_NUM_GPUS} engines GPUs; ${MAX_TOKENS_PER_GPU} tok/GPU
+Layout:               ${NUM_NODES} node(s) × ${GPUS_PER_NODE} GPUs: train ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}), rollout ${ROLLOUT_NUM_GPUS} engine GPUs; ${MAX_TOKENS_PER_GPU} tok/GPU
 Run id / save dir:    ${RUN_ID} / ${SAVE_DIR}
 INFO
 
