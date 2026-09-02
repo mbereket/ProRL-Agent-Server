@@ -67,11 +67,13 @@ companion patch; the `26.04-alpha.rc1` tag no longer ships a module slime import
 
 ## Multi-node
 
-The trainer takes `ACTOR_NUM_GPUS` GPUs, packed onto as few nodes as possible
-(whole nodes once it reaches a node's worth), and every other GPU in the Ray
-cluster serves an SGLang engine. Generation is normally
-the bottleneck (see `perf/wait_time_ratio`), so the default on 2 nodes is
-4 train / 12 serve. Long traces fit via context parallelism
+The trainer takes `ACTOR_NUM_GPUS` GPUs and every other GPU in the Ray cluster
+serves an SGLang engine. On more than one node the trainer must take whole
+nodes (`ACTOR_NUM_GPUS` a multiple of the node size), because slime v0.3.0
+assigns engine addresses per whole node; `run.sh` rejects other layouts. So
+2 nodes gives 8 train / 8 serve and 3 nodes gives 8 train / 16 serve.
+Generation is normally the bottleneck (see `perf/wait_time_ratio`), so add
+nodes on the engine side. Long traces fit via context parallelism
 (`per-trace cap = MAX_TOKENS_PER_GPU × CP`; TP × CP must divide the actor GPUs).
 
 **Slurm:**
@@ -103,7 +105,7 @@ All are environment variables with the single-node defaults shown.
 | `WORKROOT` | `<repo>/tmp` | Root for checkouts, caches, toolchains, checkpoints |
 | `HF_CHECKPOINT`, `MODEL_ARGS_FILE` | `Qwen/Qwen3.5-4B`, `model_args.sh` | Model; use `model_args_9b.sh` for Qwen3.5-9B (`TP_SIZE=4`) |
 | `NUM_NODES`, `GPUS_PER_NODE` | 1, detected | Ray cluster size |
-| `ACTOR_NUM_GPUS`, `ROLLOUT_NUM_GPUS` | 4, all remaining | Trainer GPUs (packed per node) and engine GPUs; `ACTOR_NUM_NODES`/`ACTOR_NUM_GPUS_PER_NODE` override the packing |
+| `ACTOR_NUM_GPUS`, `ROLLOUT_NUM_GPUS` | 4 (one node on multi-node), all remaining | Trainer GPUs (whole nodes when multi-node) and engine GPUs |
 | `TP_SIZE`, `CONTEXT_PARALLEL_SIZE` | 2, 1 | Megatron parallelism (`head_entry.sh` defaults CP to all train GPUs / TP) |
 | `MAX_TOKENS_PER_GPU`, `SGLANG_CONTEXT_LENGTH` | 30000, 50000 | 16384 is the safe value on H100-80GB for the 4B model |
 | `ROLLOUT_MAX_PROMPT_LEN`, `ROLLOUT_MAX_RESPONSE_LEN` | 32000, 16000 | Slime rollout length caps |

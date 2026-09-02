@@ -89,14 +89,23 @@ fi
 
 # ── Parallelism / sizing ───────────────────────────────────────────
 # NUM_NODES Ray nodes with GPUS_PER_NODE GPUs each. The trainer takes
-# ACTOR_NUM_GPUS of them, packed onto as few nodes as possible (whole nodes
-# when ACTOR_NUM_GPUS ≥ GPUS_PER_NODE, otherwise sharing one node with
-# engines); every remaining GPU serves an SGLang engine unless ROLLOUT_NUM_GPUS
-# is set. Generation is usually the bottleneck, so give it the larger share
-# (2 nodes: 4 train / 12 serve by default).
+# ACTOR_NUM_GPUS of them; every remaining GPU serves an SGLang engine unless
+# ROLLOUT_NUM_GPUS is set. Generation is usually the bottleneck, so give it the
+# larger share.
+#
+# Slime v0.3.0 places engines assuming they fill whole nodes in rank order, so
+# on more than one node the trainer must take whole nodes: ACTOR_NUM_GPUS must
+# be a multiple of GPUS_PER_NODE (2 nodes → 8 train / 8 serve, 3 nodes →
+# 8 train / 16 serve). On a single node any split works.
 NUM_NODES="${NUM_NODES:-1}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')}"
 ACTOR_NUM_GPUS="${ACTOR_NUM_GPUS:-4}"
+if [ "${NUM_NODES}" -gt 1 ] && [ $((ACTOR_NUM_GPUS % GPUS_PER_NODE)) -ne 0 ]; then
+    echo "ERROR: with NUM_NODES=${NUM_NODES}, ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be a multiple of GPUS_PER_NODE=${GPUS_PER_NODE}:"
+    echo "  slime assigns engine addresses per whole node, so a trainer sharing a node with engines"
+    echo "  leaves engines on other nodes with the wrong host. Use ACTOR_NUM_GPUS=${GPUS_PER_NODE} (or a multiple)."
+    exit 1
+fi
 if [ "${ACTOR_NUM_GPUS}" -ge "${GPUS_PER_NODE}" ]; then
     [ $((ACTOR_NUM_GPUS % GPUS_PER_NODE)) -eq 0 ] || { echo "ERROR: ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be a multiple of GPUS_PER_NODE=${GPUS_PER_NODE} when it spans nodes"; exit 1; }
     ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-$((ACTOR_NUM_GPUS / GPUS_PER_NODE))}"

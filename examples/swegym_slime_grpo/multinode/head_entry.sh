@@ -4,10 +4,11 @@
 # node with srun, exports the multi-node knobs, then runs launch_e2e.sh here.
 #
 # Requires: a shared filesystem for the repo and WORKROOT; SLURM_JOB_NODELIST.
-# Knobs (defaults): NUM_NODES (=allocation size), ACTOR_NUM_GPUS (4, packed on
-# as few nodes as possible), TP_SIZE (2), CONTEXT_PARALLEL_SIZE (ACTOR_NUM_GPUS
-# / TP, i.e. DP=1 for maximum context). Every GPU not used by the trainer
-# serves an SGLang engine (2 nodes → 4 train / 12 serve).
+# Knobs (defaults): NUM_NODES (=allocation size), ACTOR_NUM_GPUS (one full
+# node; must be a multiple of the node size — see run.sh), TP_SIZE (2),
+# CONTEXT_PARALLEL_SIZE (ACTOR_NUM_GPUS / TP, i.e. DP=1 for maximum context).
+# Every GPU not used by the trainer serves an SGLang engine
+# (2 nodes → 8 train / 8 serve, 3 nodes → 8 train / 16 serve).
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 EXAMPLE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -32,7 +33,8 @@ export RAY_HEAD_IP="${HEAD_IP}"
 export RAY_GCS_PORT="${RAY_GCS_PORT:-6379}"
 export POLAR_BIND_HOST=0.0.0.0
 export POLAR_PUBLIC_HOST="${HEAD_IP}"
-export ACTOR_NUM_GPUS="${ACTOR_NUM_GPUS:-4}"
+export GPUS_PER_NODE="${GPUS_PER_NODE:-${SLURM_GPUS_PER_NODE:-8}}"
+export ACTOR_NUM_GPUS="${ACTOR_NUM_GPUS:-${GPUS_PER_NODE}}"
 export TP_SIZE="${TP_SIZE:-2}"
 export CONTEXT_PARALLEL_SIZE="${CONTEXT_PARALLEL_SIZE:-$((ACTOR_NUM_GPUS / TP_SIZE))}"
 export WORKROOT="${WORKROOT:-$(cd -- "${EXAMPLE_DIR}/../.." && pwd)/tmp}"
