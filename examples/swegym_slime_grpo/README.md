@@ -1,72 +1,140 @@
 # SWE-Gym Slime GRPO
 
-End-to-end **training** example: train **Qwen3.5-4B** with async **GRPO** on
-**SWE-Gym** tasks, using **Polar** for agent rollouts and **Slime** for training.
-Targets a single node with 8 × {H100, H200, B200} (4 GPUs train, 4 serve).
+End-to-end **training** example: async **GRPO** on **SWE-Gym** tasks with
+**Polar** for agent rollouts and **Slime** for training. Default model
+Qwen3.5-4B; Qwen3.5-9B via `MODEL_ARGS_FILE=model_args_9b.sh`. Runs on one
+node (4 GPUs train, 4 serve) or on N nodes with the same per-node layout.
 
 > Unlike the rollout demos (calculator / count_stars / swebench_verified), this
 > path serves the model with **SGLang**: Slime owns the inference engines and
-> syncs the freshly trained weights into them every step (GPU-to-GPU NCCL).
+> syncs freshly trained weights into them every step (GPU-to-GPU NCCL).
 
-## Prerequisites
-
-Install Polar and SGLang per [Polar installation](../../README.md#installation).
-
-Make sure to install Polar's optional swebench dependency for evaluation.
-```
-uv pip install -e ".[swebench]"
-```
-
-## Quick Start
-
-Log into wandb and one command sets everything up and starts training:
+## Quick start (single node)
 
 ```bash
-export WANDB_API_KEY=<your-key>
+export WANDB_API_KEY=<your-key>          # optional
 bash examples/swegym_slime_grpo/launch_e2e.sh
 ```
 
-It clones Slime + Megatron-LM, applies the Slime router-token metadata patch and
-the SGLang 0.5.13 token-metadata patch, installs the training-stack extras
-(Transformer Engine; Flash Linear Attention; flash-attn on B200), builds the
-293-task SWE-Gym JSONL, pulls the Apptainer images + shared agent CLIs, converts
-the Qwen weights to torch_dist, then hands off to `run.sh` (Polar services + Ray
-+ the Slime training job).
+`launch_e2e.sh` is idempotent: re-run it after fixing whatever it reports and
+it resumes. Everything it creates lands under `WORKROOT` (default: `<repo>/tmp`).
+Cache variables you already export (`HF_HOME`, `UV_CACHE_DIR`,
+`APPTAINER_CACHEDIR`, `APPTAINER_TMPDIR`) are respected; unset ones are placed
+under `WORKROOT`.
 
-## (Optional) Watch rollouts in the dashboard
+What it does, in order:
 
-While training runs, start the dashboard **from the repo root** (so its
-`./rollout_results` path matches the rollout server's) to inspect live agent
-sessions, trajectories, and the rewards feeding each training step:
+| Step | Script | Notes |
+|---|---|---|
+| Preflight | `setup/preflight.sh` | Machine facts → decisions; fails fast on anything it cannot fix |
+| Python stack | `setup/install_python_stack.sh` | venv, Polar, `sglang==0.5.13`, torch family on one CUDA build |
+| CUDA user space | `setup/ensure_cuda_userspace.sh` | forward-compat libs if the driver is old; toolkit if `nvcc` is missing |
+| Apptainer | `setup/ensure_apptainer.sh` | uses `POLAR_APPTAINER_BIN` / PATH, else unprivileged install |
+| Checkouts | `launch_e2e.sh` | Slime v0.3.0 + its canonical Megatron commit and patch, router-token patch |
+| Training stack | `setup/ensure_training_stack.sh` | Transformer Engine matched to torch's CUDA major, FLA, flash-attn on B200 |
+| Assets | `prepare_data.py`, `prepare_apptainer_images.py` | 293-task JSONL, per-task SIFs, pinned agent CLIs |
+| Checkpoint | `launch_e2e.sh`, `convert_weights.sh` | full HF snapshot download, HF → Megatron torch_dist |
+| Train | `run.sh` | Polar services + Ray + Slime `train_async.py` |
+
+### What preflight checks
+
+| Check | If it fails |
+|---|---|
+| GPUs visible, driver's native CUDA version | driver < CUDA 13 → `NEED_CUDA_COMPAT` (forward-compat libraries, no root needed) |
+| CUDA 13 `nvcc` on PATH or under `CUDA_HOME` | `NEED_CUDA_TOOLKIT` (conda-forge toolkit via pixi under `WORKROOT`) |
+| `gcc`/`g++` | fatal: Transformer Engine builds from source |
+| apptainer/singularity | `NEED_APPTAINER` (unprivileged install); fatal if user namespaces are also disabled |
+| `uv` | bootstrapped into `WORKROOT/bin` |
+| `git curl tar xz envsubst` | fatal |
+| `WORKROOT` writable; `HOME` writable | fatal / caches go under `WORKROOT` |
+| Ports 8080, 8100, 9000, 8265, 6379 free | fatal with the env var to change |
+| github.com, pypi.org, huggingface.co, download.pytorch.org reachable | fatal with what depends on it |
+
+Run it alone with `bash examples/swegym_slime_grpo/setup/preflight.sh`.
+
+### Why the environment is pinned the way it is
+
+The pinned `sglang==0.5.13` tree is CUDA-13-only (`cuda-python` 13.x,
+`flash-attn-4` pre-releases), so torch is installed from the `cu130` index
+regardless of the driver; `torch-backend=auto` would otherwise pick a cpu or
+cu12x build that imports but cannot run. Transformer Engine must match that
+CUDA major (`2.14.0[core-cu13]`; the older `2.5.0` pin ships a cu12 core only).
+`setup/constraints.txt` (applied via `UV_OVERRIDE` to every uv call) holds the
+four resolution fixes: `nvidia-cublas` ≥ 13.6 for TE, `numpy<2` and
+`scipy==1.13.1` for slime, `wandb==0.22.3` for slime's `generate_id`.
+Megatron is pinned to the commit slime v0.3.0's own Dockerfile uses, plus its
+companion patch; the `26.04-alpha.rc1` tag no longer ships a module slime imports.
+
+## Multi-node
+
+Same per-node layout on every node; TP stays intra-node and context
+parallelism spans nodes so long traces fit (`per-trace cap = MAX_TOKENS_PER_GPU × CP`).
+
+**Slurm:**
 
 ```bash
-uv run polar dashboard -c tmp/swegym_slime_grpo/topology.yaml
+export WORKROOT=/shared/fs/prorl            # shared by all nodes
+bash examples/swegym_slime_grpo/multinode/sbatch_launch.sh --nodes 2 --partition <p> --account <a>
 ```
 
-Open <http://127.0.0.1:8090>. (`tmp/swegym_slime_grpo/topology.yaml` is the
-rendered topology that `run.sh` writes at launch.)
+This runs `multinode/head_entry.sh` on the first node, which `srun`s
+`multinode/ray_worker_join.sh` on the others and then runs `launch_e2e.sh`.
+
+**Without slurm:** on every worker node run
+`bash multinode/ray_worker_join.sh <head-ip>`; on the head run
+
+```bash
+ACTOR_NUM_NODES=2 RAY_HEAD_IP=<head-ip> POLAR_BIND_HOST=0.0.0.0 POLAR_PUBLIC_HOST=<head-ip> \
+  bash examples/swegym_slime_grpo/launch_e2e.sh
+```
+
+`run.sh` waits for all `ACTOR_NUM_NODES` Ray nodes before submitting the job.
+
+## Knobs
+
+All are environment variables with the single-node defaults shown.
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `WORKROOT` | `<repo>/tmp` | Root for checkouts, caches, toolchains, checkpoints |
+| `HF_CHECKPOINT`, `MODEL_ARGS_FILE` | `Qwen/Qwen3.5-4B`, `model_args.sh` | Model; use `model_args_9b.sh` for Qwen3.5-9B (`TP_SIZE=4`) |
+| `ACTOR_NUM_NODES`, `ACTOR_NUM_GPUS_PER_NODE`, `ROLLOUT_NUM_GPUS_PER_NODE` | 1, 4, 4 | Node count and per-node train/serve split |
+| `TP_SIZE`, `CONTEXT_PARALLEL_SIZE` | 2, 1 | Megatron parallelism (`head_entry.sh` defaults CP to all train GPUs / TP) |
+| `MAX_TOKENS_PER_GPU`, `SGLANG_CONTEXT_LENGTH` | 30000, 50000 | 16384 is the safe value on H100-80GB for the 4B model |
+| `ROLLOUT_MAX_PROMPT_LEN`, `ROLLOUT_MAX_RESPONSE_LEN` | 32000, 16000 | Slime rollout length caps |
+| `ROLLOUT_BATCH_SIZE`, `N_SAMPLES_PER_PROMPT`, `NUM_EPOCH`, `SAVE_INTERVAL` | 4, 16, 1, 10 | Batch and schedule |
+| `POLAR_ROLLOUT_PORT`, `POLAR_GATEWAY_PORT`, `SGLANG_ROUTER_PORT`, `RAY_DASHBOARD_PORT`, `RAY_GCS_PORT` | 8080, 8100, 9000, 8265, 6379 | Service ports |
+| `POLAR_BIND_HOST`, `POLAR_PUBLIC_HOST`, `RAY_HEAD_IP` | 127.0.0.1 | Set by `head_entry.sh` for multi-node |
+| `POLAR_APPTAINER_BIN`, `APPTAINER_IMAGE_DIR`, `AGENT_CLI_DIR` | auto | Container runtime and prepared assets |
+| `SETUP_ENV` | 1 | `0` skips preflight and all `setup/` scripts (bring your own environment) |
+| `BUILD_MAX_JOBS` | 8 | Parallelism cap for TE / flash-attn source builds |
+| `RUN_TRAINING` | 1 | `0` stops after setup and conversion |
+
+Agent harness (`codex` by default), timeouts and evaluator live in
+`polar_config.yaml`; gateway worker counts in `topology.yaml`; the SWE-Gym
+split in `sample_tasks.py`. The codex CLI is installed at the version the
+harness enforces (`prepare_apptainer_images.py`).
+
+## Watching a run
+
+The Slime driver's training output (step metrics, checkpoint saves) goes to
+the Ray job, not to your shell. Follow it with wandb, or
+`cat $SAVE_DIR/latest_checkpointed_iteration.txt`. To inspect live agent
+sessions start the dashboard from the repo root:
+
+```bash
+uv run polar dashboard -c $WORKROOT/swegym_slime_grpo/topology.yaml
+```
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `launch_e2e.sh` | One-shot entry: setup + run |
-| `run.sh` | Launches Polar services + Ray + Slime training job |
+| `launch_e2e.sh` | One-shot entry: environment + setup + run |
+| `setup/` | Preflight and environment scripts (see table above), `constraints.txt` |
+| `run.sh` | Polar services + Ray + Slime training job |
 | `convert_weights.sh` | HF checkpoint → Megatron torch_dist |
-| `model_args.sh` | Qwen3.5-4B Megatron args, shared by `run.sh` + `convert_weights.sh` |
-| `topology.yaml` | Polar topology template (`${SGLANG_ROUTER_BASE_URL}` filled at runtime) |
-| `polar_config.yaml` | Polar bridge config template (`${AGENT_CLI_DIR}`, `${APPTAINER_IMAGE_DIR}` filled at runtime) |
-| `prepare_data.py` | Builds `swegym_train_293.jsonl` |
-| `prepare_apptainer_images.py` | Pulls per-task SIF images, builds shared Node + agent CLI dir |
-| `sample_tasks.py` | Dataset helpers (HF fetch, registry image lookup) |
-
-## Common knobs
-
-| What you want to tune | Where |
-|---|---|
-| Train/rollout GPU split, batch size, KL coef, LR | `run.sh` (env vars near top + Slime args at bottom) |
-| Which agent harness (qwen_code / claude_code / codex / opencode / pi) | `polar_config.yaml` → `agent.harness` |
-| Per-task timeout, async level, callback host | `polar_config.yaml` → `polar_*` keys |
-| Gateway/rollout host & port, model served | `topology.yaml` |
-| Which SWE-Gym dataset / split | `sample_tasks.py` → `DATASET_NAME`, `DATASET_SPLITS` |
-| Model architecture args (don't change unless swapping models) | `model_args.sh` |
+| `model_args.sh`, `model_args_9b.sh` | Qwen3.5-4B / 9B Megatron args |
+| `topology.yaml`, `polar_config.yaml` | Polar templates rendered by `run.sh` |
+| `multinode/` | `sbatch_launch.sh`, `head_entry.sh`, `ray_worker_join.sh` |
+| `prepare_data.py`, `prepare_apptainer_images.py`, `sample_tasks.py` | Data, SIF images, agent CLIs |

@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# Async GRPO training on SWE-Gym via Polar + Slime (Qwen3.5-4B).
+# Async GRPO training on SWE-Gym via Polar + Slime (Qwen3.5-4B by default).
 #
-# Qwen3.5-4B is a VLM checkpoint (Qwen3_5ForConditionalGeneration) with
-# hybrid attention (1 full + 3 GatedDeltaNet linear per 4 layers). Text-only
-# RL requires the SGLang VLM input_ids patch (see MEMORY.md).
+# Qwen3.5 checkpoints are VLMs (Qwen3_5ForConditionalGeneration) with hybrid
+# attention (1 full + 3 GatedDeltaNet linear per 4 layers); we train text-only.
 #
+# Services (all ports are env knobs; defaults in parentheses):
+#   SGLANG_ROUTER_PORT  (9000)  slime-managed SGLang router
+#   POLAR_ROLLOUT_PORT  (8080)  Polar rollout server
+#   POLAR_GATEWAY_PORT  (8100)  Polar gateway node
+#   RAY_DASHBOARD_PORT  (8265)  Ray dashboard / job submission (loopback)
+#   RAY_GCS_PORT        (6379)  Ray GCS (workers join here)
 #
-# Port layout:
-#   9000        – SGLang router (slime-managed, load-balances engines)
-#   8080        – Polar rollout server (task coordinator)
-#   8100        – Polar gateway node (dispatches agent sessions)
-#   8265        – Ray dashboard
+# Multi-node: set ACTOR_NUM_NODES>1, RAY_HEAD_IP=<routable head IP>,
+# POLAR_BIND_HOST=0.0.0.0, POLAR_PUBLIC_HOST=<head IP>, and start
+# `multinode/ray_worker_join.sh` on every other node (multinode/head_entry.sh
+# does all of this under slurm). This script always runs on the head.
 #
-# Weight sync: native GPU-to-GPU via NCCL every training step.
-# Slime manages SGLang engines; Polar gateway proxies LLM calls to them.
-# Dynamic-history: every trace in each agent session becomes one training
-# sample, so gradients learn from *every* turn (not just the last one).
+# Weight sync: native GPU-to-GPU via NCCL every training step. Slime manages the
+# SGLang engines; the Polar gateway proxies agent LLM calls to them. With
+# --dynamic-history every trace in an agent session becomes a training sample.
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
-RUN_DIR="${RUN_DIR:-${PROJECT_ROOT}/tmp/swegym_slime_grpo}"
+WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"
+# Environment written by launch_e2e.sh (CUDA compat libs, toolkit, venv, apptainer).
+ENV_FILE="${ENV_FILE:-${WORKROOT}/env.sh}"
+# shellcheck disable=SC1090
+[ -f "${ENV_FILE}" ] && source "${ENV_FILE}"
+RUN_DIR="${RUN_DIR:-${WORKROOT}/swegym_slime_grpo}"
 mkdir -p "${RUN_DIR}" "${PROJECT_ROOT}/logs"
 PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python3}"
 if [ ! -x "${PYTHON_BIN}" ]; then
@@ -31,89 +39,89 @@ fi
 PYTHON_BIN_DIR="$(cd -- "$(dirname -- "${PYTHON_BIN}")" &>/dev/null && pwd)"
 export PATH="${PYTHON_BIN_DIR}:${PATH}"
 
-is_path_like() {
-    case "$1" in
-        /*|./*|../*|~*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
+is_path_like() { case "$1" in /*|./*|../*|~*) return 0 ;; *) return 1 ;; esac; }
 
 detect_host_ip() {
     "${PYTHON_BIN}" - <<'PY'
 import socket
-
 try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.connect(("8.8.8.8", 80))
-    print(sock.getsockname()[0])
-    sock.close()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("8.8.8.8", 80)); print(s.getsockname()[0]); s.close()
 except Exception:
-    try:
-        print(socket.gethostbyname(socket.gethostname()))
-    except Exception:
-        print("127.0.0.1")
+    try: print(socket.gethostbyname(socket.gethostname()))
+    except Exception: print("127.0.0.1")
 PY
 }
 
 # ── External deps ──────────────────────────────────────────────────
 SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
-if [ ! -f "${SLIME_DIR}/train_async.py" ]; then
-    echo "ERROR: Slime not found at ${SLIME_DIR}"
-    echo "  git clone git@github.com:THUDM/slime.git ${SLIME_DIR}"
-    exit 1
-fi
-
+[ -f "${SLIME_DIR}/train_async.py" ] || { echo "ERROR: Slime not found at ${SLIME_DIR} (run launch_e2e.sh, or set SLIME_DIR)"; exit 1; }
 MEGATRON_DIR="${MEGATRON_DIR:-${PROJECT_ROOT}/Megatron-LM}"
-if [ ! -d "${MEGATRON_DIR}/megatron" ]; then
-    echo "ERROR: Megatron-LM not found at ${MEGATRON_DIR}"
-    echo "  git clone https://github.com/NVIDIA/Megatron-LM.git ${MEGATRON_DIR}"
-    exit 1
-fi
+[ -d "${MEGATRON_DIR}/megatron" ] || { echo "ERROR: Megatron-LM not found at ${MEGATRON_DIR} (run launch_e2e.sh, or set MEGATRON_DIR)"; exit 1; }
 
 # ── Model ──────────────────────────────────────────────────────────
-# Qwen3.5-4B: VLM checkpoint; we train text-only.  HF weights are loaded
-# through slime_plugins.mbridge.qwen3_5 (text_config-aware) at convert-time.
 HF_CHECKPOINT="${HF_CHECKPOINT:-Qwen/Qwen3.5-4B}"
-REF_LOAD="${REF_LOAD:-${PROJECT_ROOT}/tmp/checkpoints/Qwen3.5-4B_torch_dist}"
+REF_LOAD="${REF_LOAD:-${TORCH_DIST_DIR:-${WORKROOT}/checkpoints/${HF_CHECKPOINT##*/}_torch_dist}}"
 RUN_ID="${RUN_ID:-swegym-slime-grpo-$(date -u +%Y%m%dT%H%M%SZ)}"
-SAVE_ROOT="${SAVE_ROOT:-${PROJECT_ROOT}/tmp/ckpt/swegym_slime_grpo_qwen35_4b}"
+SAVE_ROOT="${SAVE_ROOT:-${WORKROOT}/ckpt/swegym_slime_grpo}"
 SAVE_DIR="${SAVE_DIR:-${SAVE_ROOT}/${RUN_ID}}"
 mkdir -p "$SAVE_DIR"
 if is_path_like "$HF_CHECKPOINT" && [ ! -e "$HF_CHECKPOINT" ]; then
-    echo "ERROR: HF checkpoint not found at $HF_CHECKPOINT"
-    echo "  hf download Qwen/Qwen3.5-4B"
-    exit 1
+    echo "ERROR: HF checkpoint not found at $HF_CHECKPOINT"; exit 1
 fi
-if [ ! -d "$REF_LOAD" ] || [ ! -f "$REF_LOAD/latest_checkpointed_iteration.txt" ]; then
+if [ ! -f "$REF_LOAD/latest_checkpointed_iteration.txt" ]; then
     echo "ERROR: Megatron torch_dist checkpoint not found at $REF_LOAD"
-    echo "  Run bash examples/swegym_slime_grpo/convert_weights.sh first."
-    exit 1
+    echo "  Run bash examples/swegym_slime_grpo/convert_weights.sh first."; exit 1
 fi
-
-# shellcheck source=./model_args.sh
-source "${SCRIPT_DIR}/model_args.sh"
+# MODEL_ARGS_FILE: model_args.sh (Qwen3.5-4B, default) or model_args_9b.sh; relative to this dir or absolute.
+MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-model_args.sh}"
+case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/${MODEL_ARGS_FILE}" ;; esac
+# shellcheck disable=SC1090
+source "${MODEL_ARGS_FILE}"
 
 # First run has an empty SAVE_DIR — slime's load_checkpoint asserts on empty.
-# Pick REF_LOAD (torch_dist) until the first save lands.
-if [ -f "$SAVE_DIR/latest_checkpointed_iteration.txt" ]; then
-    LOAD_DIR="$SAVE_DIR"
-else
-    LOAD_DIR="$REF_LOAD"
-fi
+if [ -f "$SAVE_DIR/latest_checkpointed_iteration.txt" ]; then LOAD_DIR="$SAVE_DIR"; else LOAD_DIR="$REF_LOAD"; fi
 
 # ── Data ───────────────────────────────────────────────────────────
 PROMPT_DATA="${PROMPT_DATA:-${SCRIPT_DIR}/swegym_train_293.jsonl}"
 if [ ! -f "$PROMPT_DATA" ]; then
-    echo "Preparing train data..."
-    "${PYTHON_BIN}" "${SCRIPT_DIR}/prepare_data.py"
+    echo "Preparing train data..."; "${PYTHON_BIN}" "${SCRIPT_DIR}/prepare_data.py"
 fi
 
-# ── Runtime configs ─────────────────────────────────────────────────
-export AGENT_CLI_DIR="${AGENT_CLI_DIR:-${PROJECT_ROOT}/tmp/swegym_agent_cli/opt_node}"
-export APPTAINER_IMAGE_DIR="${APPTAINER_IMAGE_DIR:-${PROJECT_ROOT}/tmp/swegym_apptainer_images}"
-# Prefer apptainer in PATH (HPC modules etc.); fall back to /usr/bin for Ubuntu defaults.
-export POLAR_APPTAINER_BIN="${POLAR_APPTAINER_BIN:-$(command -v apptainer || echo /usr/bin/apptainer)}"
+# ── Parallelism / sizing ───────────────────────────────────────────
+# Per node: ACTOR_NUM_GPUS_PER_NODE train GPUs + ROLLOUT_NUM_GPUS_PER_NODE
+# SGLang engine GPUs. ACTOR_NUM_NODES>1 replicates that layout on every node.
+ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
+ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-4}"
+ROLLOUT_NUM_GPUS_PER_NODE="${ROLLOUT_NUM_GPUS_PER_NODE:-4}"
+ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-$((ROLLOUT_NUM_GPUS_PER_NODE * ACTOR_NUM_NODES))}"
+ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
+TP_SIZE="${TP_SIZE:-2}"
+CONTEXT_PARALLEL_SIZE="${CONTEXT_PARALLEL_SIZE:-1}"   # per-trace cap = MAX_TOKENS_PER_GPU × CP
+ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
+N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-16}"
+MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-30000}"     # 16384 fits H100-80GB with the 4B model
+SGLANG_CONTEXT_LENGTH="${SGLANG_CONTEXT_LENGTH:-50000}"
+ROLLOUT_MAX_PROMPT_LEN="${ROLLOUT_MAX_PROMPT_LEN:-32000}"
+ROLLOUT_MAX_RESPONSE_LEN="${ROLLOUT_MAX_RESPONSE_LEN:-16000}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-10}"
+
+# ── Services / addresses ───────────────────────────────────────────
+POLAR_ROLLOUT_PORT="${POLAR_ROLLOUT_PORT:-8080}"
+POLAR_GATEWAY_PORT="${POLAR_GATEWAY_PORT:-8100}"
 SGLANG_ROUTER_PORT="${SGLANG_ROUTER_PORT:-9000}"
+RAY_DASHBOARD_PORT="${RAY_DASHBOARD_PORT:-8265}"
+RAY_GCS_PORT="${RAY_GCS_PORT:-6379}"
+RAY_HEAD_IP="${RAY_HEAD_IP:-127.0.0.1}"
+POLAR_BIND_HOST="${POLAR_BIND_HOST:-127.0.0.1}"
+POLAR_PUBLIC_HOST="${POLAR_PUBLIC_HOST:-${RAY_HEAD_IP}}"
+POLAR_CALLBACK_HOST="${POLAR_CALLBACK_HOST:-127.0.0.1}"
+export POLAR_BIND_HOST POLAR_ROLLOUT_PORT POLAR_GATEWAY_PORT POLAR_CALLBACK_HOST
+export POLAR_ROLLOUT_URL="http://${POLAR_PUBLIC_HOST}:${POLAR_ROLLOUT_PORT}"
+export POLAR_GATEWAY_URL="http://${POLAR_PUBLIC_HOST}:${POLAR_GATEWAY_PORT}"
+export MODEL_SERVED="${MODEL_SERVED:-${HF_CHECKPOINT}}"
+export AGENT_CLI_DIR="${AGENT_CLI_DIR:-${WORKROOT}/swegym_agent_cli/opt_node}"
+export APPTAINER_IMAGE_DIR="${APPTAINER_IMAGE_DIR:-${WORKROOT}/swegym_apptainer_images}"
+export POLAR_APPTAINER_BIN="${POLAR_APPTAINER_BIN:-$(command -v apptainer || command -v singularity || echo /usr/bin/apptainer)}"
 SGLANG_ROUTER_HOST="${SGLANG_ROUTER_HOST:-$(detect_host_ip)}"
 export SGLANG_ROUTER_BASE_URL="${SGLANG_ROUTER_BASE_URL:-http://${SGLANG_ROUTER_HOST}:${SGLANG_ROUTER_PORT}}"
 TOPOLOGY_TEMPLATE="${TOPOLOGY_TEMPLATE:-${SCRIPT_DIR}/topology.yaml}"
@@ -125,20 +133,23 @@ TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${COMPILER_CACHE_ROOT}/torch
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${COMPILER_CACHE_ROOT}/triton}"
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
-# Render YAML templates: only the listed ${VARS} are expanded, so literal
-# $HOME / $... inside polar_config.yaml are left untouched.
+# Render YAML templates: only the listed ${VARS} are expanded.
 command -v envsubst >/dev/null || { echo "ERROR: envsubst not found (install gettext-base)"; exit 1; }
-TEMPLATE_VARS='${SGLANG_ROUTER_BASE_URL} ${AGENT_CLI_DIR} ${APPTAINER_IMAGE_DIR}'
+TEMPLATE_VARS='${SGLANG_ROUTER_BASE_URL} ${AGENT_CLI_DIR} ${APPTAINER_IMAGE_DIR} ${POLAR_BIND_HOST} ${POLAR_ROLLOUT_PORT} ${POLAR_GATEWAY_PORT} ${POLAR_ROLLOUT_URL} ${POLAR_GATEWAY_URL} ${POLAR_CALLBACK_HOST} ${MODEL_SERVED}'
 mkdir -p "$(dirname "$TOPOLOGY_PATH")" "$(dirname "$CUSTOM_CONFIG_PATH")"
 envsubst "$TEMPLATE_VARS" < "$TOPOLOGY_TEMPLATE"     > "$TOPOLOGY_PATH"
 envsubst "$TEMPLATE_VARS" < "$POLAR_CONFIG_TEMPLATE" > "$CUSTOM_CONFIG_PATH"
 
-echo "Using topology: ${TOPOLOGY_PATH}"
-echo "Using Polar config: ${CUSTOM_CONFIG_PATH}"
-echo "Using Apptainer image dir: ${APPTAINER_IMAGE_DIR}"
-echo "Using run id: ${RUN_ID}"
-echo "Using save dir: ${SAVE_DIR}"
-echo "Using SGLang router URL for Polar gateway: ${SGLANG_ROUTER_BASE_URL}"
+cat <<INFO
+Using topology:       ${TOPOLOGY_PATH}
+Using Polar config:   ${CUSTOM_CONFIG_PATH}
+Polar rollout/gateway ${POLAR_ROLLOUT_URL} / ${POLAR_GATEWAY_URL} (bind ${POLAR_BIND_HOST})
+SGLang router:        ${SGLANG_ROUTER_BASE_URL}
+Apptainer:            ${POLAR_APPTAINER_BIN}; images ${APPTAINER_IMAGE_DIR}
+Model / args:         ${HF_CHECKPOINT} / ${MODEL_ARGS_FILE}
+Layout:               ${ACTOR_NUM_NODES} node(s) × (${ACTOR_NUM_GPUS_PER_NODE} train + ${ROLLOUT_NUM_GPUS_PER_NODE} rollout GPUs); TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}; ${MAX_TOKENS_PER_GPU} tok/GPU
+Run id / save dir:    ${RUN_ID} / ${SAVE_DIR}
+INFO
 
 # ── Cleanup on exit ────────────────────────────────────────────────
 PIDS=()
@@ -150,38 +161,39 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Step 1: Polar services (runs on host, CPU only) ───────────────
-echo "=== Starting Polar rollout server (:8080) ==="
+# ── Step 1: Polar services (host, CPU only) ────────────────────────
+echo "=== Starting Polar rollout server (:${POLAR_ROLLOUT_PORT}) ==="
 polar serve_rollout -c "${TOPOLOGY_PATH}" &
 PIDS+=($!)
 sleep 2
-
-echo "=== Starting Polar gateway (:8100) ==="
+echo "=== Starting Polar gateway (:${POLAR_GATEWAY_PORT}) ==="
 polar serve_gateway -c "${TOPOLOGY_PATH}" --node-id localhost-node-01 &
 PIDS+=($!)
 sleep 2
+curl -sf "http://127.0.0.1:${POLAR_ROLLOUT_PORT}/health" >/dev/null || { echo "Polar rollout server not healthy on :${POLAR_ROLLOUT_PORT}"; exit 1; }
 
-curl -sf http://127.0.0.1:8080/health || { echo "Polar rollout server not healthy"; exit 1; }
-
-# ── Step 2: Ray + Slime (manages SGLang engines + training) ───────
-ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-4}"
-ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-4}"
-ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
-ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
-N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-16}"
-MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-30000}"
-SGLANG_CONTEXT_LENGTH="${SGLANG_CONTEXT_LENGTH:-50000}"
-
-# Ray sizing — derive total GPUs from the actor/rollout split.
-RAY_NUM_GPUS="${RAY_NUM_GPUS:-$((ACTOR_NUM_GPUS_PER_NODE + ROLLOUT_NUM_GPUS))}"
-RAY_HEAD_IP="${RAY_HEAD_IP:-127.0.0.1}"
-
-echo "=== Starting Ray on ${RAY_HEAD_IP} (${RAY_NUM_GPUS} GPUs) ==="
+# ── Step 2: Ray + Slime (SGLang engines + training) ────────────────
+# The head registers only its local GPUs; other nodes join via ray_worker_join.sh.
+RAY_NUM_GPUS="${RAY_NUM_GPUS:-$((ACTOR_NUM_GPUS_PER_NODE + ROLLOUT_NUM_GPUS_PER_NODE))}"
+echo "=== Starting Ray head on ${RAY_HEAD_IP} (${RAY_NUM_GPUS} local GPUs, gcs :${RAY_GCS_PORT}) ==="
 ray stop --force 2>/dev/null || true
 sleep 1
-ray start --head --node-ip-address "$RAY_HEAD_IP" --num-gpus "$RAY_NUM_GPUS" --disable-usage-stats
+ray start --head --node-ip-address "$RAY_HEAD_IP" --port "$RAY_GCS_PORT" --dashboard-port "$RAY_DASHBOARD_PORT" \
+    --num-gpus "$RAY_NUM_GPUS" --disable-usage-stats
 
-# cuDNN lib path — probe the active venv instead of hardcoding python3.13.
+if [ "${ACTOR_NUM_NODES}" -gt 1 ]; then
+    RAY_JOIN_TIMEOUT="${RAY_JOIN_TIMEOUT:-900}"
+    echo "=== Waiting for ${ACTOR_NUM_NODES} Ray nodes (timeout ${RAY_JOIN_TIMEOUT}s) ==="
+    deadline=$((SECONDS + RAY_JOIN_TIMEOUT))
+    while :; do
+        alive="$("${PYTHON_BIN}" -c 'import ray; ray.init(address="auto", logging_level="ERROR"); print(sum(1 for n in ray.nodes() if n["Alive"]))' 2>/dev/null || echo 0)"
+        [ "${alive}" -ge "${ACTOR_NUM_NODES}" ] && { echo "Ray cluster: ${alive} nodes alive"; break; }
+        [ "${SECONDS}" -ge "${deadline}" ] && { echo "ERROR: only ${alive}/${ACTOR_NUM_NODES} Ray nodes joined within ${RAY_JOIN_TIMEOUT}s"; exit 1; }
+        sleep 10
+    done
+fi
+
+# cuDNN lib path — probe the active venv.
 if [ -z "${CUDNN_LIB:-}" ]; then
     CUDNN_LIB="$("${PYTHON_BIN}" -c 'import nvidia.cudnn, os; print(os.path.join(list(nvidia.cudnn.__path__)[0], "lib"))' 2>/dev/null || true)"
 fi
@@ -189,11 +201,15 @@ RUNTIME_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 if [ -n "${CUDNN_LIB}" ] && [ -d "$CUDNN_LIB" ]; then
     RUNTIME_LD_LIBRARY_PATH="${CUDNN_LIB}:${RUNTIME_LD_LIBRARY_PATH}"
 fi
+# Ray actors on every node inherit exactly this environment; anything a worker
+# node needs (CUDA compat libs, HF cache, toolkit) must be listed here.
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${MEGATRON_DIR}:${PROJECT_ROOT}/src\",
     \"PATH\": \"${PYTHON_BIN_DIR}:${PATH}\",
     \"VIRTUAL_ENV\": \"${VIRTUAL_ENV:-${PROJECT_ROOT}/.venv}\",
+    \"HF_HOME\": \"${HF_HOME:-${HOME}/.cache/huggingface}\",
+    \"CUDA_HOME\": \"${CUDA_HOME:-/usr/local/cuda}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"WANDB_DIR\": \"${PROJECT_ROOT}/logs\",
     \"TORCHINDUCTOR_CACHE_DIR\": \"${TORCHINDUCTOR_CACHE_DIR}\",
@@ -206,18 +222,16 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-# Rollout sizing: 4 prompts × 16 trajectories = 64 trajectories/rollout.
-# This matches the earlier high-util baseline and keeps request groups smaller
-# so long tails do not collapse usable token throughput.
-# With --dynamic-history each trajectory explodes into one sample per trace,
-# so sample count per rollout is variable.
-# The custom data source rounds epoch length up to 37 rollout batches, so all
-# 293 train prompts are consumed once; the final fixed-size batch wraps 3 prompts.
+# Rollout sizing: ROLLOUT_BATCH_SIZE prompts × N_SAMPLES_PER_PROMPT trajectories
+# per rollout. With --dynamic-history each trajectory yields one sample per
+# trace, so the sample count per rollout is variable. The custom data source
+# rounds the epoch up so every train prompt is consumed once.
 echo "=== Launching train_async.py ==="
-ray job submit --address="http://${RAY_HEAD_IP}:8265" \
+# The Ray dashboard binds loopback; submission always happens on the head.
+ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT}" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \
     -- "${PYTHON_BIN}" "${SLIME_DIR}/train_async.py" \
-    --actor-num-nodes 1 \
+    --actor-num-nodes "$ACTOR_NUM_NODES" \
     --actor-num-gpus-per-node "$ACTOR_NUM_GPUS_PER_NODE" \
     --rollout-num-gpus "$ROLLOUT_NUM_GPUS" \
     --rollout-num-gpus-per-engine "$ROLLOUT_NUM_GPUS_PER_ENGINE" \
@@ -226,7 +240,7 @@ ray job submit --address="http://${RAY_HEAD_IP}:8265" \
     --ref-load "$REF_LOAD" \
     --load "$LOAD_DIR" \
     --save "$SAVE_DIR" \
-    --save-interval "${SAVE_INTERVAL:-10}" \
+    --save-interval "$SAVE_INTERVAL" \
     --update-weights-interval 1 \
     --rollout-function-path slime_bridge.rollout.generate_rollout_polar_async \
     --custom-rm-path slime_bridge.reward.reward_func \
@@ -242,14 +256,14 @@ ray job submit --address="http://${RAY_HEAD_IP}:8265" \
     --num-epoch "${NUM_EPOCH:-1}" \
     --rollout-batch-size "$ROLLOUT_BATCH_SIZE" \
     --n-samples-per-prompt "$N_SAMPLES_PER_PROMPT" \
-    --rollout-max-response-len 16000 \
-    --rollout-max-prompt-len 32000 \
+    --rollout-max-response-len "$ROLLOUT_MAX_RESPONSE_LEN" \
+    --rollout-max-prompt-len "$ROLLOUT_MAX_PROMPT_LEN" \
     --dynamic-history \
     --num-steps-per-rollout 1 \
-    --tensor-model-parallel-size 2 \
+    --tensor-model-parallel-size "$TP_SIZE" \
     --sequence-parallel \
     --pipeline-model-parallel-size 1 \
-    --context-parallel-size 1 \
+    --context-parallel-size "$CONTEXT_PARALLEL_SIZE" \
     --expert-model-parallel-size 1 \
     --expert-tensor-parallel-size 1 \
     --recompute-granularity full \

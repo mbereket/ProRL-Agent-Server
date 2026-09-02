@@ -1,12 +1,13 @@
 # Polar bridge configuration for Slime's --custom-config-path.
 # These become attributes on the `args` namespace passed to the rollout function.
 
-polar_rollout_url: "http://127.0.0.1:8080"
-polar_gateway_url: "http://127.0.0.1:8100"
+polar_rollout_url: "${POLAR_ROLLOUT_URL}"
+polar_gateway_url: "${POLAR_GATEWAY_URL}"
 polar_reward_key: "score"
 polar_max_async_level: 2
 polar_request_timeout: 2400
-polar_callback_host: "127.0.0.1"
+# The callback listener runs in the slime driver on the head node.
+polar_callback_host: "${POLAR_CALLBACK_HOST}"
 polar_min_complete_accept_fraction: 0.6
 # Filled by run.sh via envsubst — absolute host paths to assets prepared by
 # prepare_apptainer_images.py. The container mounts and image lookups below

@@ -29,8 +29,11 @@ NODE_DIST_URL = (
     f"https://nodejs.org/dist/v{NODE_VERSION}/"
     f"node-v{NODE_VERSION}-linux-x64.tar.xz"
 )
+# codex is version-checked by polar.agent.presets.codex (DEFAULT_CODEX_VERSION);
+# installing @latest makes every rollout fail with "codex version mismatch".
+CODEX_VERSION = "0.125.0"
 AGENT_CLI_PACKAGES = (
-    "@openai/codex@latest",
+    f"@openai/codex@{CODEX_VERSION}",
     "@anthropic-ai/claude-code@latest",
     "@qwen-code/qwen-code@latest",
     "opencode-ai@latest",

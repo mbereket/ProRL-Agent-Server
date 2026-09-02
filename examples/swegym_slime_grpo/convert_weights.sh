@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Convert Qwen3.5-4B HF weights to Megatron torch_dist format for Slime training.
+# Convert Qwen3.5 HF weights to Megatron torch_dist format for Slime training.
 # Qwen3.5-4B is a VLM checkpoint (Qwen3_5ForConditionalGeneration) with hybrid
 # attention (1 full + 3 GatedDeltaNet linear per 4 layers).  Weight loading goes
 # through slime_plugins.mbridge.qwen3_5 (text_config-aware).
@@ -10,6 +10,10 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
 MEGATRON_DIR="${MEGATRON_DIR:-${PROJECT_ROOT}/Megatron-LM}"
+# Environment written by launch_e2e.sh (CUDA compat libs, toolkit, venv).
+ENV_FILE="${ENV_FILE:-${WORKROOT:-${PROJECT_ROOT}/tmp}/env.sh}"
+# shellcheck disable=SC1090
+[ -f "${ENV_FILE}" ] && source "${ENV_FILE}"
 PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python3}"
 if [ ! -x "${PYTHON_BIN}" ]; then
     PYTHON_BIN="$(command -v python3 || command -v python)"
@@ -24,11 +28,14 @@ if [ ! -f "${SLIME_DIR}/tools/convert_hf_to_torch_dist.py" ]; then
 fi
 
 HF_CHECKPOINT="${HF_CHECKPOINT:-Qwen/Qwen3.5-4B}"
-OUTPUT_DIR="${TORCH_DIST_DIR:-${PROJECT_ROOT}/tmp/checkpoints/Qwen3.5-4B_torch_dist}"
+OUTPUT_DIR="${TORCH_DIST_DIR:-${PROJECT_ROOT}/tmp/checkpoints/${HF_CHECKPOINT##*/}_torch_dist}"
 mkdir -p "$OUTPUT_DIR"
 
-# shellcheck source=./model_args.sh
-source "${SCRIPT_DIR}/model_args.sh"
+# MODEL_ARGS_FILE: model_args.sh (Qwen3.5-4B, default) or model_args_9b.sh; relative to this dir or absolute.
+MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-model_args.sh}"
+case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/${MODEL_ARGS_FILE}" ;; esac
+# shellcheck disable=SC1090
+source "${MODEL_ARGS_FILE}"
 
 echo "Converting ${HF_CHECKPOINT} -> ${OUTPUT_DIR}"
 
