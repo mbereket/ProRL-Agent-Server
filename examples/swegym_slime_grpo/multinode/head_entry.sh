@@ -4,9 +4,10 @@
 # node with srun, exports the multi-node knobs, then runs launch_e2e.sh here.
 #
 # Requires: a shared filesystem for the repo and WORKROOT; SLURM_JOB_NODELIST.
-# Knobs (defaults): ACTOR_NUM_NODES (=allocation size), TP_SIZE (2),
-# CONTEXT_PARALLEL_SIZE (all train GPUs / TP, i.e. DP=1 for maximum context),
-# ACTOR_NUM_GPUS_PER_NODE (4), ROLLOUT_NUM_GPUS_PER_NODE (4).
+# Knobs (defaults): NUM_NODES (=allocation size), ACTOR_NUM_NODES (1),
+# ACTOR_NUM_GPUS_PER_NODE (4), TP_SIZE (2), CONTEXT_PARALLEL_SIZE (all train
+# GPUs / TP, i.e. DP=1 for maximum context). Every GPU not used by the trainer
+# serves an SGLang engine (2 nodes → 4 train / 12 serve).
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 EXAMPLE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -23,16 +24,16 @@ routable_ip() {
 HEAD_IP="$(routable_ip)"
 [ -n "${HEAD_IP}" ] || { echo "ERROR: could not determine a routable head IP" >&2; exit 1; }
 mapfile -t WORKERS < <(scontrol show hostnames "${SLURM_JOB_NODELIST}" | grep -vx "$(hostname -s)" | grep -vx "$(hostname)")
-export ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-${SLURM_JOB_NUM_NODES}}"
-[ "${#WORKERS[@]}" -ge $((ACTOR_NUM_NODES - 1)) ] || { echo "ERROR: need ${ACTOR_NUM_NODES} nodes, allocation has $((${#WORKERS[@]} + 1))" >&2; exit 1; }
+export NUM_NODES="${NUM_NODES:-${SLURM_JOB_NUM_NODES}}"
+[ "${#WORKERS[@]}" -ge $((NUM_NODES - 1)) ] || { echo "ERROR: need ${NUM_NODES} nodes, allocation has $((${#WORKERS[@]} + 1))" >&2; exit 1; }
 echo "[head] $(hostname) (${HEAD_IP}); workers: ${WORKERS[*]:-none}"
 
 export RAY_HEAD_IP="${HEAD_IP}"
 export RAY_GCS_PORT="${RAY_GCS_PORT:-6379}"
 export POLAR_BIND_HOST=0.0.0.0
 export POLAR_PUBLIC_HOST="${HEAD_IP}"
+export ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
 export ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-4}"
-export ROLLOUT_NUM_GPUS_PER_NODE="${ROLLOUT_NUM_GPUS_PER_NODE:-4}"
 export TP_SIZE="${TP_SIZE:-2}"
 export CONTEXT_PARALLEL_SIZE="${CONTEXT_PARALLEL_SIZE:-$((ACTOR_NUM_GPUS_PER_NODE * ACTOR_NUM_NODES / TP_SIZE))}"
 export WORKROOT="${WORKROOT:-$(cd -- "${EXAMPLE_DIR}/../.." && pwd)/tmp}"

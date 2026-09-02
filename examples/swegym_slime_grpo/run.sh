@@ -12,7 +12,7 @@
 #   RAY_DASHBOARD_PORT  (8265)  Ray dashboard / job submission (loopback)
 #   RAY_GCS_PORT        (6379)  Ray GCS (workers join here)
 #
-# Multi-node: set ACTOR_NUM_NODES>1, RAY_HEAD_IP=<routable head IP>,
+# Multi-node: set NUM_NODES, RAY_HEAD_IP=<routable head IP>,
 # POLAR_BIND_HOST=0.0.0.0, POLAR_PUBLIC_HOST=<head IP>, and start
 # `multinode/ray_worker_join.sh` on every other node (multinode/head_entry.sh
 # does all of this under slurm). This script always runs on the head.
@@ -88,15 +88,19 @@ if [ ! -f "$PROMPT_DATA" ]; then
 fi
 
 # ── Parallelism / sizing ───────────────────────────────────────────
-# Per node: ACTOR_NUM_GPUS_PER_NODE train GPUs + ROLLOUT_NUM_GPUS_PER_NODE
-# SGLang engine GPUs. ACTOR_NUM_NODES>1 replicates that layout on every node.
+# NUM_NODES Ray nodes with GPUS_PER_NODE GPUs each. The trainer takes
+# ACTOR_NUM_NODES × ACTOR_NUM_GPUS_PER_NODE of them; every remaining GPU serves
+# an SGLang engine unless ROLLOUT_NUM_GPUS is set. Generation is usually the
+# bottleneck, so give it the larger share (e.g. 2 nodes: 4 train / 12 serve).
+NUM_NODES="${NUM_NODES:-1}"
+GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')}"
 ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
 ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-4}"
-ROLLOUT_NUM_GPUS_PER_NODE="${ROLLOUT_NUM_GPUS_PER_NODE:-4}"
-ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-$((ROLLOUT_NUM_GPUS_PER_NODE * ACTOR_NUM_NODES))}"
+ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-$((NUM_NODES * GPUS_PER_NODE - ACTOR_NUM_NODES * ACTOR_NUM_GPUS_PER_NODE))}"
+[ "${ROLLOUT_NUM_GPUS}" -ge 1 ] || { echo "ERROR: no GPUs left for rollout (${NUM_NODES}×${GPUS_PER_NODE} total, ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} train)"; exit 1; }
 ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
 TP_SIZE="${TP_SIZE:-2}"
-CONTEXT_PARALLEL_SIZE="${CONTEXT_PARALLEL_SIZE:-1}"   # per-trace cap = MAX_TOKENS_PER_GPU × CP
+CONTEXT_PARALLEL_SIZE="${CONTEXT_PARALLEL_SIZE:-1}"   # per-trace cap = MAX_TOKENS_PER_GPU × CP; TP×CP must divide the actor GPUs
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-16}"
 MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-30000}"     # 16384 fits H100-80GB with the 4B model
@@ -147,7 +151,7 @@ Polar rollout/gateway ${POLAR_ROLLOUT_URL} / ${POLAR_GATEWAY_URL} (bind ${POLAR_
 SGLang router:        ${SGLANG_ROUTER_BASE_URL}
 Apptainer:            ${POLAR_APPTAINER_BIN}; images ${APPTAINER_IMAGE_DIR}
 Model / args:         ${HF_CHECKPOINT} / ${MODEL_ARGS_FILE}
-Layout:               ${ACTOR_NUM_NODES} node(s) × (${ACTOR_NUM_GPUS_PER_NODE} train + ${ROLLOUT_NUM_GPUS_PER_NODE} rollout GPUs); TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}; ${MAX_TOKENS_PER_GPU} tok/GPU
+Layout:               ${NUM_NODES} node(s) × ${GPUS_PER_NODE} GPUs: train ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}), rollout ${ROLLOUT_NUM_GPUS} engines GPUs; ${MAX_TOKENS_PER_GPU} tok/GPU
 Run id / save dir:    ${RUN_ID} / ${SAVE_DIR}
 INFO
 
@@ -174,21 +178,21 @@ curl -sf "http://127.0.0.1:${POLAR_ROLLOUT_PORT}/health" >/dev/null || { echo "P
 
 # ── Step 2: Ray + Slime (SGLang engines + training) ────────────────
 # The head registers only its local GPUs; other nodes join via ray_worker_join.sh.
-RAY_NUM_GPUS="${RAY_NUM_GPUS:-$((ACTOR_NUM_GPUS_PER_NODE + ROLLOUT_NUM_GPUS_PER_NODE))}"
+RAY_NUM_GPUS="${RAY_NUM_GPUS:-${GPUS_PER_NODE}}"
 echo "=== Starting Ray head on ${RAY_HEAD_IP} (${RAY_NUM_GPUS} local GPUs, gcs :${RAY_GCS_PORT}) ==="
 ray stop --force 2>/dev/null || true
 sleep 1
 ray start --head --node-ip-address "$RAY_HEAD_IP" --port "$RAY_GCS_PORT" --dashboard-port "$RAY_DASHBOARD_PORT" \
     --num-gpus "$RAY_NUM_GPUS" --disable-usage-stats
 
-if [ "${ACTOR_NUM_NODES}" -gt 1 ]; then
+if [ "${NUM_NODES}" -gt 1 ]; then
     RAY_JOIN_TIMEOUT="${RAY_JOIN_TIMEOUT:-900}"
-    echo "=== Waiting for ${ACTOR_NUM_NODES} Ray nodes (timeout ${RAY_JOIN_TIMEOUT}s) ==="
+    echo "=== Waiting for ${NUM_NODES} Ray nodes (timeout ${RAY_JOIN_TIMEOUT}s) ==="
     deadline=$((SECONDS + RAY_JOIN_TIMEOUT))
     while :; do
         alive="$("${PYTHON_BIN}" -c 'import ray; ray.init(address="auto", logging_level="ERROR"); print(sum(1 for n in ray.nodes() if n["Alive"]))' 2>/dev/null || echo 0)"
-        [ "${alive}" -ge "${ACTOR_NUM_NODES}" ] && { echo "Ray cluster: ${alive} nodes alive"; break; }
-        [ "${SECONDS}" -ge "${deadline}" ] && { echo "ERROR: only ${alive}/${ACTOR_NUM_NODES} Ray nodes joined within ${RAY_JOIN_TIMEOUT}s"; exit 1; }
+        [ "${alive}" -ge "${NUM_NODES}" ] && { echo "Ray cluster: ${alive} nodes alive"; break; }
+        [ "${SECONDS}" -ge "${deadline}" ] && { echo "ERROR: only ${alive}/${NUM_NODES} Ray nodes joined within ${RAY_JOIN_TIMEOUT}s"; exit 1; }
         sleep 10
     done
 fi

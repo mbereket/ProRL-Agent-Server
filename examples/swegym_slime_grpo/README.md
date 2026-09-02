@@ -67,8 +67,11 @@ companion patch; the `26.04-alpha.rc1` tag no longer ships a module slime import
 
 ## Multi-node
 
-Same per-node layout on every node; TP stays intra-node and context
-parallelism spans nodes so long traces fit (`per-trace cap = MAX_TOKENS_PER_GPU × CP`).
+The trainer takes `ACTOR_NUM_NODES × ACTOR_NUM_GPUS_PER_NODE` GPUs and every
+other GPU in the Ray cluster serves an SGLang engine. Generation is normally
+the bottleneck (see `perf/wait_time_ratio`), so the default on 2 nodes is
+4 train / 12 serve. Long traces fit via context parallelism
+(`per-trace cap = MAX_TOKENS_PER_GPU × CP`; TP × CP must divide the actor GPUs).
 
 **Slurm:**
 
@@ -84,11 +87,11 @@ This runs `multinode/head_entry.sh` on the first node, which `srun`s
 `bash multinode/ray_worker_join.sh <head-ip>`; on the head run
 
 ```bash
-ACTOR_NUM_NODES=2 RAY_HEAD_IP=<head-ip> POLAR_BIND_HOST=0.0.0.0 POLAR_PUBLIC_HOST=<head-ip> \
+NUM_NODES=2 RAY_HEAD_IP=<head-ip> POLAR_BIND_HOST=0.0.0.0 POLAR_PUBLIC_HOST=<head-ip> \
   bash examples/swegym_slime_grpo/launch_e2e.sh
 ```
 
-`run.sh` waits for all `ACTOR_NUM_NODES` Ray nodes before submitting the job.
+`run.sh` waits for all `NUM_NODES` Ray nodes before submitting the job.
 
 ## Knobs
 
@@ -98,7 +101,8 @@ All are environment variables with the single-node defaults shown.
 |---|---|---|
 | `WORKROOT` | `<repo>/tmp` | Root for checkouts, caches, toolchains, checkpoints |
 | `HF_CHECKPOINT`, `MODEL_ARGS_FILE` | `Qwen/Qwen3.5-4B`, `model_args.sh` | Model; use `model_args_9b.sh` for Qwen3.5-9B (`TP_SIZE=4`) |
-| `ACTOR_NUM_NODES`, `ACTOR_NUM_GPUS_PER_NODE`, `ROLLOUT_NUM_GPUS_PER_NODE` | 1, 4, 4 | Node count and per-node train/serve split |
+| `NUM_NODES`, `GPUS_PER_NODE` | 1, detected | Ray cluster size |
+| `ACTOR_NUM_NODES`, `ACTOR_NUM_GPUS_PER_NODE`, `ROLLOUT_NUM_GPUS` | 1, 4, all remaining | Trainer GPUs and engine GPUs |
 | `TP_SIZE`, `CONTEXT_PARALLEL_SIZE` | 2, 1 | Megatron parallelism (`head_entry.sh` defaults CP to all train GPUs / TP) |
 | `MAX_TOKENS_PER_GPU`, `SGLANG_CONTEXT_LENGTH` | 30000, 50000 | 16384 is the safe value on H100-80GB for the 4B model |
 | `ROLLOUT_MAX_PROMPT_LEN`, `ROLLOUT_MAX_RESPONSE_LEN` | 32000, 16000 | Slime rollout length caps |
