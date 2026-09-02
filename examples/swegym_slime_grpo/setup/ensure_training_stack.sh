@@ -10,9 +10,9 @@
 # Idempotent: each component is skipped when importable. Ends with a hard gate.
 # Sourced by launch_e2e.sh after ensure_cuda_userspace.sh and the editable installs.
 set -euo pipefail
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
-source "${SCRIPT_DIR}/common.sh"
+source "${SETUP_DIR}/common.sh"
 
 TE_VERSION_CU13="${TE_VERSION_CU13:-2.14.0}"
 TE_VERSION_CU12="${TE_VERSION_CU12:-2.5.0}"
@@ -58,7 +58,7 @@ else
 fi
 if [ "${cuda_major}" = 13 ]; then
     # Enforced by UV_OVERRIDE (setup/constraints.txt); apply to an existing venv too.
-    want="$(grep -E '^nvidia-cublas==' "${SCRIPT_DIR}/constraints.txt" | cut -d= -f3)"
+    want="$(grep -E '^nvidia-cublas==' "${SETUP_DIR}/constraints.txt" | cut -d= -f3)"
     [ "$(pip_version nvidia-cublas)" = "${want}" ] || uv pip install --python "${PYTHON_BIN}" "nvidia-cublas==${want}"
 fi
 

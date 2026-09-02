@@ -7,9 +7,9 @@
 # preflight verified). Exports POLAR_APPTAINER_BIN for run.sh and image prep.
 # Sourced by launch_e2e.sh.
 set -euo pipefail
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
-source "${SCRIPT_DIR}/common.sh"
+source "${SETUP_DIR}/common.sh"
 
 APPTAINER_VERSION="${APPTAINER_VERSION:-1.5.3}"
 APPTAINER_INSTALLER_URL="https://raw.githubusercontent.com/apptainer/apptainer/v${APPTAINER_VERSION}/tools/install-unprivileged.sh"

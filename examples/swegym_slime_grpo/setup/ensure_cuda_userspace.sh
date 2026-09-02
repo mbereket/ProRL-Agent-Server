@@ -13,9 +13,9 @@
 # Always ends with a hard gate: torch must see the GPU and run a matmul.
 # Sourced by launch_e2e.sh after install_python_stack.sh.
 set -euo pipefail
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
-source "${SCRIPT_DIR}/common.sh"
+source "${SETUP_DIR}/common.sh"
 
 CUDA_COMPAT_VERSION="${CUDA_COMPAT_VERSION:-590.48.01_cuda13.1}"
 CUDA_COMPAT_URL="${CUDA_COMPAT_URL:-https://developer.download.nvidia.com/compute/cuda/redist/cuda_compat/linux-x86_64/cuda_compat-linux-x86_64-${CUDA_COMPAT_VERSION}-archive.tar.xz}"

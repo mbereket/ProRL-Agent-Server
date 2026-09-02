@@ -12,9 +12,9 @@
 #   - The whole torch family must share one local-version tag (+cu130).
 # Sourced by launch_e2e.sh after preflight (needs NEED_UV, WORKROOT, PROJECT_ROOT).
 set -euo pipefail
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
-source "${SCRIPT_DIR}/common.sh"
+source "${SETUP_DIR}/common.sh"
 
 TORCH_BACKEND="${TORCH_BACKEND:-cu130}"
 SGLANG_SPEC="${SGLANG_SPEC:-sglang==0.5.13}"
@@ -30,7 +30,7 @@ if [ "${NEED_UV:-0}" = 1 ]; then
 fi
 info "$(uv --version)"
 # Every uv call below (and in launch_e2e.sh) honors these overrides.
-emit_export UV_OVERRIDE "${SCRIPT_DIR}/constraints.txt"
+emit_export UV_OVERRIDE "${SETUP_DIR}/constraints.txt"
 
 log "python stack: venv ${VENV_DIR} (python ${PYTHON_VERSION})"
 if [ ! -x "${VENV_DIR}/bin/python" ]; then

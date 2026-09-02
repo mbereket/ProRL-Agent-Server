@@ -13,11 +13,11 @@
 # Nothing here installs or modifies anything.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
-source "${SCRIPT_DIR}/common.sh"
+source "${SETUP_DIR}/common.sh"
 
-PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "${SCRIPT_DIR}/../../.." && pwd)}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "${SETUP_DIR}/../../.." && pwd)}"
 WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"
 
 # The pinned stack (sglang 0.5.13 → cuda-python 13.x, flash-attn-4) is CUDA-13
