@@ -16,7 +16,7 @@
 #
 # Multi-node: set NUM_NODES, RAY_HEAD_IP=<routable head IP>,
 # POLAR_BIND_HOST=0.0.0.0, POLAR_PUBLIC_HOST=<head IP>, and start
-# `multinode/ray_worker_join.sh` on every other node (multinode/head_entry.sh
+# `internal/ray_worker_join.sh` on every other node (internal/head_entry.sh
 # does all of this under slurm). This script always runs on the head.
 #
 # Weight sync: native GPU-to-GPU via NCCL every training step. Slime manages the
@@ -29,9 +29,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"
-# Environment written by launch.sh (CUDA compat libs, toolkit, venv, apptainer).
+# Environment written by pipeline.sh (CUDA compat libs, toolkit, venv, apptainer).
 ENV_FILE="${ENV_FILE:-${WORKROOT}/env.sh}"
 # shellcheck disable=SC1090
 [ -f "${ENV_FILE}" ] && source "${ENV_FILE}"
@@ -76,7 +76,7 @@ if is_path_like "$HF_CHECKPOINT" && [ ! -e "$HF_CHECKPOINT" ]; then
 fi
 if [ ! -f "$REF_LOAD/latest_checkpointed_iteration.txt" ]; then
     echo "ERROR: Megatron torch_dist checkpoint not found at $REF_LOAD"
-    echo "  Run bash examples/harbor_slime_grpo/convert_weights.sh first."; exit 1
+    echo "  Run bash examples/harbor_slime_grpo/internal/convert_weights.sh first."; exit 1
 fi
 # MODEL_ARGS_FILE: model_args_9b.sh (Qwen3.5-9B, default) or model_args.sh (4B); relative to this dir or absolute.
 MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-model_args_9b.sh}"
@@ -327,7 +327,7 @@ ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT}" \
     --eps-clip 0.2 \
     --eps-clip-high 0.28 \
     --optimizer adam \
-    --lr 1e-6 \
+    --lr "${LR:-1e-6}" \
     --lr-decay-style constant \
     --weight-decay 0.1 \
     --adam-beta1 0.9 \

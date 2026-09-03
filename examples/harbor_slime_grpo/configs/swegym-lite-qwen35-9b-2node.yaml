@@ -1,0 +1,57 @@
+# Qwen3.5-9B GRPO on SWE-Gym-Lite (230 Python bug-fix tasks in prebuilt
+# SWE-Gym images), two 8-GPU nodes (node A: TP4 x CP2 trainer, node B: 8
+# SGLang engines). Synchronous.
+#
+# Materialize the tasks once:
+#   python datasets/swegym_lite.py --output $WORKROOT/tasks/swegym-lite
+# then:
+#   bash slurm_launch.sh --config configs/swegym-lite-qwen35-9b-2node.yaml --partition <p> --account <a>
+name: swegym-lite-qwen35-9b-2node
+
+tasks:
+  dir: ${WORKROOT}/tasks/swegym-lite
+  # all 230 tasks; set n/seed for a subset
+
+harness:
+  name: mini_swe_agent
+  model_name: openai/gpt-5.4
+  settings:
+    step_limit: 64
+    cost_limit: 0
+  session_timeout: 3000                  # agent 1800 + verifier 600 + margin (task.toml values)
+  request_timeout: 3600
+  max_run_workers: 16
+  max_async_level: 1
+
+model:
+  hf_checkpoint: Qwen/Qwen3.5-9B
+  model_args_file: model_args_9b.sh
+  end_of_turn_token_id: 248046
+
+cluster:
+  num_nodes: 2
+  actor_num_gpus: 8
+  tp_size: 4
+  context_parallel_size: 2
+
+rollout:
+  batch_size: 8
+  n_samples_per_prompt: 16
+  num_epoch: 4                           # 230 tasks / 8 per step ≈ 29 steps per epoch
+  max_prompt_len: 24000
+  max_response_len: 8000
+  sglang_context_length: 32768
+
+training:
+  sync: true
+  max_tokens_per_gpu: 16384              # x CP2 = 32768-token traces
+  lr: 1e-6
+  use_kl_loss: false
+  grpo_std_normalization: false
+  group_id_scope: trajectory
+  timeout_reward_zero: true
+  drop_zero_variance_groups: true
+  save_interval: 5
+
+wandb:
+  project: harbor-slime-grpo

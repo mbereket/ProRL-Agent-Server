@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Pipeline for the Harbor Slime GRPO example. Not run by hand: launch.sh (or
+# head_entry.sh on slurm) exports the run config as environment variables and
+# execs this.
+#
+# Order: preflight → python stack (uv sync of setup/stack/uv.lock) → CUDA user
+# space → apptainer → slime / Megatron checkouts + patches → editable overlay →
+# training stack → sglang patch → tasks → images + harness → HF snapshot →
+# weight conversion → Polar templates → run.sh.
+# Every step is idempotent; re-running resumes where the previous run stopped.
+# DRY_RUN=1 (launch.sh --dry-run) skips everything that touches GPUs, images or
+# checkpoints and still builds the prompt list and renders the templates.
+#
+# Placement: WORKROOT (default: <repo>/tmp) holds everything this script
+# creates. Cache variables you already export (HF_HOME, UV_CACHE_DIR,
+# APPTAINER_CACHEDIR, ...) are left alone; only unset ones are pointed under
+# WORKROOT. SETUP_ENV=0 skips preflight and all setup/ scripts (bring your own
+# venv with CUDA torch, TE, and apptainer; PYTHON_BIN must then point at it).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+cd "${PROJECT_ROOT}"
+export PROJECT_ROOT
+export WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"
+export ENV_FILE="${ENV_FILE:-${WORKROOT}/env.sh}"
+export SETUP_ENV="${SETUP_ENV:-1}"
+DRY_RUN="${DRY_RUN:-0}"
+mkdir -p "${WORKROOT}"
+
+# ── Caches: fill only what is unset ────────────────────────────────────────
+export HF_HOME="${HF_HOME:-${WORKROOT}/hf_home}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-${WORKROOT}/uv_cache}"
+export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-${WORKROOT}/apptainer_cache}"
+export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-${WORKROOT}/apptainer_tmp}"
+mkdir -p "${HF_HOME}" "${UV_CACHE_DIR}" "${APPTAINER_CACHEDIR}" "${APPTAINER_TMPDIR}"
+
+# ── Pins ───────────────────────────────────────────────────────────────────
+# Python packages are pinned in setup/stack/pyproject.toml + uv.lock. The
+# checkouts below are installed over that lock as editables (--no-deps) because
+# they carry local patches.
+SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
+SLIME_REPO="${SLIME_REPO:-https://github.com/THUDM/slime.git}"
+SLIME_REF="${SLIME_REF:-v0.3.0}"
+MEGATRON_DIR="${MEGATRON_DIR:-${WORKROOT}/Megatron-LM-slime-${SLIME_REF}}"
+MEGATRON_REPO="${MEGATRON_REPO:-https://github.com/NVIDIA/Megatron-LM.git}"
+MEGATRON_REF="${MEGATRON_REF:-1dcf0dafa884ad52ffb243625717a3471643e087}"
+MEGATRON_PATCH="${MEGATRON_PATCH:-${SLIME_DIR}/docker/patch/latest/megatron.patch}"
+
+# ── Run placement (from the run config via launch.sh) ──────────────────────
+: "${RUN_NAME:?pipeline.sh must be started by launch.sh}"
+export RUN_ID="${RUN_ID:-${RUN_NAME}}"
+export RUN_DIR="${WORKROOT}/harbor_slime_grpo/${RUN_ID}"
+ASSET_DIR="${RUN_DIR}/assets"
+mkdir -p "${ASSET_DIR}"
+export HARNESS_DIR="${HARNESS_DIR_CFG:-${WORKROOT}/harbor_harness}"
+export APPTAINER_IMAGE_DIR="${APPTAINER_IMAGE_DIR:-${WORKROOT}/harbor_sif_images}"
+export HARBOR_DATASET_DIR="${TASKS_MOUNT_ROOT:-${TASKS_DIR}}"
+export TORCH_DIST_DIR="${TORCH_DIST_DIR_CFG:-${TORCH_DIST_DIR:-${WORKROOT}/checkpoints/${HF_CHECKPOINT##*/}_torch_dist}}"
+export REF_LOAD="${TORCH_DIST_DIR}"
+export SAVE_ROOT="${SAVE_ROOT:-${WORKROOT}/ckpt/harbor_slime_grpo}"
+
+INSTALL_EDITABLE="${INSTALL_EDITABLE:-1}"
+INSTALL_TRAINING_STACK="${INSTALL_TRAINING_STACK:-1}"
+APPLY_SGLANG_PATCH="${APPLY_SGLANG_PATCH:-1}"
+PREPARE_IMAGES="${PREPARE_IMAGES:-1}"
+PREPARE_HARNESS="${PREPARE_HARNESS:-1}"
+APPTAINER_PREPARE_JOBS="${APPTAINER_PREPARE_JOBS:-4}"
+CONVERT_WEIGHTS="${CONVERT_WEIGHTS:-auto}"
+RUN_TRAINING="${RUN_TRAINING:-1}"
+
+# shellcheck source=./setup/common.sh
+source "${SCRIPT_DIR}/setup/common.sh"
+
+if [ "${DRY_RUN}" = 0 ]; then
+    # ── Environment ────────────────────────────────────────────────────────
+    if [ "${SETUP_ENV}" = 1 ]; then
+        : > "${ENV_FILE}"
+        # shellcheck source=./setup/preflight.sh
+        source "${SCRIPT_DIR}/setup/preflight.sh"
+        # shellcheck source=./setup/install_python_stack.sh
+        source "${SCRIPT_DIR}/setup/install_python_stack.sh"
+        # shellcheck source=./setup/ensure_cuda_userspace.sh
+        source "${SCRIPT_DIR}/setup/ensure_cuda_userspace.sh"
+        # shellcheck source=./setup/ensure_apptainer.sh
+        source "${SCRIPT_DIR}/setup/ensure_apptainer.sh"
+    else
+        # shellcheck disable=SC1090
+        [ -f "${ENV_FILE}" ] && source "${ENV_FILE}"
+        PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python3}"
+        [ -x "${PYTHON_BIN}" ] || die "SETUP_ENV=0 but PYTHON_BIN=${PYTHON_BIN} is not executable"
+        export PYTHON_BIN
+        export POLAR_APPTAINER_BIN="${POLAR_APPTAINER_BIN:-$(command -v apptainer || command -v singularity || true)}"
+        [ -x "${POLAR_APPTAINER_BIN}" ] || die "SETUP_ENV=0 but no apptainer binary (set POLAR_APPTAINER_BIN)"
+    fi
+    PYTHON_BIN_DIR="$(cd -- "$(dirname -- "${PYTHON_BIN}")" &>/dev/null && pwd)"
+    export PATH="${PYTHON_BIN_DIR}:${PATH}"
+
+    # ── External checkouts ─────────────────────────────────────────────────
+    clone_retry() {   # clone_retry NAME REPO REF DEST — REF may be a branch/tag or a commit sha
+        local name="$1" repo="$2" ref="$3" dest="$4" i
+        if [ -d "${dest}/.git" ]; then info "${name} checkout exists: ${dest}"; return 0; fi
+        [ -e "${dest}" ] && die "${name} path exists but is not a git checkout: ${dest}"
+        for i in 1 2 3 4 5; do
+            if [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then
+                mkdir -p "${dest}" && git -C "${dest}" init -q && git -C "${dest}" remote add origin "${repo}" \
+                  && git -C "${dest}" fetch -q --depth 1 origin "${ref}" && git -C "${dest}" checkout -q FETCH_HEAD && return 0
+            else
+                git clone -q --branch "${ref}" --depth 1 "${repo}" "${dest}" && return 0
+            fi
+            info "clone of ${name} failed (try ${i}/5); retrying in 20s"; rm -rf "${dest}"; sleep 20
+        done
+        die "could not clone ${name} from ${repo}"
+    }
+    log "checkouts"
+    clone_retry Slime "${SLIME_REPO}" "${SLIME_REF}" "${SLIME_DIR}"
+    clone_retry Megatron-LM "${MEGATRON_REPO}" "${MEGATRON_REF}" "${MEGATRON_DIR}"
+    if [ -f "${MEGATRON_PATCH}" ]; then
+        if git -C "${MEGATRON_DIR}" apply --reverse --check "${MEGATRON_PATCH}" >/dev/null 2>&1; then
+            info "slime megatron.patch already applied"
+        else
+            git -C "${MEGATRON_DIR}" apply --3way "${MEGATRON_PATCH}" && info "applied slime megatron.patch"
+        fi
+    fi
+    SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_router_tokens.sh"
+    export SLIME_DIR MEGATRON_DIR
+
+    # ── Editable overlay ───────────────────────────────────────────────────
+    # The patched checkouts replace the locked slime (and add Megatron) without
+    # touching the resolved dependency set. Always re-applied: a `uv sync` in
+    # install_python_stack.sh restores the locked slime.
+    if [ "${INSTALL_EDITABLE}" = 1 ]; then
+        log "editable overlay (slime, Megatron-LM)"
+        uv pip install --python "${PYTHON_BIN}" --no-deps -e "${SLIME_DIR}" -e "${MEGATRON_DIR}"
+    fi
+    if [ "${INSTALL_TRAINING_STACK}" = 1 ] && [ "${SETUP_ENV}" = 1 ]; then
+        # shellcheck source=./setup/ensure_training_stack.sh
+        source "${SCRIPT_DIR}/setup/ensure_training_stack.sh"
+    fi
+    if [ "${APPLY_SGLANG_PATCH}" = 1 ]; then
+        log "sglang token-metadata patch"
+        VIRTUAL_ENV="$(dirname "${PYTHON_BIN_DIR}")" bash "${PROJECT_ROOT}/scripts/patch/patch_sglang_0513_token_metadata.sh"
+    fi
+else
+    # Dry run: any python with pyyaml (the venv if it exists).
+    PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python3}"
+    [ -x "${PYTHON_BIN}" ] && "${PYTHON_BIN}" -c 'import yaml' 2>/dev/null || PYTHON_BIN="$(command -v python3)"
+fi
+
+# ── Tasks → prompts + image list ───────────────────────────────────────────
+log "tasks"
+SELECT=(--mount-root "${HARBOR_DATASET_DIR}" --seed "${TASKS_SEED}")
+[ -n "${TASKS_N}" ] && SELECT+=(--n "${TASKS_N}")
+[ -n "${TASK_IDS_FILE}" ] && SELECT+=(--task-ids-file "${TASK_IDS_FILE}")
+[ -n "${EXCLUDE_IDS_FILE}" ] && SELECT+=(--exclude-ids-file "${EXCLUDE_IDS_FILE}")
+"${PYTHON_BIN}" "${SCRIPT_DIR}/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" \
+    --output-jsonl "${ASSET_DIR}/train.jsonl" --output-images "${ASSET_DIR}/images.txt" "${SELECT[@]}"
+export PROMPT_DATA="${ASSET_DIR}/train.jsonl"
+
+if [ "${DRY_RUN}" = 0 ]; then
+    if [ "${PREPARE_IMAGES}" = 1 ]; then
+        log "task images (SIF)"
+        bash "${SCRIPT_DIR}/prepare_images.sh" "${ASSET_DIR}/images.txt" "${APPTAINER_IMAGE_DIR}" "${APPTAINER_PREPARE_JOBS}"
+    fi
+    if [ "${PREPARE_HARNESS}" = 1 ]; then
+        log "harness ${HARNESS}"
+        bash "${SCRIPT_DIR}/prepare_harness.sh" "${HARNESS_DIR}" "${HARNESS}"
+    fi
+
+    # ── Checkpoint ─────────────────────────────────────────────────────────
+    case "${HF_CHECKPOINT}" in
+        /*|./*|../*|~*) ;;
+        *)  log "HF snapshot ${HF_CHECKPOINT}"
+            # mbridge reads *.safetensors from the local cache and does not download.
+            "${PYTHON_BIN_DIR}/hf" download "${HF_CHECKPOINT}" >/dev/null && info "present in ${HF_HOME}" ;;
+    esac
+    if [ "${CONVERT_WEIGHTS}" = 1 ] || { [ "${CONVERT_WEIGHTS}" = auto ] && [ ! -f "${REF_LOAD}/latest_checkpointed_iteration.txt" ]; }; then
+        log "HF → torch_dist conversion"
+        bash "${SCRIPT_DIR}/convert_weights.sh"
+    fi
+    if [ -n "${WANDB_API_KEY:-}" ]; then
+        "${PYTHON_BIN}" -c 'import os, wandb; wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)' 2>/dev/null || true
+    fi
+fi
+
+# ── Polar templates: @TOKENS@ from the run config, ${VARS} later by run.sh ──
+log "polar templates"
+export POLAR_CONFIG_TEMPLATE="${ASSET_DIR}/polar_config.yaml"
+export TOPOLOGY_TEMPLATE="${ASSET_DIR}/topology.yaml"
+"${PYTHON_BIN}" - "${SCRIPT_DIR}" "${ASSET_DIR}" <<'PY'
+import json, os, sys, yaml
+tpl_dir, out_dir = sys.argv[1:3]
+env = os.environ
+tokens = {
+    "@HARNESS@": env["HARNESS"], "@HARNESS_MODEL_NAME@": env["HARNESS_MODEL_NAME"],
+    "@HARNESS_DIR@": env["HARNESS_DIR"], "@HARBOR_DATASET_DIR@": env["HARBOR_DATASET_DIR"],
+    "@RUN_NAME@": env["RUN_NAME"], "@GROUP_ID_SCOPE@": env["GROUP_ID_SCOPE"],
+}
+typed = {
+    "@SESSION_TIMEOUT@": int(env["SESSION_TIMEOUT"]), "@REQUEST_TIMEOUT@": int(env["REQUEST_TIMEOUT"]),
+    "@MAX_ASYNC_LEVEL@": int(env["MAX_ASYNC_LEVEL"]), "@EOT_TOKEN_ID@": int(env["EOT_TOKEN_ID"]),
+    "@MAX_RUN_WORKERS@": int(env["MAX_RUN_WORKERS"]),
+    "@TIMEOUT_REWARD_ZERO@": env["TIMEOUT_REWARD_ZERO"] == "1",
+    "@DROP_ZERO_VARIANCE_GROUPS@": env["DROP_ZERO_VARIANCE_GROUPS"] == "1",
+}
+def fill(node):
+    if isinstance(node, dict): return {k: fill(v) for k, v in node.items()}
+    if isinstance(node, list): return [fill(v) for v in node]
+    if isinstance(node, str):
+        if node in typed: return typed[node]
+        for k, v in tokens.items(): node = node.replace(k, v)
+    return node
+for name in ("polar_config.yaml", "topology.yaml"):
+    doc = fill(yaml.safe_load(open(os.path.join(tpl_dir, name))))
+    if name == "polar_config.yaml":
+        doc["polar_task_template"]["agent"]["settings"] = json.loads(env.get("HARNESS_SETTINGS_JSON") or "{}")
+    with open(os.path.join(out_dir, name), "w") as f:
+        f.write(f"# rendered by pipeline.sh from {os.path.join(tpl_dir, name)} and {env['RUN_CONFIG_PATH']}\n")
+        yaml.safe_dump(doc, f, sort_keys=False, default_flow_style=False, width=200)
+print(f"rendered polar_config.yaml + topology.yaml -> {out_dir}")
+PY
+chmod 600 "${POLAR_CONFIG_TEMPLATE}"
+export PREPARE_IMAGES=0
+
+cat <<INFO
+
+Prompts:    $(wc -l < "${PROMPT_DATA}" | tr -d " ") from ${TASKS_DIR}; $(wc -l < "${ASSET_DIR}/images.txt" | tr -d " ") image(s)
+Harness:    ${HARNESS} from ${HARNESS_DIR}
+Templates:  ${POLAR_CONFIG_TEMPLATE}, ${TOPOLOGY_TEMPLATE}
+Save:       ${SAVE_ROOT}/${RUN_ID}
+INFO
+if [ "${DRY_RUN}" = 1 ]; then
+    echo "--- rendered polar_config.yaml ---"; cat "${POLAR_CONFIG_TEMPLATE}"; exit 0
+fi
+[ "${RUN_TRAINING}" = 1 ] || exit 0
+log "run.sh"
+exec bash "${SCRIPT_DIR}/run.sh"

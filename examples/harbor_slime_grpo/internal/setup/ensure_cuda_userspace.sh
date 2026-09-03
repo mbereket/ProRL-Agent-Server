@@ -8,10 +8,12 @@
 #   NEED_CUDA_TOOLKIT=1 → conda-forge CUDA toolkit (nvcc, NVTX headers) in a
 #                         pixi environment under WORKROOT, for the Transformer
 #                         Engine source build.
-# Both are pinned to 13.1: TE 2.14's cu13 core needs a ≥13.1 cuBLASLt and the
-# cu130 torch runs on any 13.x user space (minor-version compatibility).
+# Toolkit is 13.0 to match the locked torch (cu130: pip cudart/cuBLAS 13.0),
+# so the TE bindings compile against the same CUDA minor they run on. The
+# compat libraries are a driver component, where newer is strictly more
+# capable: 13.1 is the oldest CUDA-13 compat package NVIDIA publishes.
 # Always ends with a hard gate: torch must see the GPU and run a matmul.
-# Sourced by launch_e2e.sh after install_python_stack.sh.
+# Sourced by pipeline.sh after install_python_stack.sh.
 set -euo pipefail
 SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
@@ -19,7 +21,7 @@ source "${SETUP_DIR}/common.sh"
 
 CUDA_COMPAT_VERSION="${CUDA_COMPAT_VERSION:-590.48.01_cuda13.1}"
 CUDA_COMPAT_URL="${CUDA_COMPAT_URL:-https://developer.download.nvidia.com/compute/cuda/redist/cuda_compat/linux-x86_64/cuda_compat-linux-x86_64-${CUDA_COMPAT_VERSION}-archive.tar.xz}"
-CUDA_TOOLKIT_VERSION="${CUDA_TOOLKIT_VERSION:-13.1}"
+CUDA_TOOLKIT_VERSION="${CUDA_TOOLKIT_VERSION:-13.0}"
 
 if [ "${NEED_CUDA_COMPAT:-0}" = 1 ]; then
     log "cuda: forward-compat libraries ${CUDA_COMPAT_VERSION}"

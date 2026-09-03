@@ -33,26 +33,34 @@ and the image list; `prepare_images.sh` pulls the SIFs; Polar mounts the task
 directory read-only at `/harbor_data`, runs `setup.sh` if present, runs the agent,
 then uploads `tests/` and runs `test.sh` (the agent never sees the tests).
 
-## Quick start (TMax-15k)
+## Quick start
+
+Two datasets ship with the example. **SWE-Gym-Lite** (230 Python bug-fix tasks
+from 11 repositories, prebuilt images, the Harbor SWE-Gym adapter's format) is
+the smaller starting point; **TMax-15k** (14.6k terminal tasks) is the larger
+reference set.
 
 ```bash
 export WORKROOT=/shared/fs/harbor-grpo            # shared by all nodes
 export WANDB_API_KEY=<key>                        # optional
 
-# 1. Materialize the task directory (HF dataset: prompts, tests, prebuilt image tags)
-uv run python examples/harbor_slime_grpo/datasets/tmax15k.py --output $WORKROOT/tasks/tmax15k
+# 1. Materialize a task directory (needs the venv: run launch.sh once with RUN_TRAINING=0, or any python with `datasets`)
+.venv/bin/python examples/harbor_slime_grpo/datasets/swegym_lite.py --output $WORKROOT/tasks/swegym-lite
+.venv/bin/python examples/harbor_slime_grpo/datasets/tmax15k.py --output $WORKROOT/tasks/tmax15k
 
-# 2. Check the plan without touching GPUs
-bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/tmax15k-qwen35-9b-2node.yaml --dry-run
+# 2. Check what a config resolves to (prompts, rendered Polar config) without touching GPUs
+bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/swegym-lite-smoke-1node.yaml --dry-run
 
-# 3a. Single node smoke (environment setup, images, harness, checkpoint conversion, 2 steps)
-bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/tmax15k-smoke-1node.yaml
+# 3a. Single-node smoke (environment setup, images, harness, checkpoint conversion, 2 steps)
+bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/swegym-lite-smoke-1node.yaml
 
-# 3b. Two nodes under slurm
-bash examples/harbor_slime_grpo/multinode/sbatch_launch.sh \
-    --config examples/harbor_slime_grpo/configs/tmax15k-qwen35-9b-2node.yaml \
-    --nodes 2 --partition <p> --account <a>
+# 3b. Two nodes under slurm (node count comes from the config)
+bash examples/harbor_slime_grpo/slurm_launch.sh \
+    --config examples/harbor_slime_grpo/configs/swegym-lite-qwen35-9b-2node.yaml --partition <p> --account <a>
 ```
+
+Shipped configs: `swegym-lite-smoke-1node`, `swegym-lite-qwen35-9b-2node`,
+`tmax15k-smoke-1node`, `tmax15k-qwen35-9b-2node`.
 
 `launch.sh` is idempotent: environment setup, checkouts, image pulls and the
 checkpoint conversion are skipped when already present. Image pulls and the
@@ -61,35 +69,64 @@ run the launcher once on a login node with `RUN_TRAINING=0` to prepare assets.
 
 ## The run config
 
+A run is one YAML file in `configs/`. Every key has a default; `name` and
+`tasks.dir` are required; unknown keys are rejected. The sections mirror the
+swegym example (`model`, `cluster`, `rollout`, `training`, `eval`, `wandb`) plus
+the two Harbor-specific ones, `tasks` and `harness`.
+
 ```yaml
 name: tmax15k-qwen35-9b-2node
 tasks:
-  dir: ${WORKROOT}/tasks/tmax15k    # the task directory (env vars expand)
+  dir: ${WORKROOT}/tasks/tmax15k    # the task directory (env vars expand; relative to this file)
   n: 32                             # random sample of tasks (omit for all)
   seed: 0
   # task_ids_file / exclude_ids_file: one directory name or source_id per line
 harness:
   name: mini_swe_agent              # codex | opencode | claude_code | qwen_code | pi | hermes | mini_swe_agent
+  model_name: openai/gpt-5.4        # cosmetic; the gateway serves the trained model
   settings: {step_limit: 64, cost_limit: 0}   # passed to the Polar harness preset
+  session_timeout: 3000             # per-session budget: agent + verifier + margin
+  request_timeout: 3600
+  max_run_workers: 16
+  max_async_level: 1
 model:
   hf_checkpoint: Qwen/Qwen3.5-9B
-  model_args_file: model_args_9b.sh # model_args.sh for Qwen3.5-4B
+  model_args_file: model_args_9b.sh # Megatron args in internal/ (model_args.sh for Qwen3.5-4B)
   end_of_turn_token_id: 248046
-training:
-  sync: true                        # train.py (on-policy) or train_async.py (1 step off-policy + TIS)
-  tp_size: 4
+cluster:
+  num_nodes: 2
+  actor_num_gpus: 8                 # whole nodes when multi-node; every other GPU serves an engine
+  tp_size: 4                        # TP x CP must divide actor_num_gpus
   context_parallel_size: 2
-  actor_num_gpus: 8                 # whole nodes when multi-node; the rest serve
-  rollout_batch_size: 8             # prompts per step
+rollout:
+  batch_size: 8                     # prompts per step
   n_samples_per_prompt: 16
   num_epoch: 30
-  max_tokens_per_gpu: 16384         # trace cap = this x context_parallel_size
+  max_prompt_len: 24000
+  max_response_len: 8000
   sglang_context_length: 32768      # keep equal to the trace cap
-  ...                               # see configs/ for the full list and defaults
+training:
+  sync: true                        # train.py (on-policy) or train_async.py (1 step off-policy + TIS)
+  max_tokens_per_gpu: 16384         # longest trainable trace = this x context_parallel_size
+  lr: 1e-6
+  use_kl_loss: false
+  grpo_std_normalization: false     # false = mean-only advantages
+  group_id_scope: trajectory
+  timeout_reward_zero: true
+  drop_zero_variance_groups: true
+  save_interval: 5
+  extra_train_args: ""              # appended to the slime train script verbatim
+eval:
+  prompt_data: ""                   # "<name> <path.jsonl>" enables a held-out eval
+  interval: 10
+  n_samples_per_prompt: 1
+wandb:
+  project: harbor-slime-grpo
+  group: <name>
 ```
 
-`launch.sh --dry-run` prints every variable `run.sh` receives and the rendered
-Polar config, so the mapping is never hidden.
+`launch.sh --dry-run` prints every variable the pipeline receives, builds the
+prompt list and renders the Polar config, so the mapping is never hidden.
 
 ### Bring your own tasks
 
@@ -110,11 +147,11 @@ timeouts as 0 (`timeout_reward_zero`), both configurable.
 The trainer takes `actor_num_gpus` GPUs and every other GPU in the Ray cluster
 serves an SGLang engine. On more than one node the trainer must take whole nodes
 (slime v0.3.0 assigns engine addresses per node), so 2 nodes = 8 train / 8 serve,
-3 nodes = 8 train / 16 serve. `multinode/head_entry.sh <config>` runs on the first
-node: it starts `multinode/ray_worker_join.sh` on the others with `srun`, exports
+3 nodes = 8 train / 16 serve. `internal/head_entry.sh <config>` runs on the first
+node: it starts `internal/ray_worker_join.sh` on the others with `srun`, exports
 the head IP and bind hosts, then runs `launch.sh`. `run.sh` waits for all Ray
 nodes before submitting the job. Without slurm, run `ray_worker_join.sh <head-ip>`
-on each worker and `NUM_NODES=2 RAY_HEAD_IP=<ip> POLAR_BIND_HOST=0.0.0.0
+on each worker and `RAY_HEAD_IP=<ip> POLAR_BIND_HOST=0.0.0.0
 POLAR_PUBLIC_HOST=<ip> bash launch.sh <config>` on the head.
 
 Ports (`POLAR_ROLLOUT_PORT` 8080, `POLAR_GATEWAY_PORT` 8100, `SGLANG_ROUTER_PORT`
@@ -126,11 +163,11 @@ Ports (`POLAR_ROLLOUT_PORT` 8080, `POLAR_GATEWAY_PORT` 8100, `SGLANG_ROUTER_PORT
   `APPTAINER_IMAGE_DIR` (`$WORKROOT/harbor_sif_images`). `HARBOR_SIF_SEED_DIR`
   reuses SIFs from an existing Harbor cache. Docker Hub rate limits apply; set
   `APPTAINER_DOCKER_USERNAME/PASSWORD` for large pulls.
-- **Harness.** Built once by `prepare_harness.sh` into `$WORKROOT/harbor_harness`
+- **Harness.** Built once by `internal/prepare_harness.sh` into `$WORKROOT/harbor_harness`
   and bind-mounted read-only at the same path in every container, so task images
   need nothing preinstalled: Node CLIs under `node/`, mini-swe-agent as a uv tool
   with its own Python 3.12. No per-trial install, no egress from the sandbox.
-- **Container environment.** `polar_config.yaml` sets `HOME=/polar/session/home`,
+- **Container environment.** `internal/polar_config.yaml` sets `HOME=/polar/session/home`,
   prepends the harness to `PATH`, mounts `/harbor_data`, uses host networking, and
   writes to a host-backed overlay (Polar's Apptainer runtime). Edit the template
   for image-specific needs (extra `PATH` entries, `LD_LIBRARY_PATH`, GPUs).
@@ -169,15 +206,12 @@ paper (Table 13 and section 4.1):
 
 ## Files
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `launch.sh` | One entry: run config -> environment -> tasks/images/harness -> checkpoint -> `run.sh`; `--dry-run` |
-| `run.sh` | Polar services + Ray + Slime (`train.py` or `train_async.py`) |
-| `configs/` | Run configs (2-node reference, 1-node smoke) |
-| `datasets/tmax15k.py` | TMax-15k HF dataset -> task directory (the only TMax-specific file) |
-| `prepare_tasks.py` | Task directory -> prompt JSONL + image list, with sampling and id filters |
-| `prepare_images.sh`, `prepare_harness.sh` | SIF pulls; harness directory (Node CLIs, mini-swe-agent) |
-| `polar_config.yaml`, `topology.yaml` | Polar templates (`@TOKENS@` from the config, `${VARS}` from `run.sh`) |
-| `convert_weights.sh`, `model_args*.sh` | HF -> Megatron torch_dist; Qwen3.5-9B / 4B args |
-| `setup/` | Preflight and environment scripts (venv, CUDA user space, Apptainer, Transformer Engine) |
-| `multinode/` | `sbatch_launch.sh`, `head_entry.sh`, `ray_worker_join.sh` |
+| `launch.sh` | Entry point: `launch.sh configs/<run>.yaml [--dry-run]` |
+| `slurm_launch.sh` | Submit a config as a multi-node sbatch job (node count from the config) |
+| `configs/` | Run configs: 2-node reference and 1-node smoke per dataset |
+| `datasets/swegym_lite.py`, `datasets/swegym_test.sh.tmpl` | SWE-Gym / SWE-Gym-Lite HF dataset -> task directory, with the Harbor adapter's verifier |
+| `datasets/tmax15k.py` | TMax-15k HF dataset -> task directory |
+| `internal/` | Everything the launcher runs for you: `pipeline.sh`, `run.sh`, `convert_weights.sh`, `head_entry.sh`, `ray_worker_join.sh`, `prepare_tasks.py`, `prepare_images.sh`, `prepare_harness.sh`, Polar templates, Megatron model args |
+| `internal/setup/` | Preflight and environment scripts; `stack/` holds the locked python environment (shared recipe with the swegym example) |

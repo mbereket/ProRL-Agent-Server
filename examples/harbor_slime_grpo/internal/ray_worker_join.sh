@@ -2,7 +2,7 @@
 # Ray worker loop for non-head nodes: join the head's Ray cluster with this
 # node's GPUs and stay joined (re-join if Ray on the head restarts).
 #
-#   bash multinode/ray_worker_join.sh <head-ip> [gcs-port]
+#   bash internal/ray_worker_join.sh <head-ip> [gcs-port]
 #
 # Needs the same WORKROOT/ENV_FILE as the head (shared filesystem): it sources
 # ENV_FILE so CUDA compat libs, the venv and HF_HOME match the head exactly.
@@ -10,7 +10,7 @@
 # it by hand on every worker node before/while launch.sh runs on the head.
 set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." && pwd)"
 HEAD_IP="${1:?usage: ray_worker_join.sh <head-ip> [gcs-port]}"
 RAY_GCS_PORT="${2:-${RAY_GCS_PORT:-6379}}"
 WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"

@@ -5,7 +5,7 @@
 # unprivileged Apptainer install under WORKROOT (official
 # tools/install-unprivileged.sh; no root, needs user namespaces, which
 # preflight verified). Exports POLAR_APPTAINER_BIN for run.sh and image prep.
-# Sourced by launch_e2e.sh.
+# Sourced by pipeline.sh.
 set -euo pipefail
 SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
