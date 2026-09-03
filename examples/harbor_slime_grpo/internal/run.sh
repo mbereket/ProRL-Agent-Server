@@ -318,7 +318,9 @@ EXTRA_TRAIN_ARGS_ARR=(${EXTRA_TRAIN_ARGS:-})
 
 echo "=== Launching ${TRAIN_SCRIPT} ==="
 # The Ray dashboard binds loopback; submission always happens on the head.
-ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT}" \
+# Unbuffered so the driver log (bridge drop reasons, slime step metrics) streams
+# into the job log instead of arriving in 8 KB chunks.
+PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT}" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \
     -- "${PYTHON_BIN}" "${SLIME_DIR}/${TRAIN_SCRIPT}" \
     --actor-num-nodes "$ACTOR_NUM_NODES" \
