@@ -42,29 +42,25 @@ What it does, in order:
 | Checkpoint | `launch_e2e.sh`, `convert_weights.sh` | full HF snapshot download, HF → Megatron torch_dist |
 | Train | `run.sh` | Polar services + Ray + Slime `train_async.py` |
 
-### What changed in the environment setup, and why
+### Environment Setup Updates
 
-The pinned `sglang==0.5.13` is CUDA-13-only, which the previous launcher left
+Problems: 
+- The pinned `sglang==0.5.13` is CUDA-13-only, which the previous launcher left
 implicit. Its `torch-backend=auto` picked torch from the driver, so on an older
-driver you got a cpu or cu12x torch that failed at import; its Transformer
-Engine pin (`2.5.0`) ships a cu12 core and could not load; and it assumed a
-current driver, `nvcc`, and apptainer were present. Several transitive pins had
-also drifted (numpy 2, scipy 1.18, wandb 0.29, a re-pointed Megatron tag), the
-codex CLI was installed at `@latest` while the harness enforces `0.125.0`, and
-weight conversion assumed the HF snapshot was fully cached.
+driver you got a cpu or cu12x torch that failed at import.
+- Transformer Engine pin (`2.5.0`) ships a cu12 core and conflicts with the CUDA 13 expected for the sglang pin
+- The script `nvcc`, and apptainer executables are present
+- Several transitive pins had drifted (numpy 2, scipy 1.18, wandb 0.29, a re-pointed Megatron tag)
+- Codex CLI was installed at `@latest` while the harness enforces `0.125.0`
+- Weight conversion assumed the HF snapshot was already cached
 
-This version makes the requirement explicit and meets it on the machine it
-finds. Torch is always installed from the `cu130` index in one resolve, with
-`setup/constraints.txt` applied via `UV_OVERRIDE` to hold the four pins that
-drift (`nvidia-cublas`, `numpy`, `scipy`, `wandb`). Transformer Engine follows
-torch's CUDA major (`2.14.0[core-cu13]`). Preflight checks the driver, toolkit,
-and container runtime, and only where needed installs NVIDIA's cuda-compat
-user-space driver, a conda-forge CUDA toolkit via pixi, or an unprivileged
-Apptainer, all under `WORKROOT` without root. Megatron is pinned to the commit
-slime's own Dockerfile uses, codex to the harness version, and the full HF
-snapshot is downloaded before conversion. Every step is gated on a real import
-or a GPU matmul, so a broken environment fails early with a specific message.
-Run the checks alone with `bash examples/swegym_slime_grpo/setup/preflight.sh`.
+Fixes:
+- Torch is always installed from the `cu130` index with `setup/constraints.txt` applied with `UV_OVERRIDE` to hold pints that drift (`nvidia-cublas`, `numpy`, `scipy`, `wandb`)
+- Transformer Engine pin updated to match CUDA 13  (`2.14.0[core-cu13]`)
+- Preflight checks driver, toolkit, and container, runtime, and installs missing dependencies under `WORKROOT` (cuda-compat user-space, drive, conda-forge CUDA toolkit via pixi, and/or unprivileged Apptainer)
+- Megatron pinned the commit slime's Dockerfile uses
+- Codex pinned to harness version
+- HF checkpoint downloaded before conversion 
 
 ## Multi-node
 
