@@ -1,9 +1,15 @@
 # SWE-Gym Slime GRPO
 
-End-to-end **training** example: async **GRPO** on **SWE-Gym** tasks with
-**Polar** for agent rollouts and **Slime** for training. Default model
-Qwen3.5-4B; Qwen3.5-9B via `MODEL_ARGS_FILE=model_args_9b.sh`. Runs on one
-node (4 GPUs train, 4 serve) or on N nodes with the same per-node layout.
+Train **Qwen3.5-4B** with async **GRPO** on the 293 **SWE-Gym** training tasks:
+a **codex** agent solves each task inside an Apptainer sandbox, **Polar**
+records the token-level trajectory and grades the patch with the SWE-Gym test
+harness, and **Slime** (Megatron + SGLang) does the policy update.
+
+Tested layouts: one node with 8 GPUs (4 train, 4 serve) and two nodes (8 train,
+8 serve). Larger engine pools follow the same pattern; Qwen3.5-9B is a
+`MODEL_ARGS_FILE=model_args_9b.sh` swap. `launch_e2e.sh` also sets up the
+environment itself, including on clusters whose driver, toolkit, or container
+runtime are older than the pinned stack needs (see below).
 
 > Unlike the rollout demos (calculator / count_stars / swebench_verified), this
 > path serves the model with **SGLang**: Slime owns the inference engines and
@@ -54,16 +60,41 @@ Run it alone with `bash examples/swegym_slime_grpo/setup/preflight.sh`.
 
 ### Why the environment is pinned the way it is
 
-The pinned `sglang==0.5.13` tree is CUDA-13-only (`cuda-python` 13.x,
-`flash-attn-4` pre-releases), so torch is installed from the `cu130` index
-regardless of the driver; `torch-backend=auto` would otherwise pick a cpu or
-cu12x build that imports but cannot run. Transformer Engine must match that
-CUDA major (`2.14.0[core-cu13]`; the older `2.5.0` pin ships a cu12 core only).
-`setup/constraints.txt` (applied via `UV_OVERRIDE` to every uv call) holds the
-four resolution fixes: `nvidia-cublas` ≥ 13.6 for TE, `numpy<2` and
-`scipy==1.13.1` for slime, `wandb==0.22.3` for slime's `generate_id`.
-Megatron is pinned to the commit slime v0.3.0's own Dockerfile uses, plus its
-companion patch; the `26.04-alpha.rc1` tag no longer ships a module slime imports.
+The stack has a hard CUDA-version requirement that comes from the software, not
+from your hardware. The launcher's job is to satisfy it on whatever machine it
+lands on.
+
+- **The pinned `sglang==0.5.13` only resolves against CUDA 13.** Its dependency
+  tree pins `cuda-python` 13.x and `flash-attn-4` (pre-release only), which
+  makes every cu12x torch build unresolvable. So torch is always installed from
+  the `cu130` index with `--prerelease=allow`. The repo's default
+  `torch-backend=auto` would pick a torch build from the *driver* instead, and
+  on an older driver that yields a cpu or cu12x torch whose CUDA-only
+  companions are silently dropped; the first symptom is
+  `operator torchvision::nms does not exist` at import.
+- **Your driver decides whether forward-compat libraries are needed.** A CUDA 13
+  build needs an R580-class driver. If `nvidia-smi` reports a lower native CUDA
+  version (dfw: 535.x, CUDA 12.2), preflight sets `NEED_CUDA_COMPAT` and
+  `ensure_cuda_userspace.sh` puts NVIDIA's cuda-compat 13.1 user-space driver
+  on `LD_LIBRARY_PATH`. Nothing system-wide changes; a matmul gate verifies it.
+- **Your toolkit decides whether one is installed.** Transformer Engine builds
+  its torch bindings from source and needs a CUDA 13 `nvcc`. If none is on PATH
+  or under `CUDA_HOME`, a conda-forge toolkit 13.1 is installed via pixi under
+  `WORKROOT`. Both compat and toolkit are 13.1 rather than 13.0 because TE's
+  cu13 core needs a ≥13.1 cuBLASLt; the cu130 torch runs on any 13.x user space.
+- **Transformer Engine must match torch's CUDA major.** `2.14.0[core-cu13]`
+  for cu13 torch; the older `2.5.0` pin ships a cu12 core only and fails at
+  import with `libcublas.so.12` missing.
+- **Four resolution pins** live in `setup/constraints.txt`, applied through
+  `UV_OVERRIDE` so no later `uv pip install` can undo them: `nvidia-cublas`
+  ≥ 13.6 (TE symbol), `numpy<2` (slime asserts 1.x), `scipy==1.13.1` (1.18 uses
+  numpy-2-only API), `wandb==0.22.3` (0.29 removed a function slime calls).
+- **Megatron** is pinned to the commit slime v0.3.0's own Dockerfile uses, plus
+  its companion patch; the `26.04-alpha.rc1` tag no longer ships a module slime
+  imports.
+
+On a machine with a current driver and toolkit, only the first, fourth, and
+fifth points apply and preflight reports every fix as "not needed".
 
 ## Multi-node
 
