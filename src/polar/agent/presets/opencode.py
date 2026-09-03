@@ -11,6 +11,16 @@ from polar.runtime.base import BaseRuntime, RUNTIME_AGENT_LOG_DIR
 from polar.runtime.models import ExecInput
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 class OpenCodeHarness(BaseHarness):
     """Run OpenCode CLI in non-interactive mode."""
 
@@ -45,6 +55,11 @@ class OpenCodeHarness(BaseHarness):
                 "external_directory": "allow",
                 "doom_loop": "allow",
             },
+            # opencode generates a session title with a hidden `title` agent —
+            # an extra LLM call on a different prompt that would otherwise be
+            # captured as its own trace. Off by default; `settings.opencode_config`
+            # can re-enable it.
+            "agent": {"title": {"disable": True}},
         }
 
         # Register MCP servers
@@ -60,6 +75,15 @@ class OpenCodeHarness(BaseHarness):
                     entry["url"] = server.url
                 mcp_config[server.name] = entry
             config["mcp"] = mcp_config
+
+        # Free-form overrides merged last (deep merge), e.g. agent definitions,
+        # compaction settings, or extra providers.
+        extra = self.settings.get("opencode_config")
+        if extra:
+            if not isinstance(extra, dict):
+                raise ValueError("agent.settings.opencode_config must be a mapping")
+            config = _deep_merge(config, extra)
+        self.config = config
 
         config_json = json.dumps(config, indent=2)
         await runtime.exec(
