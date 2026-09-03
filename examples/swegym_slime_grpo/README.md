@@ -44,27 +44,27 @@ What it does, in order:
 
 ### What changed in the environment setup, and why
 
+The pinned `sglang==0.5.13` is CUDA-13-only, which the previous launcher left
+implicit. Its `torch-backend=auto` picked torch from the driver, so on an older
+driver you got a cpu or cu12x torch that failed at import; its Transformer
+Engine pin (`2.5.0`) ships a cu12 core and could not load; and it assumed a
+current driver, `nvcc`, and apptainer were present. Several transitive pins had
+also drifted (numpy 2, scipy 1.18, wandb 0.29, a re-pointed Megatron tag), the
+codex CLI was installed at `@latest` while the harness enforces `0.125.0`, and
+weight conversion assumed the HF snapshot was fully cached.
+
+This version makes the requirement explicit and meets it on the machine it
+finds. Torch is always installed from the `cu130` index in one resolve, with
+`setup/constraints.txt` applied via `UV_OVERRIDE` to hold the four pins that
+drift (`nvidia-cublas`, `numpy`, `scipy`, `wandb`). Transformer Engine follows
+torch's CUDA major (`2.14.0[core-cu13]`). Preflight checks the driver, toolkit,
+and container runtime, and only where needed installs NVIDIA's cuda-compat
+user-space driver, a conda-forge CUDA toolkit via pixi, or an unprivileged
+Apptainer, all under `WORKROOT` without root. Megatron is pinned to the commit
+slime's own Dockerfile uses, codex to the harness version, and the full HF
+snapshot is downloaded before conversion. Every step is gated on a real import
+or a GPU matmul, so a broken environment fails early with a specific message.
 Run the checks alone with `bash examples/swegym_slime_grpo/setup/preflight.sh`.
-
-The previous launcher documented a working recipe but left several requirements
-implicit, so a fresh install on a cluster with older drivers failed in a
-different place on each attempt. The problems and their fixes:
-
-| Problem in the previous example | Fix here |
-|---|---|
-| The pinned `sglang==0.5.13` tree is CUDA-13-only (`cuda-python` 13.x, pre-release `flash-attn-4`), but the repo's `torch-backend=auto` chose torch from the *driver*. On an older driver that gave a cpu or cu12x torch whose CUDA-only companions were silently dropped, failing later with `operator torchvision::nms does not exist`. | Torch is always installed from the `cu130` index with `--prerelease=allow`, in one resolve together with Polar and SGLang, and the torch family is checked to share the `+cu130` tag. |
-| A CUDA 13 torch needs an R580-class driver; on older drivers (`nvidia-smi` native CUDA < 13) CUDA initialization simply fails. Nothing detected this. | Preflight compares the driver's native CUDA version with the requirement and, if needed, installs NVIDIA's cuda-compat 13.1 user-space driver under `WORKROOT` (no root), then gates on a real matmul. |
-| Transformer Engine was pinned to `2.5.0`, which ships a cu12 core only, so in the CUDA 13 environment it failed at import with `libcublas.so.12` missing. The launcher's import probe then quietly reinstalled 2.5.0 over any manual fix. | TE version follows torch's CUDA major: `2.14.0[core-cu13]` for cu13. Install is gated on a real import after torch preload. |
-| TE's cu13 core needs a ≥13.1 cuBLASLt, but torch pins `nvidia-cublas` 13.1.0.x and any later `uv pip install` downgraded it back. | `nvidia-cublas==13.6.1.10` in `setup/constraints.txt`, applied via `UV_OVERRIDE` so every uv invocation honors it. |
-| TE builds from source and needs a CUDA 13 `nvcc`; the launcher only printed "install the toolkit". | If no CUDA 13 `nvcc` is found, a conda-forge toolkit 13.1 is installed via pixi under `WORKROOT`. |
-| Unpinned transitive packages drifted: numpy 2.x (slime asserts 1.x), scipy 1.18 (uses numpy-2-only API), wandb 0.29 (removed `generate_id`, which slime calls). | `numpy<2`, `scipy==1.13.1`, `wandb==0.22.3` in `setup/constraints.txt`. |
-| Megatron was pinned to the `26.04-alpha.rc1` tag, which was re-pointed upstream and no longer ships `megatron.training.tokenizer`, so conversion failed. | Megatron is pinned to the commit slime v0.3.0's own Dockerfile uses, plus its companion patch. |
-| The codex CLI was installed at `@latest` while the harness enforces `0.125.0`, so every session failed with a version mismatch. | `prepare_apptainer_images.py` installs the version the harness enforces. |
-| Conversion read `*.safetensors` from the local HF cache and did not download them; a cache holding only config files failed with "weights not found". | The full snapshot is downloaded before conversion. |
-| Apptainer was assumed to be on PATH. | Preflight finds apptainer/singularity or installs the unprivileged release under `WORKROOT` (requires user namespaces, which preflight checks). |
-
-On a machine with a current driver and toolkit, preflight reports the compat,
-toolkit, and apptainer fixes as "not needed" and only the pins apply.
 
 ## Multi-node
 
