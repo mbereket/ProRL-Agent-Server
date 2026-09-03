@@ -40,7 +40,9 @@ export DRY_RUN
 if [ -n "${SLURM_JOB_NUM_NODES:-}" ] && [ "${SLURM_JOB_NUM_NODES}" != "${NUM_NODES}" ]; then
     die "config cluster.num_nodes=${NUM_NODES} but the slurm allocation has ${SLURM_JOB_NUM_NODES} nodes"
 fi
-[ -d "${TASKS_DIR}" ] || die "tasks.dir does not exist: ${TASKS_DIR}"
+if [ ! -d "${TASKS_DIR}" ] && [ -z "${TASKS_DATASET}" ]; then
+    die "tasks.dir does not exist: ${TASKS_DIR} (set tasks.dataset to have datasets/<name>.py create it)"
+fi
 
 cat <<INFO
 Run:       ${RUN_NAME} (RUN_ID ${RUN_ID})

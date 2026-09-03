@@ -1,10 +1,10 @@
 # Single-node smoke on SWE-Gym-Lite: 2 tasks x 4 samples x 2 steps.
-#   python datasets/swegym_lite.py --output $WORKROOT/tasks/swegym-lite --limit 10
 #   bash launch.sh configs/swegym-lite-smoke-1node.yaml
 name: swegym-lite-smoke-1node
 
 tasks:
   dir: ${WORKROOT}/tasks/swegym-lite
+  dataset: swegym_lite                   # created by datasets/swegym_lite.py if missing
   n: 2
   seed: 0
 

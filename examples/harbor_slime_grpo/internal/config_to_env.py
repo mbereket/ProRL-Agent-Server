@@ -23,6 +23,8 @@ PATH = object()  # marker: value is a filesystem path
 SCHEMA = {
     "tasks": [
         ("dir", "TASKS_DIR", PATH),
+        ("dataset", "TASKS_DATASET", ""),          # datasets/<name>.py materializes dir if missing
+        ("dataset_args", "TASKS_DATASET_ARGS", ""),
         ("mount_root", "TASKS_MOUNT_ROOT", PATH),
         ("n", "TASKS_N", ""),
         ("seed", "TASKS_SEED", 0),

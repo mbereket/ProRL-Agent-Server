@@ -147,7 +147,13 @@ else
     [ -x "${PYTHON_BIN}" ] && "${PYTHON_BIN}" -c 'import yaml' 2>/dev/null || PYTHON_BIN="$(command -v python3)"
 fi
 
-# ── Tasks → prompts + image list ───────────────────────────────────────────
+# ── Tasks: materialize (tasks.dataset) → prompts + image list ──────────────
+if [ -n "${TASKS_DATASET:-}" ] && [ ! -f "${TASKS_DIR}/manifest.json" ]; then
+    log "dataset ${TASKS_DATASET} → ${TASKS_DIR}"
+    [ "${DRY_RUN}" = 0 ] || die "dry run: tasks.dir does not exist yet; run without --dry-run once to materialize it"
+    # shellcheck disable=SC2086
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/../datasets/${TASKS_DATASET}.py" --output "${TASKS_DIR}" ${TASKS_DATASET_ARGS}
+fi
 log "tasks"
 SELECT=(--mount-root "${HARBOR_DATASET_DIR}" --seed "${TASKS_SEED}")
 [ -n "${TASKS_N}" ] && SELECT+=(--n "${TASKS_N}")

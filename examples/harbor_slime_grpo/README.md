@@ -78,6 +78,8 @@ the two Harbor-specific ones, `tasks` and `harness`.
 name: tmax15k-qwen35-9b-2node
 tasks:
   dir: ${WORKROOT}/tasks/tmax15k    # the task directory (env vars expand; relative to this file)
+  dataset: tmax15k                  # optional: datasets/<name>.py creates dir when it is missing
+  dataset_args: ""                  # extra flags for that script (e.g. --limit 10)
   n: 32                             # random sample of tasks (omit for all)
   seed: 0
   # task_ids_file / exclude_ids_file: one directory name or source_id per line
