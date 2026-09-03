@@ -1,20 +1,24 @@
-# Polar topology template. launch.sh fills @TOKENS@; run.sh expands ${VARS}.
+# Polar topology template. pipeline.sh fills @TOKENS@; run.sh expands ${VARS},
+# then duplicates the gateway node once per sandbox host (expand_gateway_nodes.py:
+# node-01 = head, node-02.. = workers when cluster.sandbox_nodes is `all`).
 # Single node: bind/public host 127.0.0.1. Multi-node: POLAR_BIND_HOST=0.0.0.0
 # and POLAR_PUBLIC_HOST=<head IP> so Ray actors on other nodes can reach it.
+# save_dir is absolute on the shared filesystem: gateways on every host write
+# session files there and the head's rollout server reads them back.
 rollout:
   host: ${POLAR_BIND_HOST}
   port: ${POLAR_ROLLOUT_PORT}
   public_url: ${POLAR_ROLLOUT_URL}
-  save_dir: ./rollout_results
+  save_dir: ${RUN_DIR}/rollout_results
 
 gateway:
   heartbeat_interval_seconds: 30
   nodes:
-    - id: localhost-node-01
+    - id: node-01
       host: ${POLAR_BIND_HOST}
       port: ${POLAR_GATEWAY_PORT}
       public_url: ${POLAR_GATEWAY_URL}
-      max_init_workers: "@MAX_RUN_WORKERS@"
+      max_init_workers: "@MAX_RUN_WORKERS@"   # per sandbox host
       max_run_workers: "@MAX_RUN_WORKERS@"
       max_postrun_workers: "@MAX_RUN_WORKERS@"
       model_served: ${MODEL_SERVED}

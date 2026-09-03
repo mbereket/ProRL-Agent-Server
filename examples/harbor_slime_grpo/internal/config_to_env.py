@@ -50,6 +50,7 @@ SCHEMA = {
         ("actor_num_gpus", "ACTOR_NUM_GPUS", 4),
         ("tp_size", "TP_SIZE", 4),
         ("context_parallel_size", "CONTEXT_PARALLEL_SIZE", 1),
+        ("sandbox_nodes", "SANDBOX_NODES", "head"),   # head | all: hosts that run agent sandboxes
     ],
     "rollout": [
         ("batch_size", "ROLLOUT_BATCH_SIZE", 8),
@@ -126,6 +127,8 @@ def resolve(path: str) -> dict[str, str]:
             elif isinstance(v, bool):
                 v = int(v)
             out[env] = "" if v is None else str(v)
+    if out["SANDBOX_NODES"] not in ("head", "all"):
+        raise ConfigError(f"{path}: cluster.sandbox_nodes must be head or all")
     out["TRAIN_SCRIPT"] = "train.py" if out["TRAIN_SYNC"] == "1" else "train_async.py"
     if not out["WANDB_GROUP"]:
         out["WANDB_GROUP"] = out["RUN_NAME"]

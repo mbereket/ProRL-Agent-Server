@@ -87,7 +87,7 @@ harness:
   settings: {step_limit: 64, cost_limit: 0}   # passed to the Polar harness preset
   session_timeout: 3000             # per-session budget: agent + verifier + margin
   request_timeout: 3600
-  max_run_workers: 16
+  max_run_workers: 16               # concurrent sandboxes per sandbox host
   max_async_level: 1
 model:
   hf_checkpoint: Qwen/Qwen3.5-9B
@@ -98,6 +98,7 @@ cluster:
   actor_num_gpus: 8                 # whole nodes when multi-node; every other GPU serves an engine
   tp_size: 4                        # TP x CP must divide actor_num_gpus
   context_parallel_size: 2
+  sandbox_nodes: all                # head | all: hosts whose CPUs run agent sandboxes + verifiers
 rollout:
   batch_size: 8                     # prompts per step
   n_samples_per_prompt: 16
@@ -150,7 +151,17 @@ serves an SGLang engine. On more than one node the trainer must take whole nodes
 3 nodes = 8 train / 16 serve. `internal/head_entry.sh <config>` runs on the first
 node: it starts `internal/ray_worker_join.sh` on the others with `srun`, exports
 the head IP and bind hosts, then runs `launch.sh`. `run.sh` waits for all Ray
-nodes before submitting the job. Without slurm, run `ray_worker_join.sh <head-ip>`
+nodes before submitting the job.
+
+Sandboxes are CPU work (the agent CLI, the task container, the verifier) and
+run wherever a Polar gateway node runs. `cluster.sandbox_nodes: head` keeps one
+gateway on the head; `all` puts one on every node (`node-01` head, `node-02`..
+workers), each with `harness.max_run_workers` slots, and the rollout server
+dispatches to the least-loaded healthy one. Under slurm `run.sh` starts the
+worker gateways itself with `srun`; without slurm it uses `ssh <host>`, or start
+them by hand: `polar serve_gateway -c $WORKROOT/harbor_slime_grpo/<run>/topology.yaml
+--node-id node-0N` on each worker, and export `WORKER_HOSTS`/`WORKER_IPS`
+(comma lists) before `launch.sh`. Without slurm, run `ray_worker_join.sh <head-ip>`
 on each worker and `RAY_HEAD_IP=<ip> POLAR_BIND_HOST=0.0.0.0
 POLAR_PUBLIC_HOST=<ip> bash launch.sh <config>` on the head.
 

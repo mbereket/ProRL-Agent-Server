@@ -33,6 +33,7 @@ cluster:
   actor_num_gpus: 8                      # whole nodes when multi-node; the rest serve
   tp_size: 4
   context_parallel_size: 2
+  sandbox_nodes: all                     # agent sandboxes (and verifiers) on both nodes' CPUs
 
 rollout:
   batch_size: 8                          # prompts per step

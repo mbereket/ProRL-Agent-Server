@@ -30,6 +30,16 @@ mapfile -t WORKERS < <(scontrol show hostnames "${SLURM_JOB_NODELIST}" | grep -v
 NUM_NODES="${SLURM_JOB_NUM_NODES}"
 [ "${#WORKERS[@]}" -ge $((NUM_NODES - 1)) ] || { echo "ERROR: need ${NUM_NODES} nodes, allocation has $((${#WORKERS[@]} + 1))" >&2; exit 1; }
 echo "[head] $(hostname) (${HEAD_IP}); workers: ${WORKERS[*]:-none}"
+# Worker hostnames and routable IPs, for run.sh to place Polar gateway nodes
+# (cluster.sandbox_nodes: all) on them.
+WORKER_IPS_LIST=()
+for w in "${WORKERS[@]}"; do
+    ip="$(getent hosts "${w}" | awk '{print $1; exit}')"
+    [ -n "${ip}" ] || { echo "ERROR: cannot resolve worker ${w}" >&2; exit 1; }
+    WORKER_IPS_LIST+=("${ip}")
+done
+export WORKER_HOSTS="$(IFS=,; echo "${WORKERS[*]}")"
+export WORKER_IPS="$(IFS=,; echo "${WORKER_IPS_LIST[*]}")"
 
 export RAY_HEAD_IP="${HEAD_IP}"
 export RAY_GCS_PORT="${RAY_GCS_PORT:-6379}"

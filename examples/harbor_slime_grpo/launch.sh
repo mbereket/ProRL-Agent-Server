@@ -48,7 +48,7 @@ Config:    ${RUN_CONFIG_PATH}
 Tasks:     ${TASKS_DIR}${TASKS_N:+ (n=${TASKS_N}, seed ${TASKS_SEED})}
 Harness:   ${HARNESS}
 Model:     ${HF_CHECKPOINT} (${MODEL_ARGS_FILE})
-Layout:    ${NUM_NODES} node(s); trainer ${ACTOR_NUM_GPUS} GPUs TP${TP_SIZE} x CP${CONTEXT_PARALLEL_SIZE}; every other GPU serves an engine
+Layout:    ${NUM_NODES} node(s); trainer ${ACTOR_NUM_GPUS} GPUs TP${TP_SIZE} x CP${CONTEXT_PARALLEL_SIZE}; every other GPU serves an engine; sandboxes on ${SANDBOX_NODES} node(s)
 Rollout:   ${ROLLOUT_BATCH_SIZE} prompts x ${N_SAMPLES_PER_PROMPT} samples, ${NUM_EPOCH} epoch(s); prompt/response caps ${ROLLOUT_MAX_PROMPT_LEN}/${ROLLOUT_MAX_RESPONSE_LEN}, sglang ctx ${SGLANG_CONTEXT_LENGTH}
 Training:  ${TRAIN_SCRIPT}; per-trace cap $((MAX_TOKENS_PER_GPU * CONTEXT_PARALLEL_SIZE)) tokens (max_tokens_per_gpu x CP); lr ${LR}; KL=${USE_KL_LOSS} std_norm=${GRPO_STD_NORMALIZATION} scope=${GROUP_ID_SCOPE}; save every ${SAVE_INTERVAL}
 INFO

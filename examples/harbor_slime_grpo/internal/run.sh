@@ -161,10 +161,27 @@ mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 # Render YAML templates: only the listed ${VARS} are expanded.
 command -v envsubst >/dev/null || { echo "ERROR: envsubst not found (install gettext-base)"; exit 1; }
-TEMPLATE_VARS='${SGLANG_ROUTER_BASE_URL} ${APPTAINER_IMAGE_DIR} ${POLAR_BIND_HOST} ${POLAR_ROLLOUT_PORT} ${POLAR_GATEWAY_PORT} ${POLAR_ROLLOUT_URL} ${POLAR_GATEWAY_URL} ${POLAR_CALLBACK_HOST} ${MODEL_SERVED}'
+export RUN_DIR
+TEMPLATE_VARS='${SGLANG_ROUTER_BASE_URL} ${APPTAINER_IMAGE_DIR} ${POLAR_BIND_HOST} ${POLAR_ROLLOUT_PORT} ${POLAR_GATEWAY_PORT} ${POLAR_ROLLOUT_URL} ${POLAR_GATEWAY_URL} ${POLAR_CALLBACK_HOST} ${MODEL_SERVED} ${RUN_DIR}'
 mkdir -p "$(dirname "$TOPOLOGY_PATH")" "$(dirname "$CUSTOM_CONFIG_PATH")"
 envsubst "$TEMPLATE_VARS" < "$TOPOLOGY_TEMPLATE"     > "$TOPOLOGY_PATH"
 envsubst "$TEMPLATE_VARS" < "$POLAR_CONFIG_TEMPLATE" > "$CUSTOM_CONFIG_PATH"
+
+# ── Sandbox hosts: where Polar gateway nodes (and so the agent sandboxes) run ──
+# SANDBOX_NODES=head: the head only (default). SANDBOX_NODES=all: the head plus
+# every worker in WORKER_HOSTS/WORKER_IPS (comma lists exported by head_entry.sh
+# under slurm; set them by hand otherwise). max_run_workers is per host.
+SANDBOX_NODES="${SANDBOX_NODES:-head}"
+SANDBOX_HOSTS=("$(hostname)"); SANDBOX_IPS=("${POLAR_PUBLIC_HOST}")
+if [ "${SANDBOX_NODES}" = all ] && [ -n "${WORKER_IPS:-}" ]; then
+    IFS=, read -r -a _wh <<< "${WORKER_HOSTS:?WORKER_HOSTS must accompany WORKER_IPS}"
+    IFS=, read -r -a _wi <<< "${WORKER_IPS}"
+    [ "${#_wh[@]}" -eq "${#_wi[@]}" ] || { echo "ERROR: WORKER_HOSTS and WORKER_IPS differ in length"; exit 1; }
+    SANDBOX_HOSTS+=("${_wh[@]}"); SANDBOX_IPS+=("${_wi[@]}")
+elif [ "${SANDBOX_NODES}" != head ] && [ "${SANDBOX_NODES}" != all ]; then
+    echo "ERROR: SANDBOX_NODES must be head or all (got ${SANDBOX_NODES})"; exit 1
+fi
+"${PYTHON_BIN}" "${SCRIPT_DIR}/expand_gateway_nodes.py" "${TOPOLOGY_PATH}" "${SANDBOX_IPS[@]}"
 
 cat <<INFO
 Using topology:       ${TOPOLOGY_PATH}
@@ -174,6 +191,7 @@ SGLang router:        ${SGLANG_ROUTER_BASE_URL}
 Apptainer:            ${POLAR_APPTAINER_BIN}; images ${APPTAINER_IMAGE_DIR}
 Model / args:         ${HF_CHECKPOINT} / ${MODEL_ARGS_FILE}
 Layout:               ${NUM_NODES} node(s) × ${GPUS_PER_NODE} GPUs: train ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}), rollout ${ROLLOUT_NUM_GPUS} engine GPUs; ${MAX_TOKENS_PER_GPU} tok/GPU
+Sandboxes:            ${#SANDBOX_HOSTS[@]} host(s) [${SANDBOX_NODES}]: ${SANDBOX_HOSTS[*]}
 Trainer:              ${TRAIN_SCRIPT}; prompts ${PROMPT_DATA}
 Run id / save dir:    ${RUN_ID} / ${SAVE_DIR}
 INFO
@@ -193,11 +211,33 @@ echo "=== Starting Polar rollout server (:${POLAR_ROLLOUT_PORT}) ==="
 polar serve_rollout -c "${TOPOLOGY_PATH}" &
 PIDS+=($!)
 sleep 2
-echo "=== Starting Polar gateway (:${POLAR_GATEWAY_PORT}) ==="
-polar serve_gateway -c "${TOPOLOGY_PATH}" --node-id localhost-node-01 &
+echo "=== Starting Polar gateway node-01 on $(hostname) (:${POLAR_GATEWAY_PORT}) ==="
+polar serve_gateway -c "${TOPOLOGY_PATH}" --node-id node-01 &
 PIDS+=($!)
+# Gateways on the other sandbox hosts: same venv/env (ENV_FILE) and repo, own
+# node id. Under slurm via srun inside this allocation, else ssh.
+remote_gateway() {   # remote_gateway HOST NODE_ID
+    local host="$1" node_id="$2" cmd
+    cmd="source '${ENV_FILE}' 2>/dev/null; export APPTAINER_CACHEDIR='${APPTAINER_CACHEDIR:-}' APPTAINER_TMPDIR='${APPTAINER_TMPDIR:-}' HF_HOME='${HF_HOME:-}'; cd '${PROJECT_ROOT}' && exec polar serve_gateway -c '${TOPOLOGY_PATH}' --node-id '${node_id}'"
+    echo "=== Starting Polar gateway ${node_id} on ${host} ==="
+    if [ -n "${SLURM_JOB_ID:-}" ]; then
+        srun --overlap --nodes=1 --ntasks=1 -w "${host}" bash -c "${cmd}" &
+    else
+        ssh -o BatchMode=yes "${host}" "${cmd}" &
+    fi
+    PIDS+=($!)
+}
+for ((i = 1; i < ${#SANDBOX_HOSTS[@]}; i++)); do
+    remote_gateway "${SANDBOX_HOSTS[$i]}" "$(printf 'node-%02d' $((i + 1)))"
+done
 sleep 2
 curl -sf "http://127.0.0.1:${POLAR_ROLLOUT_PORT}/health" >/dev/null || { echo "Polar rollout server not healthy on :${POLAR_ROLLOUT_PORT}"; exit 1; }
+for ((i = 0; i < ${#SANDBOX_IPS[@]}; i++)); do
+    url="http://${SANDBOX_IPS[$i]}:${POLAR_GATEWAY_PORT}/health"; [ "$i" -eq 0 ] && url="http://127.0.0.1:${POLAR_GATEWAY_PORT}/health"
+    for _ in $(seq 1 60); do curl -sf "${url}" >/dev/null 2>&1 && break; sleep 2; done
+    curl -sf "${url}" >/dev/null || { echo "Polar gateway on ${SANDBOX_HOSTS[$i]} not healthy (${url})"; exit 1; }
+    echo "gateway $(printf 'node-%02d' $((i + 1))) healthy on ${SANDBOX_HOSTS[$i]}"
+done
 
 # ── Step 2: Ray + Slime (SGLang engines + training) ────────────────
 # The head registers only its local GPUs; other nodes join via ray_worker_join.sh.
