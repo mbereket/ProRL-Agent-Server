@@ -122,10 +122,26 @@ class HarborEvaluator(BaseTrajectoryEvaluator):
                 if isinstance(data, (int, float)):
                     return _clamp(float(data))
                 if isinstance(data, dict) and data:
-                    return _clamp(sum(float(v) for v in data.values()) / len(data))
+                    return _clamp(_reward_from_mapping(data))
             except (ValueError, TypeError):
                 pass
         return 0.0
+
+
+def _reward_from_mapping(data: dict[str, Any]) -> float:
+    """Harbor's reward.json is ``{metric_name: value}``.
+
+    Consumers read ``rewards["reward"]`` when that key exists; a single-entry
+    mapping is the reward itself; only a multi-metric mapping without a
+    ``reward`` key is averaged. Averaging unconditionally mis-scores verifiers
+    that store bookkeeping next to the reward (e.g. ``{"score": 3,
+    "max_points": 7, "reward": 0.43}``).
+    """
+    if "reward" in data:
+        return float(data["reward"])
+    if len(data) == 1:
+        return float(next(iter(data.values())))
+    return sum(float(v) for v in data.values()) / len(data)
 
 
 def _clamp(value: float) -> float:
