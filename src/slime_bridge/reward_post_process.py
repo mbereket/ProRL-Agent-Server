@@ -4,7 +4,9 @@ Registered via Slime's ``--custom-reward-post-process-path`` hook.  A Polar
 trajectory can fan out into a variable number of trace samples, and each trace
 keeps its own reward.  The exchangeable unit is still the trajectory, so this
 processor computes per-trace advantages against a leave-one-trajectory-out
-baseline built from other trajectories in the same prompt group.
+baseline built from other trajectories in the same prompt group. The optional
+std scaling uses the std over *all* valid trajectories in the group (as in
+GRPO); a leave-one-out std is degenerate whenever the other trajectories agree.
 
 Adapter contract:
     All Slime samples produced from the same Polar ``SessionResult`` share
@@ -70,6 +72,7 @@ def post_process_rewards(
             for key in valid_keys
         }
 
+        scale = _group_scale(list(traj_mean.values())) if std_norm else 1.0
         for key in keys:
             if key not in traj_mean:
                 continue
@@ -79,7 +82,6 @@ def post_process_rewards(
                 if other_key != key
             ]
             baseline = sum(other_means) / len(other_means) if other_means else 0.0
-            scale = _loo_scale(other_means) if std_norm else 1.0
             for sample_index in traj_sample_indices[key]:
                 normalized_by_sample[sample_index] = (
                     raw_rewards[sample_index] - baseline
@@ -105,10 +107,16 @@ def _key_value(value: Any, default: Any) -> Any:
         return str(value)
 
 
-def _loo_scale(other_means: list[float]) -> float:
-    if len(other_means) <= 1:
+def _group_scale(group_means: list[float]) -> float:
+    """GRPO std scale over every valid trajectory in the group (self included).
+
+    Unbiased std plus epsilon, matching slime's default normalizer. When all
+    trajectories agree the numerator ``reward - baseline`` is also zero, so the
+    epsilon never amplifies anything.
+    """
+    if len(group_means) <= 1:
         return 1.0
-    return statistics.stdev(other_means) + 1e-6
+    return statistics.stdev(group_means) + 1e-6
 
 
 def _has_trainable_tokens(sample: Any) -> bool:

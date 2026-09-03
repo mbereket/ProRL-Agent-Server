@@ -97,3 +97,36 @@ def test_disabled_normalization_returns_raw_rewards() -> None:
 
     assert raw == [2.0, 5.0]
     assert rewards == [2.0, 5.0]
+
+
+def test_std_scaling_uses_full_group_std_for_lone_success() -> None:
+    # 1 success among 15 failures: leave-one-out std of the *others* is 0 and
+    # would scale the success by 1e6. Full-group unbiased std is exactly 0.25.
+    samples = [FakeSample(group_id=0, reward=1.0)] + [
+        FakeSample(group_id=i, reward=0.0) for i in range(1, 16)
+    ]
+
+    _, rewards = post_process_rewards(_args(grpo_std_normalization=True), samples)
+
+    assert abs(rewards[0] - 4.0) < 1e-4
+    for value in rewards[1:]:
+        assert abs(value - (-(1 / 15) / 0.25)) < 1e-4
+
+
+def test_std_scaling_uses_full_group_std_for_lone_failure() -> None:
+    samples = [FakeSample(group_id=0, reward=0.0)] + [
+        FakeSample(group_id=i, reward=1.0) for i in range(1, 16)
+    ]
+
+    _, rewards = post_process_rewards(_args(grpo_std_normalization=True), samples)
+
+    assert abs(rewards[0] - (-4.0)) < 1e-4
+    assert all(abs(value - ((1 / 15) / 0.25)) < 1e-4 for value in rewards[1:])
+
+
+def test_std_scaling_all_equal_group_gives_zero_advantage() -> None:
+    samples = [FakeSample(group_id=i, reward=1.0) for i in range(4)]
+
+    _, rewards = post_process_rewards(_args(grpo_std_normalization=True), samples)
+
+    assert rewards == [0.0, 0.0, 0.0, 0.0]
