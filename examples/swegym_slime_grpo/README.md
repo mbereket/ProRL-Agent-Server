@@ -58,43 +58,27 @@ What it does, in order:
 
 Run it alone with `bash examples/swegym_slime_grpo/setup/preflight.sh`.
 
-### Why the environment is pinned the way it is
+### What changed in the environment setup, and why
 
-The stack has a hard CUDA-version requirement that comes from the software, not
-from your hardware. The launcher's job is to satisfy it on whatever machine it
-lands on.
+The previous launcher documented a working recipe but left several requirements
+implicit, so a fresh install on a cluster with older drivers failed in a
+different place on each attempt. The problems and their fixes:
 
-- **The pinned `sglang==0.5.13` only resolves against CUDA 13.** Its dependency
-  tree pins `cuda-python` 13.x and `flash-attn-4` (pre-release only), which
-  makes every cu12x torch build unresolvable. So torch is always installed from
-  the `cu130` index with `--prerelease=allow`. The repo's default
-  `torch-backend=auto` would pick a torch build from the *driver* instead, and
-  on an older driver that yields a cpu or cu12x torch whose CUDA-only
-  companions are silently dropped; the first symptom is
-  `operator torchvision::nms does not exist` at import.
-- **Your driver decides whether forward-compat libraries are needed.** A CUDA 13
-  build needs an R580-class driver. If `nvidia-smi` reports a lower native CUDA
-  version (dfw: 535.x, CUDA 12.2), preflight sets `NEED_CUDA_COMPAT` and
-  `ensure_cuda_userspace.sh` puts NVIDIA's cuda-compat 13.1 user-space driver
-  on `LD_LIBRARY_PATH`. Nothing system-wide changes; a matmul gate verifies it.
-- **Your toolkit decides whether one is installed.** Transformer Engine builds
-  its torch bindings from source and needs a CUDA 13 `nvcc`. If none is on PATH
-  or under `CUDA_HOME`, a conda-forge toolkit 13.1 is installed via pixi under
-  `WORKROOT`. Both compat and toolkit are 13.1 rather than 13.0 because TE's
-  cu13 core needs a ≥13.1 cuBLASLt; the cu130 torch runs on any 13.x user space.
-- **Transformer Engine must match torch's CUDA major.** `2.14.0[core-cu13]`
-  for cu13 torch; the older `2.5.0` pin ships a cu12 core only and fails at
-  import with `libcublas.so.12` missing.
-- **Four resolution pins** live in `setup/constraints.txt`, applied through
-  `UV_OVERRIDE` so no later `uv pip install` can undo them: `nvidia-cublas`
-  ≥ 13.6 (TE symbol), `numpy<2` (slime asserts 1.x), `scipy==1.13.1` (1.18 uses
-  numpy-2-only API), `wandb==0.22.3` (0.29 removed a function slime calls).
-- **Megatron** is pinned to the commit slime v0.3.0's own Dockerfile uses, plus
-  its companion patch; the `26.04-alpha.rc1` tag no longer ships a module slime
-  imports.
+| Problem in the previous example | Fix here |
+|---|---|
+| The pinned `sglang==0.5.13` tree is CUDA-13-only (`cuda-python` 13.x, pre-release `flash-attn-4`), but the repo's `torch-backend=auto` chose torch from the *driver*. On an older driver that gave a cpu or cu12x torch whose CUDA-only companions were silently dropped, failing later with `operator torchvision::nms does not exist`. | Torch is always installed from the `cu130` index with `--prerelease=allow`, in one resolve together with Polar and SGLang, and the torch family is checked to share the `+cu130` tag. |
+| A CUDA 13 torch needs an R580-class driver; on older drivers (`nvidia-smi` native CUDA < 13) CUDA initialization simply fails. Nothing detected this. | Preflight compares the driver's native CUDA version with the requirement and, if needed, installs NVIDIA's cuda-compat 13.1 user-space driver under `WORKROOT` (no root), then gates on a real matmul. |
+| Transformer Engine was pinned to `2.5.0`, which ships a cu12 core only, so in the CUDA 13 environment it failed at import with `libcublas.so.12` missing. The launcher's import probe then quietly reinstalled 2.5.0 over any manual fix. | TE version follows torch's CUDA major: `2.14.0[core-cu13]` for cu13. Install is gated on a real import after torch preload. |
+| TE's cu13 core needs a ≥13.1 cuBLASLt, but torch pins `nvidia-cublas` 13.1.0.x and any later `uv pip install` downgraded it back. | `nvidia-cublas==13.6.1.10` in `setup/constraints.txt`, applied via `UV_OVERRIDE` so every uv invocation honors it. |
+| TE builds from source and needs a CUDA 13 `nvcc`; the launcher only printed "install the toolkit". | If no CUDA 13 `nvcc` is found, a conda-forge toolkit 13.1 is installed via pixi under `WORKROOT`. |
+| Unpinned transitive packages drifted: numpy 2.x (slime asserts 1.x), scipy 1.18 (uses numpy-2-only API), wandb 0.29 (removed `generate_id`, which slime calls). | `numpy<2`, `scipy==1.13.1`, `wandb==0.22.3` in `setup/constraints.txt`. |
+| Megatron was pinned to the `26.04-alpha.rc1` tag, which was re-pointed upstream and no longer ships `megatron.training.tokenizer`, so conversion failed. | Megatron is pinned to the commit slime v0.3.0's own Dockerfile uses, plus its companion patch. |
+| The codex CLI was installed at `@latest` while the harness enforces `0.125.0`, so every session failed with a version mismatch. | `prepare_apptainer_images.py` installs the version the harness enforces. |
+| Conversion read `*.safetensors` from the local HF cache and did not download them; a cache holding only config files failed with "weights not found". | The full snapshot is downloaded before conversion. |
+| Apptainer was assumed to be on PATH. | Preflight finds apptainer/singularity or installs the unprivileged release under `WORKROOT` (requires user namespaces, which preflight checks). |
 
-On a machine with a current driver and toolkit, only the first, fourth, and
-fifth points apply and preflight reports every fix as "not needed".
+On a machine with a current driver and toolkit, preflight reports the compat,
+toolkit, and apptainer fixes as "not needed" and only the pins apply.
 
 ## Multi-node
 
