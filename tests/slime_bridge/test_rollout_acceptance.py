@@ -115,3 +115,41 @@ def test_async_worker_only_admits_requested_groups() -> None:
 
     worker._mark_delivered(1)
     assert worker._can_admit_group({}, 0) is False
+
+
+def _zv_config(enabled: bool = True, tol: float = 1e-6) -> SimpleNamespace:
+    return SimpleNamespace(drop_zero_variance_groups=enabled, zero_variance_tol=tol, reward_key="score")
+
+
+def _zv_sample(session: str, reward: float, *, status: str = "COMPLETED", loss_mask=None) -> SimpleNamespace:
+    loss_mask = [1] if loss_mask is None else loss_mask
+    return SimpleNamespace(
+        loss_mask=loss_mask,
+        response_length=len(loss_mask),
+        remove_sample=False,
+        status=SimpleNamespace(name=status),
+        reward={"score": reward},
+        metadata={"polar": {"session_id": session}},
+    )
+
+
+def test_zero_variance_group_is_rejected_when_enabled() -> None:
+    from slime_bridge.rollout import _zero_variance_rejection_reason
+
+    samples = [_zv_sample("a", 0.0), _zv_sample("a", 0.0), _zv_sample("b", 0.0), _zv_sample("c", 0.0)]
+    assert _zero_variance_rejection_reason(_zv_config(), samples) is not None
+    assert _zero_variance_rejection_reason(_zv_config(enabled=False), samples) is None
+
+
+def test_zero_variance_ignores_failed_and_masked_trajectories() -> None:
+    from slime_bridge.rollout import _zero_variance_rejection_reason
+
+    # Two valid trajectories with different rewards -> keep.
+    samples = [_zv_sample("a", 1.0), _zv_sample("b", 0.0), _zv_sample("c", 1.0, status="ABORTED")]
+    assert _zero_variance_rejection_reason(_zv_config(), samples) is None
+    # The only variance comes from an aborted trajectory -> drop.
+    samples = [_zv_sample("a", 0.0), _zv_sample("b", 0.0), _zv_sample("c", 1.0, status="ABORTED")]
+    assert _zero_variance_rejection_reason(_zv_config(), samples) is not None
+    # A single trainable trajectory has no baseline -> drop.
+    samples = [_zv_sample("a", 1.0), _zv_sample("b", 0.0, loss_mask=[0])]
+    assert _zero_variance_rejection_reason(_zv_config(), samples) is not None

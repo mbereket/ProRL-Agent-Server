@@ -29,6 +29,8 @@ class PolarSlimeConfig:
     callback_host: str
     timeout_reward_zero: bool
     group_id_scope: str
+    drop_zero_variance_groups: bool
+    zero_variance_tol: float
     min_complete_accept_fraction: float
     tokenizer_name_or_path: str | None
     add_generation_prompt: bool
@@ -90,6 +92,11 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     if group_id_scope not in {"trajectory", "prompt"}:
         raise ValueError("polar_group_id_scope must be 'trajectory' or 'prompt'")
 
+    drop_zero_variance_groups = bool(getattr(args, "polar_drop_zero_variance_groups", False))
+    zero_variance_tol = float(getattr(args, "polar_zero_variance_tol", 1e-6))
+    if zero_variance_tol < 0.0:
+        raise ValueError("polar_zero_variance_tol must be non-negative")
+
     min_complete_accept_fraction = float(
         getattr(args, "polar_min_complete_accept_fraction", 0.0) or 0.0
     )
@@ -116,6 +123,8 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         callback_host=callback_host,
         timeout_reward_zero=timeout_reward_zero,
         group_id_scope=group_id_scope,
+        drop_zero_variance_groups=drop_zero_variance_groups,
+        zero_variance_tol=zero_variance_tol,
         min_complete_accept_fraction=min_complete_accept_fraction,
         tokenizer_name_or_path=getattr(args, "hf_checkpoint", None),
         add_generation_prompt=bool(getattr(args, "polar_add_generation_prompt", True)),

@@ -53,6 +53,10 @@ class PolarLowCompleteAcceptFractionError(PolarRolloutSchedulerError):
     """Raised when a completed task has too few trainable completed sessions."""
 
 
+class PolarZeroVarianceGroupError(PolarRolloutSchedulerError):
+    """Raised when every trainable trajectory in a group has the same reward."""
+
+
 @dataclass(slots=True)
 class _DeferredGroup:
     group: list[Any]
@@ -317,6 +321,38 @@ def _status_value(status: Any) -> str:
 
 def _is_zero_trainable_error(exc: BaseException) -> bool:
     return "zero trainable tokens" in str(exc)
+
+
+def _zero_variance_rejection_reason(
+    config: PolarSlimeConfig,
+    samples: list[Any],
+) -> str | None:
+    """Reject a group whose trainable trajectories all share one reward.
+
+    Such a group has zero GRPO advantage everywhere and would only occupy a
+    batch slot; the worker pulls a replacement prompt instead. One reward per
+    trajectory (session), over trajectories that are trainable and not
+    FAILED/ABORTED.
+    """
+    if not config.drop_zero_variance_groups:
+        return None
+    rewards_by_session: dict[str, float] = {}
+    for sample in samples:
+        if _trainable_token_count(sample) <= 0:
+            continue
+        status = getattr(getattr(sample, "status", None), "name", None) or str(getattr(sample, "status", ""))
+        if status.rsplit(".", 1)[-1].upper() in ("FAILED", "ABORTED"):
+            continue
+        session_id = _sample_session_id(sample) or str(id(sample))
+        rewards_by_session.setdefault(session_id, _extract_sample_reward(sample, config.reward_key))
+    if not rewards_by_session:
+        return None  # already rejected by the zero-trainable check
+    values = list(rewards_by_session.values())
+    if len(values) < 2:
+        return f"only {len(values)} trainable trajectory; no group baseline"
+    if max(values) - min(values) <= config.zero_variance_tol:
+        return f"all {len(values)} trainable trajectories have reward {values[0]:g}"
+    return None
 
 
 def _annotate_accepted_samples(
@@ -644,6 +680,9 @@ class AsyncPolarRolloutWorker:
         elif isinstance(last_error, PolarLowCompleteAcceptFractionError):
             category_metric = "polar/dropped_low_complete_fraction_groups"
             reason = "low complete accept fraction"
+        elif isinstance(last_error, PolarZeroVarianceGroupError):
+            category_metric = "polar/dropped_zero_variance_groups"
+            reason = "zero reward variance"
         elif isinstance(last_error, RolloutLogprobError):
             category_metric = "polar/dropped_logprob_error_groups"
             reason = "rollout logprob error"
@@ -702,6 +741,11 @@ class AsyncPolarRolloutWorker:
         if rejection_reason is not None:
             raise PolarLowCompleteAcceptFractionError(
                 f"Task {task_result.task_id} cannot be accepted: {rejection_reason}"
+            )
+        rejection_reason = _zero_variance_rejection_reason(self.config, group_samples)
+        if rejection_reason is not None:
+            raise PolarZeroVarianceGroupError(
+                f"Task {task_result.task_id} dropped: {rejection_reason}"
             )
 
         return _CompletedGroup(
