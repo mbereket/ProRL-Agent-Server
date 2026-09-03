@@ -192,7 +192,9 @@ Ports (`POLAR_ROLLOUT_PORT` 8080, `POLAR_GATEWAY_PORT` 8100, `SGLANG_ROUTER_PORT
 
 ## Watching a run
 
-Slime's step metrics go to wandb and the Ray job log, not to your shell. Watch
+Per-session agent logs and artifacts are under
+`$WORKROOT/harbor_slime_grpo/<run>/sessions/session-<id>/logs/agent/` on every
+sandbox host. Slime's step metrics go to wandb and the Ray job log, not to your shell. Watch
 `$SAVE_ROOT/<run>/latest_checkpointed_iteration.txt`, wandb, or the Polar
 dashboard (`polar dashboard -c $WORKROOT/harbor_slime_grpo/<run>/topology.yaml`).
 Useful metrics: `polar/reward_mean`, `polar/dropped_*` (should be 0 except

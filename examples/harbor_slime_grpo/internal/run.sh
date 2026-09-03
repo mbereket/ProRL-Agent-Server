@@ -213,14 +213,18 @@ echo "=== Starting Polar rollout server (:${POLAR_ROLLOUT_PORT}) ==="
 polar serve_rollout -c "${TOPOLOGY_PATH}" &
 PIDS+=($!)
 sleep 2
+# Gateway session dirs (agent logs, artifacts) are created with mkdtemp; keep
+# them on the shared run dir instead of the node's /tmp so they can be read
+# after the fact: ${RUN_DIR}/sessions/session-<id>/logs/agent/.
+SESSION_ROOT="${SESSION_ROOT:-${RUN_DIR}/sessions}"; mkdir -p "${SESSION_ROOT}"
 echo "=== Starting Polar gateway node-01 on $(hostname) (:${POLAR_GATEWAY_PORT}) ==="
-polar serve_gateway -c "${TOPOLOGY_PATH}" --node-id node-01 &
+TMPDIR="${SESSION_ROOT}" polar serve_gateway -c "${TOPOLOGY_PATH}" --node-id node-01 &
 PIDS+=($!)
 # Gateways on the other sandbox hosts: same venv/env (ENV_FILE) and repo, own
 # node id. Under slurm via srun inside this allocation, else ssh.
 remote_gateway() {   # remote_gateway HOST NODE_ID
     local host="$1" node_id="$2" cmd
-    cmd="source '${ENV_FILE}' 2>/dev/null; export APPTAINER_CACHEDIR='${APPTAINER_CACHEDIR:-}' APPTAINER_TMPDIR='${APPTAINER_TMPDIR:-}' HF_HOME='${HF_HOME:-}'; cd '${PROJECT_ROOT}' && exec polar serve_gateway -c '${TOPOLOGY_PATH}' --node-id '${node_id}'"
+    cmd="source '${ENV_FILE}' 2>/dev/null; export APPTAINER_CACHEDIR='${APPTAINER_CACHEDIR:-}' APPTAINER_TMPDIR='${APPTAINER_TMPDIR:-}' HF_HOME='${HF_HOME:-}'; cd '${PROJECT_ROOT}' && TMPDIR='${SESSION_ROOT}' exec polar serve_gateway -c '${TOPOLOGY_PATH}' --node-id '${node_id}'"
     echo "=== Starting Polar gateway ${node_id} on ${host} ==="
     if [ -n "${SLURM_JOB_ID:-}" ]; then
         srun --overlap --nodes=1 --ntasks=1 -w "${host}" bash -c "${cmd}" &
