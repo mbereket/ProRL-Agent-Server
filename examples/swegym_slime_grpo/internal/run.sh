@@ -155,7 +155,9 @@ TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${COMPILER_CACHE_ROOT}/torch
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${COMPILER_CACHE_ROOT}/triton}"
 # sglang JIT kernels (tvm-ffi) default to ~/.cache/tvm-ffi; keep them off $HOME too.
 export TVM_FFI_CACHE_DIR="${TVM_FFI_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tvm-ffi}"
-mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR"
+# tilelang (FLA GatedDeltaNet kernels in the trainer) defaults to ~/.tilelang/cache.
+export TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tilelang}"
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR" "$TILELANG_CACHE_DIR"
 
 # Render YAML templates: only the listed ${VARS} are expanded.
 command -v envsubst >/dev/null || { echo "ERROR: envsubst not found (install gettext-base)"; exit 1; }
@@ -241,6 +243,7 @@ RUNTIME_ENV_JSON="{
     \"TORCHINDUCTOR_CACHE_DIR\": \"${TORCHINDUCTOR_CACHE_DIR}\",
     \"TRITON_CACHE_DIR\": \"${TRITON_CACHE_DIR}\",
     \"TVM_FFI_CACHE_DIR\": \"${TVM_FFI_CACHE_DIR}\",
+    \"TILELANG_CACHE_DIR\": \"${TILELANG_CACHE_DIR}\",
     \"SLIME_ENGINE_BASE_PORT\": \"${SLIME_ENGINE_BASE_PORT:-15000}\",
     \"LD_LIBRARY_PATH\": \"${RUNTIME_LD_LIBRARY_PATH}\",
     \"PYTORCH_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
