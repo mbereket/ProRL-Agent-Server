@@ -241,6 +241,7 @@ RUNTIME_ENV_JSON="{
     \"TORCHINDUCTOR_CACHE_DIR\": \"${TORCHINDUCTOR_CACHE_DIR}\",
     \"TRITON_CACHE_DIR\": \"${TRITON_CACHE_DIR}\",
     \"TVM_FFI_CACHE_DIR\": \"${TVM_FFI_CACHE_DIR}\",
+    \"SLIME_ENGINE_BASE_PORT\": \"${SLIME_ENGINE_BASE_PORT:-15000}\",
     \"LD_LIBRARY_PATH\": \"${RUNTIME_LD_LIBRARY_PATH}\",
     \"PYTORCH_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
     \"PYTORCH_CUDA_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",

@@ -123,6 +123,7 @@ if [ -f "${MEGATRON_PATCH}" ]; then
     fi
 fi
 SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_router_tokens.sh"
+SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_engine_base_port.sh"
 export SLIME_DIR MEGATRON_DIR
 
 # ── Editable overlay ───────────────────────────────────────────────────────
