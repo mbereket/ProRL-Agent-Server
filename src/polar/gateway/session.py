@@ -219,7 +219,21 @@ def resolve_session_id(
     *,
     query_session_id: str | None = None,
 ) -> str:
-    """Resolve session id from explicit ids or auth, else create a new one."""
+    """Resolve session id from auth, then explicit ids, else create a new one.
+
+    A registered api-key session wins over a client-supplied session id. Each
+    dispatched rollout session gets its own api-key (``sk-polar-<uuid>``), so
+    the key *is* the session identity. Harnesses that tag requests with their
+    own id (opencode sends its internal ``ses_…``) must not redirect their
+    completions away from the dispatched session, or the trajectory records
+    "no completions". Client ids are honored only when no registered api-key
+    session matches (generic proxy use).
+    """
+    api_key = extract_api_key(headers)
+    if api_key and registry.get(api_key) is not None:
+        registry.update_activity(api_key)
+        return api_key
+
     lower_headers = {k.lower(): v for k, v in headers.items()}
     explicit_session_id = (
         clean_session_id(lower_headers.get("x-session-id"))
@@ -235,11 +249,6 @@ def resolve_session_id(
         else:
             registry.update_activity(explicit_session_id)
         return explicit_session_id
-
-    api_key = extract_api_key(headers)
-    if api_key and registry.get(api_key) is not None:
-        registry.update_activity(api_key)
-        return api_key
 
     return registry.register(generate_session_id()).session_id
 
