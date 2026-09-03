@@ -285,6 +285,36 @@ def test_responses_reasoning_effort_none_does_not_enable_thinking() -> None:
     assert "chat_template_kwargs" not in transformed
 
 
+def test_responses_reasoning_effort_does_not_enable_thinking_for_qwen35() -> None:
+    # The Qwen3.5 rule must win over the Responses ``reasoning`` mapping; codex
+    # always sends an effort, so a defaulted kwarg would leave thinking on.
+    transformer = OpenAIResponsesTransformer()
+
+    transformed = transformer.transform_request(
+        {
+            "_polar_model_served": "Qwen/Qwen3.5-4B",
+            "input": "fix the bug",
+            "reasoning": {"effort": "xhigh", "summary": "auto"},
+        }
+    )
+
+    assert transformed["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_responses_reasoning_effort_enables_thinking_for_other_models() -> None:
+    transformer = OpenAIResponsesTransformer()
+
+    transformed = transformer.transform_request(
+        {
+            "_polar_model_served": "MiniMax-M2.5",
+            "input": "fix the bug",
+            "reasoning": {"effort": "high"},
+        }
+    )
+
+    assert transformed["chat_template_kwargs"]["enable_thinking"] is True
+
+
 def test_responses_request_round_trips_local_shell_items() -> None:
     transformer = OpenAIResponsesTransformer()
 
