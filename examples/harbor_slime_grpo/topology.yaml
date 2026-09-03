@@ -1,0 +1,26 @@
+# Polar topology template. launch.sh fills @TOKENS@; run.sh expands ${VARS}.
+# Single node: bind/public host 127.0.0.1. Multi-node: POLAR_BIND_HOST=0.0.0.0
+# and POLAR_PUBLIC_HOST=<head IP> so Ray actors on other nodes can reach it.
+rollout:
+  host: ${POLAR_BIND_HOST}
+  port: ${POLAR_ROLLOUT_PORT}
+  public_url: ${POLAR_ROLLOUT_URL}
+  save_dir: ./rollout_results
+
+gateway:
+  heartbeat_interval_seconds: 30
+  nodes:
+    - id: localhost-node-01
+      host: ${POLAR_BIND_HOST}
+      port: ${POLAR_GATEWAY_PORT}
+      public_url: ${POLAR_GATEWAY_URL}
+      max_init_workers: "@MAX_RUN_WORKERS@"
+      max_run_workers: "@MAX_RUN_WORKERS@"
+      max_postrun_workers: "@MAX_RUN_WORKERS@"
+      model_served: ${MODEL_SERVED}
+      inference:
+        engine: sglang
+        base_url: ${SGLANG_ROUTER_BASE_URL}
+        # Sample from the distribution the trainer optimizes (T=1, top_p=1, top_k=-1),
+        # whatever the harness asks for.
+        training_sampling: true

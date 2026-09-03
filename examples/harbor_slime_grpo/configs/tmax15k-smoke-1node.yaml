@@ -1,0 +1,46 @@
+# Single-node smoke: 2 tasks x 4 samples x 2 steps. Validates images, harness,
+# Polar prefix merging, the Harbor verifier and one Slime update before a real run.
+#   bash launch.sh configs/tmax15k-smoke-1node.yaml
+name: tmax15k-smoke-1node
+
+tasks:
+  dir: ${WORKROOT}/tasks/tmax15k
+  n: 2
+  seed: 0
+
+harness:
+  name: mini_swe_agent
+  model_name: openai/gpt-5.4
+  settings:
+    step_limit: 64
+    cost_limit: 0
+
+model:
+  hf_checkpoint: Qwen/Qwen3.5-9B
+  model_args_file: model_args_9b.sh
+  end_of_turn_token_id: 248046
+
+training:
+  sync: true
+  tp_size: 4
+  context_parallel_size: 1            # 4 trainer GPUs + 4 engine GPUs on one node
+  actor_num_gpus: 4
+  rollout_batch_size: 2
+  n_samples_per_prompt: 4
+  num_epoch: 2
+  max_tokens_per_gpu: 16384
+  sglang_context_length: 16384
+  rollout_max_prompt_len: 12000
+  rollout_max_response_len: 4000
+  save_interval: 1
+  session_timeout: 3000
+  request_timeout: 3600
+  max_run_workers: 8
+  max_async_level: 1
+  use_kl_loss: false
+  grpo_std_normalization: false
+  group_id_scope: trajectory
+  timeout_reward_zero: true
+  drop_zero_variance_groups: true
+
+wandb_project: harbor-slime-grpo

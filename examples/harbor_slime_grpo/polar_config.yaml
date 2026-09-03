@@ -1,0 +1,70 @@
+# Polar bridge config template (Slime --custom-config-path). launch.sh fills the
+# @TOKENS@ from the run config and writes agent.settings; run.sh then expands the
+# ${VARS} (service URLs, asset dirs) with envsubst. {sample.*} / {args.*} are
+# Polar's per-task placeholders, filled from prepare_tasks.py metadata.
+polar_rollout_url: "${POLAR_ROLLOUT_URL}"
+polar_gateway_url: "${POLAR_GATEWAY_URL}"
+polar_callback_host: "${POLAR_CALLBACK_HOST}"
+polar_reward_key: "score"
+polar_max_async_level: "@MAX_ASYNC_LEVEL@"
+polar_request_timeout: "@REQUEST_TIMEOUT@"
+polar_apptainer_image_dir: "${APPTAINER_IMAGE_DIR}"
+polar_harness_dir: "@HARNESS_DIR@"
+polar_harbor_dataset_dir: "@HARBOR_DATASET_DIR@"
+
+# Training-signal knobs (slime_bridge/README.md).
+polar_timeout_reward_zero: "@TIMEOUT_REWARD_ZERO@"
+polar_drop_zero_variance_groups: "@DROP_ZERO_VARIANCE_GROUPS@"
+polar_min_complete_accept_fraction: 0.0
+polar_group_id_scope: "@GROUP_ID_SCOPE@"
+
+polar_task_template:
+  # Agent budget + verifier budget + margin; the agent itself is stopped by the
+  # harness step limit and the per-task agent timeout.
+  timeout_seconds: "@SESSION_TIMEOUT@"
+  runtime:
+    backend: "apptainer"
+    image: "{args.polar_apptainer_image_dir}/{sample.metadata.image_sif}"
+    network: "host"
+    workdir: "{sample.metadata.workdir}"
+    env:
+      HOME: "/polar/session/home"
+      # Harness binaries first (mounted read-only below), then the image's PATH.
+      PATH: "{args.polar_harness_dir}/bin:{args.polar_harness_dir}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    kwargs:
+      volumes:
+        # Same path inside and outside: Python-based harnesses carry absolute paths.
+        - "{args.polar_harness_dir}:{args.polar_harness_dir}:ro"
+        - "{args.polar_harbor_dataset_dir}:/harbor_data:ro"
+    # Harbor staging contract: if the task ships environment/files/setup.sh, run it
+    # with WORKDIR and HARBOR_STAGING set (it copies or links data into the
+    # workdir). Tasks whose image is already complete (e.g. TMax) have no setup.sh.
+    prepare:
+      - type: exec
+        command: >-
+          mkdir -p /polar/session/logs/agent /polar/session/home /logs/verifier "{sample.metadata.workdir}" &&
+          STAGING="/harbor_data/{sample.metadata.task_rel}/environment/files" &&
+          if [ -f "$STAGING/setup.sh" ]; then
+            WORKDIR="{sample.metadata.workdir}" HARBOR_STAGING="$STAGING" bash "$STAGING/setup.sh";
+          fi
+  agent:
+    harness: "@HARNESS@"
+    model_name: "@HARNESS_MODEL_NAME@"
+    settings: {}   # filled from the run config's harness.settings
+  builder:
+    strategy: "prefix_merging"
+    config:
+      end_of_turn_token_id: "@EOT_TOKEN_ID@"
+  # Harbor verifier: upload tests/ into the live runtime, run test.sh, read
+  # /logs/verifier/reward.txt (or reward.json).
+  evaluator:
+    strategy: "harbor"
+    refresh_runtime: false
+    config:
+      tests_dir: "{args.polar_harbor_dataset_dir}/{sample.metadata.task_rel}/tests"
+      verifier_timeout: "{sample.metadata.verifier_timeout_sec}"
+      fail_on_nonzero_exit: false
+    env:
+      HOME: "/polar/session/home"
+
+polar_task_id_template: "@RUN_NAME@-{rollout_id}-{sample.group_index}"

@@ -1,0 +1,53 @@
+# Qwen3.5-9B GRPO on a 32-task sample of TMax-15k, two 8-GPU nodes
+# (node A: TP4 x CP2 trainer, node B: 8 SGLang engines). Synchronous.
+#
+# Materialize the tasks once:
+#   python datasets/tmax15k.py --output $WORKROOT/tasks/tmax15k
+# then (multi-node under slurm):
+#   bash multinode/sbatch_launch.sh --config configs/tmax15k-qwen35-9b-2node.yaml --nodes 2 --partition <p> --account <a>
+name: tmax15k-qwen35-9b-2node
+
+tasks:
+  dir: ${WORKROOT}/tasks/tmax15k     # set WORKROOT-relative paths literally or use an absolute path
+  n: 32
+  seed: 0
+
+harness:
+  name: mini_swe_agent                # bash-tool agent, closest to TMax's own harness
+  model_name: openai/gpt-5.4          # cosmetic: the gateway rewrites it to the served model
+  settings:
+    step_limit: 64                    # TMax: max 64 tool calls
+    cost_limit: 0
+
+model:
+  hf_checkpoint: Qwen/Qwen3.5-9B
+  model_args_file: model_args_9b.sh
+  end_of_turn_token_id: 248046        # <|im_end|> for Qwen3.5
+
+training:
+  sync: true                          # train.py: rollout -> update -> weight sync per step
+  tp_size: 4
+  context_parallel_size: 2
+  actor_num_gpus: 8
+  rollout_batch_size: 8               # prompts per step
+  n_samples_per_prompt: 16
+  num_epoch: 30                       # 32 tasks / 8 per step = 4 steps per epoch
+  # Trace cap = max_tokens_per_gpu x context_parallel_size; keep sglang_context_length
+  # equal to it so the trainer never drops a trace the agent was allowed to produce.
+  # 16384 x 2 is the value known to fit H100-80GB for 9B; probe before raising.
+  max_tokens_per_gpu: 16384
+  sglang_context_length: 32768
+  rollout_max_prompt_len: 24000
+  rollout_max_response_len: 8000
+  save_interval: 5
+  session_timeout: 3000               # agent 1800 + verifier 600 + margin (task.toml values)
+  request_timeout: 3600
+  max_run_workers: 16
+  max_async_level: 1
+  use_kl_loss: false
+  grpo_std_normalization: false       # mean-only advantages
+  group_id_scope: trajectory
+  timeout_reward_zero: true
+  drop_zero_variance_groups: true
+
+wandb_project: harbor-slime-grpo
