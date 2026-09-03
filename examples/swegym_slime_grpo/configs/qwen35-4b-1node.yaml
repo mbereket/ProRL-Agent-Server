@@ -28,7 +28,7 @@ training:
   lr: 1e-6
   use_kl_loss: true
   kl_loss_coef: 0.001
-  grpo_std_normalization: true
+  grpo_std_normalization: false          # mean-only advantages
   save_interval: 10
 
 wandb:

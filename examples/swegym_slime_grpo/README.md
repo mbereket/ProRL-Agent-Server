@@ -67,7 +67,7 @@ training:
   lr: 1e-6
   use_kl_loss: true
   kl_loss_coef: 0.001
-  grpo_std_normalization: true          # false = mean-only advantages
+  grpo_std_normalization: false         # mean-only advantages (Dr.GRPO); true scales by group std
   save_interval: 10
   extra_train_args: ""                  # appended to train_async.py verbatim
 

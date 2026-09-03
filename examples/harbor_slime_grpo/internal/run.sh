@@ -294,13 +294,13 @@ RUNTIME_ENV_JSON="{
 # trace, so the sample count per rollout is variable. The custom data source
 # rounds the epoch up so every train prompt is consumed once.
 # Algorithm knobs (defaults = the original example): USE_KL_LOSS=0 drops the KL
-# term, GRPO_STD_NORMALIZATION=0 uses mean-only advantages (Dr.GRPO),
+# term, GRPO_STD_NORMALIZATION=1 re-enables std scaling (default: mean-only advantages, Dr.GRPO),
 # EVAL_PROMPT_DATA="<name> <path>" adds a held-out eval every EVAL_INTERVAL steps,
 # EXTRA_TRAIN_ARGS appends arbitrary train_async.py flags (whitespace-split).
 KL_ARGS=(--use-kl-loss --kl-loss-coef "${KL_LOSS_COEF:-0.001}" --kl-loss-type low_var_kl)
 [ "${USE_KL_LOSS:-1}" = 1 ] || KL_ARGS=()
 STD_NORM_ARGS=()
-[ "${GRPO_STD_NORMALIZATION:-1}" = 1 ] || STD_NORM_ARGS=(--disable-grpo-std-normalization)
+[ "${GRPO_STD_NORMALIZATION:-0}" = 1 ] || STD_NORM_ARGS=(--disable-grpo-std-normalization)
 EVAL_ARGS=()
 if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
     # shellcheck disable=SC2206

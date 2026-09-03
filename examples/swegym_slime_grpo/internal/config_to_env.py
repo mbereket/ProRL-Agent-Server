@@ -38,7 +38,7 @@ SCHEMA = {
         ("lr", "LR", "1e-6"),
         ("use_kl_loss", "USE_KL_LOSS", True),
         ("kl_loss_coef", "KL_LOSS_COEF", 0.001),
-        ("grpo_std_normalization", "GRPO_STD_NORMALIZATION", True),
+        ("grpo_std_normalization", "GRPO_STD_NORMALIZATION", False),
         ("save_interval", "SAVE_INTERVAL", 10),
         ("extra_train_args", "EXTRA_TRAIN_ARGS", ""),
     ],
