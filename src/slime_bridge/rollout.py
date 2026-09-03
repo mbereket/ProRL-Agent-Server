@@ -1374,6 +1374,13 @@ def _polar_extra_metrics(
     session_report: dict[str, dict[str, Any]] = {}
     completed_session_rewards: list[float] = []
     policy_staleness: list[float] = []
+    # Per-trajectory shape: traces, LLM calls (turns), response and trainable
+    # tokens, terminal status.
+    session_traces: dict[str, int] = {}
+    session_turns: dict[str, int] = {}
+    session_response_tokens: dict[str, int] = {}
+    session_trainable_tokens: dict[str, int] = {}
+    session_status: dict[str, str] = {}
     for sample in flat_samples:
         polar_meta = sample.metadata.get("polar", {})
         if "policy_staleness" in polar_meta:
@@ -1382,8 +1389,21 @@ def _polar_extra_metrics(
         is_placeholder = bool(polar_meta.get("placeholder"))
         if not session_id:
             continue
+        if not is_placeholder:
+            session_traces[session_id] = session_traces.get(session_id, 0) + 1
+            session_response_tokens[session_id] = (
+                session_response_tokens.get(session_id, 0)
+                + int(getattr(sample, "response_length", 0) or 0)
+            )
+            session_trainable_tokens[session_id] = (
+                session_trainable_tokens.get(session_id, 0) + _trainable_token_count(sample)
+            )
         if session_id not in seen:
             seen.add(session_id)
+            session_status[session_id] = str(_sample_session_status(sample) or "UNKNOWN")
+            record_count = (polar_meta.get("trajectory_metadata") or {}).get("record_count")
+            if isinstance(record_count, int):
+                session_turns[session_id] = record_count
             timing = polar_meta.get("timing") or {}
             if timing:
                 register_to_init_queue_ms.append(
@@ -1426,6 +1446,29 @@ def _polar_extra_metrics(
         out["polar/rollout_success_rate"] = (
             total_sessions - empty_sessions
         ) / total_sessions
+        for status in sorted(set(session_status.values())):
+            out[f"polar/status/{status.lower()}_fraction"] = (
+                sum(1 for s in session_status.values() if s == status) / total_sessions
+            )
+    if session_traces:
+        n = len(session_traces)
+        out["polar/traj/traces_mean"] = sum(session_traces.values()) / n
+        out["polar/traj/response_tokens_mean"] = sum(session_response_tokens.values()) / n
+        out["polar/traj/response_tokens_max"] = float(max(session_response_tokens.values()))
+        total_response = sum(session_response_tokens.values())
+        if total_response > 0:
+            out["polar/traj/trainable_token_fraction"] = (
+                sum(session_trainable_tokens.values()) / total_response
+            )
+    if session_turns:
+        out["polar/traj/turns_mean"] = sum(session_turns.values()) / len(session_turns)
+        per_turn = [
+            session_response_tokens[sid] / turns
+            for sid, turns in session_turns.items()
+            if turns > 0 and sid in session_response_tokens
+        ]
+        if per_turn:
+            out["polar/traj/tokens_per_turn_mean"] = sum(per_turn) / len(per_turn)
     if session_report:
         graded_sessions = len(session_report)
         resolved = sum(1 for r in session_report.values() if r.get("resolved"))
