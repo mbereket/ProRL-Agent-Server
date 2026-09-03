@@ -122,7 +122,7 @@ version Polar's token-metadata patch targets), which fixes torch 2.11+cu130 and
 CUDA 13; Slime v0.3.0 is locked as a git dependency so its requirements resolve
 together with everything else; Transformer Engine is the 2.12 cu13 core, whose
 prebuilt library runs on the cuBLAS torch ships. Three constraints
-(`numpy<2`, `scipy<1.14`, `wandb<0.29`) keep the resolver on versions Slime's
+(`numpy<2`, `scipy<1.14`, `wandb<0.28`) keep the resolver on versions Slime's
 code can use; there are no overrides.
 
 Two things sit on top of the lock because they cannot be wheels: the patched

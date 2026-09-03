@@ -51,7 +51,7 @@ environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 constraint-dependencies = [
     "numpy<2",     # slime v0.3.0 asserts numpy 1.x at init (its Dockerfile installs numpy<2)
     "scipy<1.14",  # scipy>=1.14 with numpy 1.x hits numpy-2-only API (np.long)
-    "wandb<0.29",  # wandb 0.29 removed wandb.util.generate_id, which slime calls
+    "wandb<0.28",  # wandb 0.28 removed wandb.util.generate_id, which slime v0.3.0 calls
 ]
 
 [tool.uv.sources]
