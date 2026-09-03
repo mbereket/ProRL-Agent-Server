@@ -23,6 +23,10 @@ Config schema (:class:`~polar.trajectory.models.EvaluatorSpec.config`)
 - ``tests_target`` *(str, default ``/tests``)* — where the verifier is injected.
 - ``verifier_dir`` *(str, default ``/logs/verifier``)* — where ``test.sh`` writes.
 - ``test_command`` *(str, default ``bash /tests/test.sh``)* — verifier entrypoint.
+- ``fail_on_nonzero_exit`` *(bool, default False)* — treat a non-zero verifier exit
+  as an evaluator error (the session becomes ``ERROR`` and is masked from
+  training) instead of reading whatever reward it left behind. For verifiers that
+  distinguish "graded 0" from "could not grade" (e.g. an LLM judge outage).
 """
 
 from __future__ import annotations
@@ -49,6 +53,7 @@ class HarborEvaluator(BaseTrajectoryEvaluator):
         tests_target: str = "/tests",
         verifier_dir: str = "/logs/verifier",
         test_command: str = "bash /tests/test.sh",
+        fail_on_nonzero_exit: bool = False,
     ) -> None:
         self.tests_dir = str(tests_dir).strip()
         if not self.tests_dir:
@@ -63,6 +68,7 @@ class HarborEvaluator(BaseTrajectoryEvaluator):
         self.test_command = test_command.strip()
         if not self.test_command:
             raise ValueError("harbor evaluator requires a non-empty 'test_command'")
+        self.fail_on_nonzero_exit = bool(fail_on_nonzero_exit)
 
     async def evaluate(self, trajectory: Trajectory, **runtime: Any) -> EvalResult:
         rt = runtime.get("runtime")
@@ -93,6 +99,10 @@ class HarborEvaluator(BaseTrajectoryEvaluator):
         test_output = (result.stdout or "") + (result.stderr or "")
         test_output_path = artifacts_dir / "verifier.stdout.log"
         test_output_path.write_text(test_output)
+        if self.fail_on_nonzero_exit and result.return_code != 0:
+            raise RuntimeError(
+                f"harbor verifier exited with {result.return_code}; see {test_output_path}"
+            )
 
         # 3. Read the reward back, clamped to [0, 1] (mirrors Harbor's reward parsing).
         reward = await self._read_reward(rt, eval_env)
