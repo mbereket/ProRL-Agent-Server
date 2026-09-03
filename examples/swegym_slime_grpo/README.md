@@ -42,23 +42,9 @@ What it does, in order:
 | Checkpoint | `launch_e2e.sh`, `convert_weights.sh` | full HF snapshot download, HF → Megatron torch_dist |
 | Train | `run.sh` | Polar services + Ray + Slime `train_async.py` |
 
-### What preflight checks
-
-| Check | If it fails |
-|---|---|
-| GPUs visible, driver's native CUDA version | driver < CUDA 13 → `NEED_CUDA_COMPAT` (forward-compat libraries, no root needed) |
-| CUDA 13 `nvcc` on PATH or under `CUDA_HOME` | `NEED_CUDA_TOOLKIT` (conda-forge toolkit via pixi under `WORKROOT`); pixi itself is bootstrapped if missing |
-| `gcc`/`g++` | fatal: Transformer Engine builds from source |
-| apptainer/singularity | `NEED_APPTAINER` (unprivileged install; needs `cpio` and `rpm2cpio` or `busybox`); fatal if user namespaces are also disabled |
-| `uv` | bootstrapped into `WORKROOT/bin` |
-| `git curl tar xz envsubst` | fatal |
-| `WORKROOT` writable; `HOME` writable | fatal / caches go under `WORKROOT` |
-| Ports 8080, 8100, 9000, 8265, 6379 free | fatal with the env var to change |
-| github.com, pypi.org, huggingface.co, download.pytorch.org reachable, plus the hosts any enabled fix downloads from | fatal with what depends on it |
-
-Run it alone with `bash examples/swegym_slime_grpo/setup/preflight.sh`.
-
 ### What changed in the environment setup, and why
+
+Run the checks alone with `bash examples/swegym_slime_grpo/setup/preflight.sh`.
 
 The previous launcher documented a working recipe but left several requirements
 implicit, so a fresh install on a cluster with older drivers failed in a
