@@ -64,7 +64,12 @@ class ApptainerRuntime(BaseRuntime):
         for volume in self.spec.kwargs.get("volumes", []):
             args.extend(["--bind", str(volume)])
         args.extend([self.spec.image, self._instance_name])
-        rc, _, stderr = await self._run_local_command(*args, capture=True)
+        # No pipes here: the instance daemon forked by `instance start` inherits
+        # them and communicate() would never see EOF (the session hangs before
+        # its first exec). stderr goes to a file for the failure message.
+        rc, _, stderr = await self._run_local_command(
+            *args, stderr_file=self.session_dir / "instance-start.err"
+        )
         if rc != 0:
             detail = (stderr or "").strip().splitlines()
             tail = " | ".join(detail[-3:]) if detail else "no stderr"

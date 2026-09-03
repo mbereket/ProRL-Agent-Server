@@ -150,10 +150,22 @@ class BaseRuntime(ABC):
         timeout: float | None = None,
         env: dict[str, str] | None = None,
         capture: bool = False,
+        stderr_file: Path | None = None,
     ) -> tuple[int, str | None, str | None]:
-        """Run a local subprocess, optionally capturing stdout/stderr."""
+        """Run a local subprocess, optionally capturing stdout/stderr.
+
+        ``stderr_file`` writes stderr to a file (returned as the stderr string)
+        instead of a pipe. Use it for commands that fork a long-lived child, such
+        as ``apptainer instance start``: the daemon inherits a pipe and
+        ``communicate()`` would wait for its EOF forever.
+        """
         process_env = None if env is None else {**os.environ, **env}
-        if capture:
+        stderr_fh = None
+        if stderr_file is not None:
+            stderr_fh = open(stderr_file, "wb")
+            stdout_target = asyncio.subprocess.DEVNULL
+            stderr_target = stderr_fh
+        elif capture:
             stdout_target = asyncio.subprocess.PIPE
             stderr_target = asyncio.subprocess.PIPE
         else:
@@ -184,8 +196,12 @@ class BaseRuntime(ABC):
                     return -1, None, None
         finally:
             self._active_process = None
+            if stderr_fh is not None:
+                stderr_fh.close()
 
         rc = process.returncode or 0
         stdout_str = stdout_bytes.decode(errors="replace") if stdout_bytes else None
         stderr_str = stderr_bytes.decode(errors="replace") if stderr_bytes else None
+        if stderr_file is not None:
+            stderr_str = stderr_file.read_text(errors="replace") or None
         return rc, stdout_str, stderr_str
