@@ -248,6 +248,22 @@ RUNTIME_ENV_JSON="{
 # per rollout. With --dynamic-history each trajectory yields one sample per
 # trace, so the sample count per rollout is variable. The custom data source
 # rounds the epoch up so every train prompt is consumed once.
+# Algorithm knobs (defaults = the original example): USE_KL_LOSS=0 drops the KL
+# term, GRPO_STD_NORMALIZATION=0 uses mean-only advantages (Dr.GRPO),
+# EVAL_PROMPT_DATA="<name> <path>" adds a held-out eval every EVAL_INTERVAL steps,
+# EXTRA_TRAIN_ARGS appends arbitrary train_async.py flags (whitespace-split).
+KL_ARGS=(--use-kl-loss --kl-loss-coef "${KL_LOSS_COEF:-0.001}" --kl-loss-type low_var_kl)
+[ "${USE_KL_LOSS:-1}" = 1 ] || KL_ARGS=()
+STD_NORM_ARGS=()
+[ "${GRPO_STD_NORMALIZATION:-1}" = 1 ] || STD_NORM_ARGS=(--disable-grpo-std-normalization)
+EVAL_ARGS=()
+if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
+    # shellcheck disable=SC2206
+    EVAL_ARGS=(--eval-prompt-data ${EVAL_PROMPT_DATA} --eval-interval "${EVAL_INTERVAL:-10}" --n-samples-per-eval-prompt "${N_SAMPLES_PER_EVAL_PROMPT:-1}")
+fi
+# shellcheck disable=SC2206
+EXTRA_TRAIN_ARGS_ARR=(${EXTRA_TRAIN_ARGS:-})
+
 echo "=== Launching train_async.py ==="
 # The Ray dashboard binds loopback; submission always happens on the head.
 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT}" \
@@ -298,9 +314,10 @@ ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT}" \
     --advantage-estimator grpo \
     --normalize-advantages \
     --use-tis \
-    --use-kl-loss \
-    --kl-loss-coef 0.001 \
-    --kl-loss-type low_var_kl \
+    "${KL_ARGS[@]}" \
+    "${STD_NORM_ARGS[@]}" \
+    "${EVAL_ARGS[@]}" \
+    "${EXTRA_TRAIN_ARGS_ARR[@]}" \
     --entropy-coef 0.0 \
     --eps-clip 0.2 \
     --eps-clip-high 0.28 \
