@@ -37,9 +37,9 @@ else
     [ -n "${nccl_h}" ] || die "pip nvidia-nccl headers not found in the venv"
     nccl="$(dirname "$(dirname "${nccl_h}")")"
     arch="${NVTE_CUDA_ARCHS:-${COMPUTE_CAP//./}}"
-    # A pre-existing venv may carry other TE distributions (the `transformer-engine`
-    # metapackage, a cu12 core, stale bindings); only the locked cu13 core stays.
-    uv pip uninstall --python "${PYTHON_BIN}" transformer-engine transformer-engine-cu12 transformer-engine-torch >/dev/null 2>&1 || true
+    # A pre-existing venv may carry a cu12 core or stale bindings; the locked
+    # metapackage + cu13 core stay (TE's import check needs both, same version).
+    uv pip uninstall --python "${PYTHON_BIN}" transformer-engine-cu12 transformer-engine-torch >/dev/null 2>&1 || true
     info "building for sm_${arch} with MAX_JOBS=${BUILD_MAX_JOBS} (this takes a while)"
     CUDNN_PATH="${cudnn}" CUDNN_HOME="${cudnn}" NCCL_HOME="${nccl}" NCCL_INCLUDE_DIR="${nccl}/include" \
     CPATH="${nccl}/include:${cudnn}/include:${CUDA_HOME}/include:${CPATH:-}" \
