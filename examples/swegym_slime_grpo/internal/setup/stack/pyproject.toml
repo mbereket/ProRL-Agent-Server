@@ -1,0 +1,69 @@
+# Locked third-party environment for examples/swegym_slime_grpo.
+#
+# One consistent set: SGLang 0.5.13 (CUDA 13, torch 2.11) + Slime v0.3.0's
+# dependency tree + Transformer Engine 2.12 cu13 core. Installed with
+#   uv sync --frozen
+# by internal/setup/install_python_stack.sh. Two things are layered on top afterwards
+# because they are source builds or locally patched checkouts (see
+# internal/pipeline.sh and internal/setup/ensure_training_stack.sh):
+#   - slime and Megatron-LM: editable, --no-deps (their dependencies are here;
+#     slime is locked as a git dependency so its requirements resolve with
+#     everything else)
+#   - transformer-engine-torch: built from source against this torch
+#
+# Re-lock after editing:  (cd internal/setup/stack && uv lock)   -- works from any OS,
+# the lock is restricted to linux x86_64.
+[project]
+name = "swegym-slime-grpo-stack"
+version = "0.0.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "polar[swebench]",
+    "sglang==0.5.13",
+    "flash-attn-4>=4.0.0b9",           # sglang requirement; only pre-releases exist, so it must be named here for uv to allow them
+    "slime",
+    "swegym",
+    "mbridge==0.15.1",                 # HF <-> Megatron weight bridge (conversion)
+    "transformer-engine-cu13==2.12.0", # core library; torch bindings built post-sync
+    "flash-linear-attention==0.5.0",   # Qwen3.5 GatedDeltaNet layers
+    # transformer-engine-torch runtime deps (it is installed --no-deps post-sync)
+    "einops",
+    "onnx",
+    "onnxscript",
+    "nvdlfw-inspect",
+    # build deps for the --no-build-isolation source builds (TE torch, flash-attn)
+    "ninja",
+    "pybind11",
+    "setuptools",
+    "wheel",
+    # megatron-core deps (installed editable --no-deps post-sync)
+    "torch",
+    "numpy",
+    "packaging>=24.2",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Constraints (not overrides): compatible with every declared requirement,
+# they only stop the resolver from picking versions the code cannot use.
+constraint-dependencies = [
+    "numpy<2",     # slime v0.3.0 asserts numpy 1.x at init (its Dockerfile installs numpy<2)
+    "scipy<1.14",  # scipy>=1.14 with numpy 1.x hits numpy-2-only API (np.long)
+    "wandb<0.29",  # wandb 0.29 removed wandb.util.generate_id, which slime calls
+]
+
+[tool.uv.sources]
+polar = { path = "../../../../..", editable = true }
+slime = { git = "https://github.com/THUDM/slime.git", tag = "v0.3.0" }
+swegym = { git = "https://github.com/SWE-Gym/SWE-Bench-Package.git", rev = "16dd480cce9b27bf111a362d280881c6def5d2a7" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
+torchao = { index = "pytorch-cu130" }
+torchcodec = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

@@ -6,11 +6,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
 SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
 MEGATRON_DIR="${MEGATRON_DIR:-${PROJECT_ROOT}/Megatron-LM}"
-# Environment written by launch_e2e.sh (CUDA compat libs, toolkit, venv).
+# Environment written by pipeline.sh (CUDA compat libs, toolkit, venv).
 ENV_FILE="${ENV_FILE:-${WORKROOT:-${PROJECT_ROOT}/tmp}/env.sh}"
 # shellcheck disable=SC1090
 [ -f "${ENV_FILE}" ] && source "${ENV_FILE}"

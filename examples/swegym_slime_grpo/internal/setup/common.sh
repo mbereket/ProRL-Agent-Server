@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Shared helpers for the setup/ scripts. Source, do not execute.
 #
-# Contract: launch_e2e.sh exports PROJECT_ROOT, WORKROOT, ENV_FILE and
+# Contract: pipeline.sh exports PROJECT_ROOT, WORKROOT, ENV_FILE and
 # PYTHON_BIN before sourcing any setup/ script. Scripts append `export` lines to
 # ENV_FILE so run.sh, convert_weights.sh and multinode workers see the same
 # CUDA/apptainer environment as the setup shell.
@@ -57,4 +57,20 @@ import torch
 v = torch.version.cuda
 print(v.split(".")[0] if v else "")
 PY
+}
+
+# config_python SCRIPT ARGS... — run a python script that needs pyyaml, before
+# the venv necessarily exists: the project venv, else uv with pyyaml, else a
+# system python that has yaml.
+config_python() {
+    local venv_py="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python3}"
+    if [ -x "${venv_py}" ] && "${venv_py}" -c 'import yaml' 2>/dev/null; then
+        "${venv_py}" "$@"
+    elif command -v uv >/dev/null 2>&1; then
+        uv run -q --no-project --with pyyaml --python 3.12 python "$@"
+    elif command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+        python3 "$@"
+    else
+        die "no python with pyyaml found (install uv: https://astral.sh/uv, or pyyaml for python3)"
+    fi
 }

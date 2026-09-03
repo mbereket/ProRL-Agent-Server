@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Single-entry launcher for the SWE-Gym Slime GRPO example.
+# Pipeline for the SWE-Gym Slime GRPO example. Not run by hand: launch.sh
+# (or head_entry.sh on slurm) exports the run config as environment variables
+# and execs this.
 #
-#   bash examples/swegym_slime_grpo/launch_e2e.sh
-#
-# Order: preflight → python stack → CUDA user space → apptainer → slime /
-# Megatron checkouts + patches → editable installs → training stack → data →
-# task images + agent CLIs → HF snapshot → weight conversion → run.sh.
+# Order: preflight → python stack (uv sync of setup/stack/uv.lock) → CUDA user
+# space → apptainer → slime / Megatron checkouts + patches → editable overlay →
+# training stack → data → task images + agent CLIs → HF snapshot → weight
+# conversion → run.sh.
 # Every step is idempotent; re-running resumes where the previous run stopped.
 #
 # Placement: WORKROOT (default: <repo>/tmp) holds everything this script
@@ -17,13 +18,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 cd "${PROJECT_ROOT}"
 export PROJECT_ROOT
 export WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"
 export ENV_FILE="${ENV_FILE:-${WORKROOT}/env.sh}"
 export SETUP_ENV="${SETUP_ENV:-1}"
-export TORCH_BACKEND="${TORCH_BACKEND:-cu130}"
 mkdir -p "${WORKROOT}"
 
 # ── Caches: fill only what is unset ────────────────────────────────────────
@@ -34,6 +34,9 @@ export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-${WORKROOT}/apptainer_tmp}"
 mkdir -p "${HF_HOME}" "${UV_CACHE_DIR}" "${APPTAINER_CACHEDIR}" "${APPTAINER_TMPDIR}"
 
 # ── Pins ───────────────────────────────────────────────────────────────────
+# Python packages are pinned in setup/stack/pyproject.toml + uv.lock. The
+# checkouts below are installed over that lock as editables (--no-deps) because
+# they carry local patches.
 SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
 SLIME_REPO="${SLIME_REPO:-https://github.com/THUDM/slime.git}"
 SLIME_REF="${SLIME_REF:-v0.3.0}"
@@ -44,15 +47,13 @@ MEGATRON_DIR="${MEGATRON_DIR:-${WORKROOT}/Megatron-LM-slime-${SLIME_REF}}"
 MEGATRON_REPO="${MEGATRON_REPO:-https://github.com/NVIDIA/Megatron-LM.git}"
 MEGATRON_REF="${MEGATRON_REF:-1dcf0dafa884ad52ffb243625717a3471643e087}"
 MEGATRON_PATCH="${MEGATRON_PATCH:-${SLIME_DIR}/docker/patch/latest/megatron.patch}"
-SWEGYM_PACKAGE_SPEC="${SWEGYM_PACKAGE_SPEC:-swegym @ git+https://github.com/SWE-Gym/SWE-Bench-Package.git@16dd480cce9b27bf111a362d280881c6def5d2a7}"
-MBRIDGE_VERSION="${MBRIDGE_VERSION:-0.15.1}"  # HF<->Megatron weight bridge (slime conversion)
 
 # ── Model / run ────────────────────────────────────────────────────────────
 export HF_CHECKPOINT="${HF_CHECKPOINT:-Qwen/Qwen3.5-4B}"
 export MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-model_args.sh}"   # model_args_9b.sh for Qwen3.5-9B
 export TORCH_DIST_DIR="${TORCH_DIST_DIR:-${REF_LOAD:-${WORKROOT}/checkpoints/${HF_CHECKPOINT##*/}_torch_dist}}"
 export REF_LOAD="${REF_LOAD:-${TORCH_DIST_DIR}}"
-export RUN_ID="${RUN_ID:-${WANDB_RUN_ID:-swegym-slime-grpo-$(date -u +%Y%m%dT%H%M%SZ)}}"
+export RUN_ID="${RUN_ID:-${RUN_NAME:-swegym-slime-grpo-$(date -u +%Y%m%dT%H%M%SZ)}}"
 export SAVE_ROOT="${SAVE_ROOT:-${WORKROOT}/ckpt/swegym_slime_grpo}"
 export SAVE_DIR="${SAVE_DIR:-${SAVE_ROOT}/${RUN_ID}}"
 export RUN_DIR="${RUN_DIR:-${WORKROOT}/swegym_slime_grpo}"
@@ -92,7 +93,6 @@ else
 fi
 PYTHON_BIN_DIR="$(cd -- "$(dirname -- "${PYTHON_BIN}")" &>/dev/null && pwd)"
 export PATH="${PYTHON_BIN_DIR}:${PATH}"
-UV_PIP=(uv pip install --python "${PYTHON_BIN}" --torch-backend="${TORCH_BACKEND}" --prerelease=allow)
 
 # ── External checkouts ─────────────────────────────────────────────────────
 clone_retry() {   # clone_retry NAME REPO REF DEST — REF may be a branch/tag or a commit sha
@@ -125,17 +125,13 @@ fi
 SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_router_tokens.sh"
 export SLIME_DIR MEGATRON_DIR
 
-# ── Editable installs ──────────────────────────────────────────────────────
+# ── Editable overlay ───────────────────────────────────────────────────────
+# The patched checkouts replace the locked slime (and add Megatron) without
+# touching the resolved dependency set. Always re-applied: a `uv sync` in
+# install_python_stack.sh restores the locked slime.
 if [ "${INSTALL_EDITABLE}" = 1 ]; then
-    log "editable installs"
-    # [swebench] supplies the dependency tree the swegym fork (installed next) omits.
-    "${UV_PIP[@]}" -e ".[swebench]"
-    "${UV_PIP[@]}" -e "${SLIME_DIR}"
-    "${UV_PIP[@]}" -e "${MEGATRON_DIR}"
-    "${UV_PIP[@]}" --no-deps "mbridge==${MBRIDGE_VERSION}"
-    if ! "${PYTHON_BIN}" -c 'from swegym.harness.constants import MAP_REPO_VERSION_TO_SPECS as m; assert {"dask/dask","python/mypy","pandas-dev/pandas"} <= set(m)' 2>/dev/null; then
-        "${UV_PIP[@]}" "${SWEGYM_PACKAGE_SPEC}"
-    fi
+    log "editable overlay (slime, Megatron-LM)"
+    uv pip install --python "${PYTHON_BIN}" --no-deps -e "${SLIME_DIR}" -e "${MEGATRON_DIR}"
 fi
 
 if [ "${INSTALL_TRAINING_STACK}" = 1 ] && [ "${SETUP_ENV}" = 1 ]; then

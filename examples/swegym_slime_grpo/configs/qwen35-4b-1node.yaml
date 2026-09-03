@@ -1,0 +1,35 @@
+# Qwen3.5-4B, one 8-GPU node: 4 trainer GPUs (TP2) + 4 SGLang engines.
+# The validated single-node recipe on H100-80GB.
+#   bash launch.sh configs/qwen35-4b-1node.yaml
+name: qwen35-4b-1node
+
+model:
+  hf_checkpoint: Qwen/Qwen3.5-4B
+  model_args_file: model_args.sh        # Megatron architecture args (internal/)
+
+cluster:
+  num_nodes: 1
+  actor_num_gpus: 4                     # trainer GPUs; the rest of the node serves engines
+  tp_size: 2
+  context_parallel_size: 1              # TP x CP must divide actor_num_gpus
+
+rollout:
+  batch_size: 4                         # prompts per step
+  n_samples_per_prompt: 16              # GRPO group size
+  num_epoch: 1                          # passes over the 293 tasks
+  max_prompt_len: 32000
+  max_response_len: 16000
+  sglang_context_length: 50000          # engine context; traces above it are cut by the agent
+
+training:
+  # Longest trainable trace = max_tokens_per_gpu x context_parallel_size.
+  # 16384 is the value that fits H100-80GB for 4B; 30000 OOMs there.
+  max_tokens_per_gpu: 16384
+  lr: 1e-6
+  use_kl_loss: true
+  kl_loss_coef: 0.001
+  grpo_std_normalization: true
+  save_interval: 10
+
+wandb:
+  project: polar-swegym-grpo

@@ -1,0 +1,32 @@
+# Qwen3.5-9B, two 8-GPU nodes: node A trains (TP4 x CP2), node B serves.
+#   bash slurm_launch.sh --config configs/qwen35-9b-2node.yaml --partition <p> --account <a>
+name: qwen35-9b-2node
+
+model:
+  hf_checkpoint: Qwen/Qwen3.5-9B
+  model_args_file: model_args_9b.sh
+
+cluster:
+  num_nodes: 2
+  actor_num_gpus: 8
+  tp_size: 4
+  context_parallel_size: 2
+
+rollout:
+  batch_size: 4
+  n_samples_per_prompt: 16
+  num_epoch: 1
+  max_prompt_len: 24000
+  max_response_len: 8000
+  sglang_context_length: 32768
+
+training:
+  max_tokens_per_gpu: 16384             # x CP2 = 32768-token traces
+  lr: 1e-6
+  use_kl_loss: true
+  kl_loss_coef: 0.001
+  grpo_std_normalization: true
+  save_interval: 10
+
+wandb:
+  project: polar-swegym-grpo

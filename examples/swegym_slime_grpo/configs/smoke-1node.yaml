@@ -1,0 +1,35 @@
+# Single-node smoke: 2 prompts x 4 samples, one epoch over the data would be
+# too long, so cap with extra_train_args. Exercises environment setup, images,
+# the codex harness, grading, weight conversion and a Slime update.
+#   bash launch.sh configs/smoke-1node.yaml
+name: smoke-1node
+
+model:
+  hf_checkpoint: Qwen/Qwen3.5-4B
+  model_args_file: model_args.sh
+
+cluster:
+  num_nodes: 1
+  actor_num_gpus: 4
+  tp_size: 2
+  context_parallel_size: 1
+
+rollout:
+  batch_size: 2
+  n_samples_per_prompt: 4
+  num_epoch: 1
+  max_prompt_len: 32000
+  max_response_len: 16000
+  sglang_context_length: 50000
+
+training:
+  max_tokens_per_gpu: 16384
+  lr: 1e-6
+  use_kl_loss: true
+  kl_loss_coef: 0.001
+  grpo_std_normalization: true
+  save_interval: 1
+  extra_train_args: "--num-rollout 2"   # stop after 2 steps
+
+wandb:
+  project: polar-swegym-grpo

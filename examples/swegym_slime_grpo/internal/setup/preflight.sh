@@ -2,9 +2,9 @@
 # Preflight: gather machine facts, decide which environment fixes are needed,
 # and fail fast with a specific message for anything this example cannot fix.
 #
-# Standalone:  bash examples/swegym_slime_grpo/setup/preflight.sh
-# From launch_e2e.sh it is sourced so the decisions become variables:
-#   NEED_CUDA_COMPAT   driver too old for the CUDA-13 torch build this example pins
+# Standalone:  bash examples/swegym_slime_grpo/internal/setup/preflight.sh
+# From pipeline.sh it is sourced so the decisions become variables:
+#   NEED_CUDA_COMPAT   driver too old for the CUDA-13 torch build this example locks
 #   NEED_CUDA_TOOLKIT  no CUDA 13 nvcc (Transformer Engine builds from source)
 #   NEED_APPTAINER     no apptainer/singularity binary; install unprivileged
 #   NEED_UV            uv missing; bootstrap into WORKROOT/bin
@@ -17,13 +17,12 @@ SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
 source "${SETUP_DIR}/common.sh"
 
-PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "${SETUP_DIR}/../../.." && pwd)}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "${SETUP_DIR}/../../../.." && pwd)}"
 WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"
 
-# The pinned stack (sglang 0.5.13 → cuda-python 13.x, flash-attn-4) is CUDA-13
-# only; torch is installed from the cu130 index. See setup/constraints.txt.
+# The locked stack (internal/setup/stack/uv.lock: sglang 0.5.13 → cuda-python 13.x,
+# flash-attn-4, torch 2.11+cu130) is CUDA-13 only.
 REQUIRED_CUDA_MAJOR="${REQUIRED_CUDA_MAJOR:-13}"
-TORCH_BACKEND="${TORCH_BACKEND:-cu130}"
 
 POLAR_ROLLOUT_PORT="${POLAR_ROLLOUT_PORT:-8080}"
 POLAR_GATEWAY_PORT="${POLAR_GATEWAY_PORT:-8100}"
@@ -58,7 +57,7 @@ fi
 NEED_CUDA_COMPAT=0
 if [ -n "${DRIVER_CUDA_MAX}" ] && [ "${DRIVER_CUDA_MAX%%.*}" -lt "${REQUIRED_CUDA_MAJOR}" ]; then
     NEED_CUDA_COMPAT=1
-    row "cuda compat" "NEEDED: driver supports CUDA ${DRIVER_CUDA_MAX}, torch ${TORCH_BACKEND} needs ${REQUIRED_CUDA_MAJOR}.x → forward-compat libs"
+    row "cuda compat" "NEEDED: driver supports CUDA ${DRIVER_CUDA_MAX}, the locked torch needs ${REQUIRED_CUDA_MAJOR}.x → forward-compat libs"
 else
     row "cuda compat" "not needed"
 fi
