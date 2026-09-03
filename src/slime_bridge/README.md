@@ -36,6 +36,23 @@ Slime calls one entry point, `generate_rollout_polar_async`, wired in via
 - `reward.py`: reward hook that reads the reward Polar already embedded.
 - `reward_post_process.py`: trajectory-aware, group-normalized reward shaping.
 
+## Training-signal knobs (Slime `--custom-config-path` YAML)
+
+All default to the plain behavior; each is a one-line A/B.
+
+| key | default | effect |
+|---|---|---|
+| `polar_timeout_reward_zero` | `false` | Agent `TIMEOUT` with captured traces trains as `COMPLETED` at reward 0 instead of being masked and excluded from the sibling baseline. `ERROR` stays masked. |
+| `polar_group_id_scope` | `trajectory` | Slime's loss-aggregation unit. `trajectory`: every trajectory weighs the same. `prompt`: token-mean within the prompt's `n_samples_per_prompt` trajectories, then mean over prompts (SkyRL `prompt_mean`). |
+| `polar_drop_zero_variance_groups` | `false` | Drop a group whose trainable trajectories all have the same reward (within `polar_zero_variance_tol`, 1e-6) or has fewer than two; a replacement prompt is pulled. Counted in `polar/dropped_zero_variance_groups`. |
+| `polar_min_complete_accept_fraction` | `0` | Drop a group with fewer than this fraction of completed, trainable sessions. |
+
+GRPO std scaling (slime's `--disable-grpo-std-normalization` opt-out) uses the
+std over *all* valid trajectories in the group; the mean baseline is
+leave-one-trajectory-out. Pair the bridge with
+`gateway.nodes[].inference.training_sampling: true` in the topology so the
+sampled distribution is the trained one (temperature 1, top_p 1, top_k -1).
+
 ## What the bridge owns
 
 - Turn Slime samples + prompts into Polar task requests and submit async batches.

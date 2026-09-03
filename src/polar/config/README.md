@@ -101,3 +101,12 @@ multi-host deployments set explicit reachable URLs.
 `polar serve_gateway` requires `--node-id` when the topology has more than one
 node, so a gateway process always starts with the right ports, worker limits,
 and inference endpoint.
+
+### `inference.training_sampling`
+
+`gateway.nodes[].inference.training_sampling: true` overwrites `temperature`,
+`top_p` and `top_k` on every proxied request with `1.0 / 1.0 / -1`. Engines
+otherwise fill unset sampling params from the served model's
+`generation_config.json` and return temperature-scaled logprobs, so an RL run
+whose harness sends no temperature would sample from a distribution the trainer
+never optimizes. Leave it off for plain rollout or eval use.
