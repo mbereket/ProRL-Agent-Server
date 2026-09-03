@@ -35,8 +35,17 @@ def session_result_to_samples(
     trajectory_index: int,
     reward_key: str = "score",
     max_tokens: int | None = None,
+    timeout_reward_zero: bool = False,
+    group_id_scope: str = "trajectory",
 ) -> list[Any]:
     """Convert one Polar session result into Slime samples — one per trace.
+
+    ``timeout_reward_zero`` turns an agent TIMEOUT with captured traces into a
+    trainable COMPLETED trajectory with reward 0 (the policy is then penalized
+    for running out of budget instead of being masked). ``group_id_scope``
+    selects slime's loss-aggregation unit: ``trajectory`` (default; every
+    trajectory weighs the same) or ``prompt`` (token-mean within the prompt's
+    n_samples trajectories, i.e. SkyRL's ``prompt_mean``).
 
     Every usable trace becomes an independent Sample sharing the same
     ``group_id`` key. Slime's loss reducer then averages all trace
@@ -50,6 +59,7 @@ def session_result_to_samples(
     """
     Sample = _load_sample_type()
     traces = result.trajectory.traces
+    group_id = group_index if group_id_scope == "prompt" else trajectory_index
     samples: list[Any] = []
     for trace_index, trace in enumerate(traces):
         sample = _build_sample(
@@ -59,8 +69,10 @@ def session_result_to_samples(
             trace_index=trace_index,
             group_index=group_index,
             index=trajectory_index,
+            group_id=group_id,
             reward_key=reward_key,
             max_tokens=max_tokens,
+            timeout_reward_zero=timeout_reward_zero,
         )
         if sample is not None:
             samples.append(sample)
@@ -77,6 +89,7 @@ def session_result_to_samples(
         result=result,
         group_index=group_index,
         index=trajectory_index,
+        group_id=group_id,
         reward_key=reward_key,
     )]
 
@@ -89,8 +102,10 @@ def _build_sample(
     trace_index: int,
     group_index: int,
     index: int,
+    group_id: int,
     reward_key: str,
     max_tokens: int | None = None,
+    timeout_reward_zero: bool = False,
 ) -> Any | None:
     prompt_ids = list(trace.prompt_ids)
     response_ids = list(trace.response_ids)
@@ -116,6 +131,9 @@ def _build_sample(
 
     status = _sample_status(Sample, result, trace)
     reward_value = _reward_value(trace)
+    if timeout_reward_zero and status is Sample.Status.ABORTED and _is_timeout(result):
+        status = Sample.Status.COMPLETED
+        reward_value = 0.0
 
     trainable = status not in (Sample.Status.ABORTED, Sample.Status.FAILED)
     loss_mask = _loss_mask_from_trace(
@@ -167,7 +185,7 @@ def _build_sample(
         tokens=prompt_ids + response_ids,
         response=response_text,
         response_length=len(response_ids),
-        group_id=index,
+        group_id=group_id,
         reward={reward_key: reward_value},
         loss_mask=loss_mask,
         rollout_log_probs=response_log_probs,
@@ -183,6 +201,7 @@ def _build_dummy_sample(
     result: "SessionResult",
     group_index: int,
     index: int,
+    group_id: int,
     reward_key: str,
 ) -> Any:
     """Fully masked placeholder for a session with no usable trace.
@@ -213,7 +232,7 @@ def _build_dummy_sample(
         tokens=[0, 0],
         response="",
         response_length=1,
-        group_id=index,
+        group_id=group_id,
         reward={reward_key: 0.0},
         loss_mask=[0],
         rollout_log_probs=[0.0],
@@ -247,6 +266,10 @@ def _scheduler_metadata(result: "SessionResult", trace: "Trace | None") -> dict[
             if key in source:
                 merged[key] = source[key]
     return merged
+
+
+def _is_timeout(result: "SessionResult") -> bool:
+    return result.trajectory.status == "TIMEOUT" or result.status == "TIMEOUT"
 
 
 def _sample_status(Sample: Any, result: "SessionResult", trace: "Trace") -> Any:

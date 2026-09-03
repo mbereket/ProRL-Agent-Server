@@ -130,3 +130,15 @@ def test_std_scaling_all_equal_group_gives_zero_advantage() -> None:
     _, rewards = post_process_rewards(_args(grpo_std_normalization=True), samples)
 
     assert rewards == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_trajectory_key_prefers_session_id_over_shared_prompt_group_id() -> None:
+    # Under polar_group_id_scope=prompt every trajectory in a prompt shares
+    # group_id; session_id must still separate them for the LOO baseline.
+    samples = [FakeSample(group_id=11, reward=1.0), FakeSample(group_id=11, reward=0.0)]
+    samples[0].session_id = "s-a"
+    samples[1].session_id = "s-b"
+
+    _, rewards = post_process_rewards(_args(), samples)
+
+    assert rewards == [1.0, -1.0]

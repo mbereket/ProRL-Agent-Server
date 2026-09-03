@@ -30,7 +30,6 @@ def _args(**overrides):
         "update_weights_interval": 5,
         "polar_request_timeout": 60,
         "polar_callback_host": "127.0.0.1",
-        "polar_scoring_mode": "group",
         "polar_min_complete_accept_fraction": 0.0,
         "hf_checkpoint": "tokenizer-name",
         "polar_add_generation_prompt": True,
@@ -141,3 +140,15 @@ gateway:
     node = rendered["gateway"]["nodes"][0]
     assert node["inference"] == {"engine": "sglang", "base_url": "http://127.0.0.1:30000"}
     assert "sglang" not in node
+
+
+def test_resolve_polar_slime_config_new_knobs_default_off() -> None:
+    config = resolve_polar_slime_config(_args())
+    assert config.timeout_reward_zero is False
+    assert config.group_id_scope == "trajectory"
+
+
+def test_resolve_polar_slime_config_validates_group_id_scope() -> None:
+    assert resolve_polar_slime_config(_args(polar_group_id_scope="prompt")).group_id_scope == "prompt"
+    with pytest.raises(ValueError, match="polar_group_id_scope"):
+        resolve_polar_slime_config(_args(polar_group_id_scope="batch"))

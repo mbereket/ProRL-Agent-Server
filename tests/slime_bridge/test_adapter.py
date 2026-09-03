@@ -180,3 +180,33 @@ def test_session_result_to_samples_requires_logprobs_for_trainable_tokens(monkey
             group_index=1,
             trajectory_index=2,
         )
+
+
+def test_timeout_reward_zero_makes_timed_out_trajectory_trainable(monkeypatch) -> None:
+    monkeypatch.setattr(adapter, "_load_sample_type", lambda: FakeSample)
+    trace = Trace(prompt_ids=[1], response_ids=[2, 3], loss_mask=[1, 1], response_logprobs=[-0.1, -0.2], reward=1.0)
+    result = _session_result(trace=trace, status=SessionStatus.TIMEOUT)
+
+    masked = session_result_to_samples(result, group_index=1, trajectory_index=2)
+    assert masked[0].status == FakeSample.Status.ABORTED
+    assert masked[0].loss_mask == [0, 0]
+
+    trained = session_result_to_samples(result, group_index=1, trajectory_index=2, timeout_reward_zero=True)
+    assert trained[0].status == FakeSample.Status.COMPLETED
+    assert trained[0].loss_mask == [1, 1]
+    assert trained[0].reward == {"score": 0.0}
+
+
+def test_group_id_scope_prompt_shares_group_id_across_trajectories(monkeypatch) -> None:
+    monkeypatch.setattr(adapter, "_load_sample_type", lambda: FakeSample)
+    trace = Trace(prompt_ids=[1], response_ids=[2], loss_mask=[1], response_logprobs=[-0.1], reward=1.0)
+
+    a = session_result_to_samples(_session_result(trace=trace), group_index=11, trajectory_index=2, group_id_scope="prompt")
+    b = session_result_to_samples(_session_result(trace=trace), group_index=11, trajectory_index=3, group_id_scope="prompt")
+    assert a[0].group_id == b[0].group_id == 11
+    assert (a[0].index, b[0].index) == (2, 3)
+
+    placeholder = session_result_to_samples(
+        _session_result(trace=Trace()), group_index=11, trajectory_index=4, group_id_scope="prompt"
+    )
+    assert placeholder[0].group_id == 11

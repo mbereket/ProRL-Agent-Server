@@ -237,6 +237,8 @@ def _convert_task_result_to_samples(
                 trajectory_index=traj_idx,
                 reward_key=config.reward_key,
                 max_tokens=max_tokens,
+                timeout_reward_zero=config.timeout_reward_zero,
+                group_id_scope=config.group_id_scope,
             )
         )
     return group_samples

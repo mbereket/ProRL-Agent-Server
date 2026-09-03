@@ -27,7 +27,8 @@ class PolarSlimeConfig:
     max_off_policy_steps: int
     request_timeout: float | None
     callback_host: str
-    scoring_mode: str
+    timeout_reward_zero: bool
+    group_id_scope: str
     min_complete_accept_fraction: float
     tokenizer_name_or_path: str | None
     add_generation_prompt: bool
@@ -83,9 +84,11 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     if callback_host in {"0.0.0.0", "::"}:
         raise ValueError("polar_callback_host must be reachable by the rollout server, not a wildcard bind address")
 
-    scoring_mode = str(getattr(args, "polar_scoring_mode", "group")).strip().lower()
-    if scoring_mode not in {"group", "individual"}:
-        raise ValueError("polar_scoring_mode must be 'group' or 'individual'")
+    timeout_reward_zero = bool(getattr(args, "polar_timeout_reward_zero", False))
+
+    group_id_scope = str(getattr(args, "polar_group_id_scope", "trajectory")).strip().lower()
+    if group_id_scope not in {"trajectory", "prompt"}:
+        raise ValueError("polar_group_id_scope must be 'trajectory' or 'prompt'")
 
     min_complete_accept_fraction = float(
         getattr(args, "polar_min_complete_accept_fraction", 0.0) or 0.0
@@ -111,7 +114,8 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         max_off_policy_steps=max_off_policy_steps,
         request_timeout=request_timeout,
         callback_host=callback_host,
-        scoring_mode=scoring_mode,
+        timeout_reward_zero=timeout_reward_zero,
+        group_id_scope=group_id_scope,
         min_complete_accept_fraction=min_complete_accept_fraction,
         tokenizer_name_or_path=getattr(args, "hf_checkpoint", None),
         add_generation_prompt=bool(getattr(args, "polar_add_generation_prompt", True)),
