@@ -127,3 +127,19 @@ def test_vllm_normalize_skips_token_id_stamp_on_length_mismatch() -> None:
     }
     content = VLLMEngine().normalize_response(response)["choices"][0]["logprobs"]["content"]
     assert "token_id" not in content[0]
+
+
+def test_training_sampling_pins_temperature_top_p_top_k() -> None:
+    for name in ("sglang", "vllm"):
+        engine = get_engine(name, training_sampling=True)
+        out = engine.prepare_request({"messages": [], "temperature": 0.2, "top_p": 0.8, "top_k": 20})
+        assert out["temperature"] == 1.0
+        assert out["top_p"] == 1.0
+        assert out["top_k"] == -1
+        assert out["logprobs"] is True
+
+
+def test_training_sampling_off_passes_harness_params_through() -> None:
+    out = get_engine("sglang").prepare_request({"messages": [], "temperature": 0.2})
+    assert out["temperature"] == 0.2
+    assert "top_k" not in out

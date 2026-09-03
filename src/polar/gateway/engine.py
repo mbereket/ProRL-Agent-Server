@@ -39,13 +39,26 @@ class InferenceEngine(ABC):
 
     name: str
 
+    # Sampling params that make the sampled distribution equal the trained one.
+    # Backends fall back to per-model ``generation_config`` defaults (e.g.
+    # temperature 0.7 / top_k 20) when a harness sends none, and return
+    # temperature-scaled logprobs, so an RL run must pin these explicitly.
+    TRAINING_SAMPLING_PARAMS: dict[str, Any] = {"temperature": 1.0, "top_p": 1.0, "top_k": -1}
+
+    def __init__(self, *, training_sampling: bool = False) -> None:
+        self.training_sampling = training_sampling
+
     def prepare_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Inject the request params this backend needs to emit training signals.
 
         ``logprobs`` is universal; subclasses add backend-specific params (e.g.
-        token-id flags) on top via ``super().prepare_request(...)``.
+        token-id flags) on top via ``super().prepare_request(...)``. With
+        ``training_sampling`` the sampling params are overwritten (not
+        defaulted) so harness-supplied values cannot leak in.
         """
         request["logprobs"] = True
+        if self.training_sampling:
+            request.update(self.TRAINING_SAMPLING_PARAMS)
         return request
 
     def normalize_response(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -196,7 +209,7 @@ _ENGINES: dict[str, type[InferenceEngine]] = {
 }
 
 
-def get_engine(name: str) -> InferenceEngine:
+def get_engine(name: str, *, training_sampling: bool = False) -> InferenceEngine:
     """Return the inference engine strategy for ``name`` (``sglang`` | ``vllm``)."""
     try:
         engine_cls = _ENGINES[name]
@@ -205,4 +218,4 @@ def get_engine(name: str) -> InferenceEngine:
         raise ValueError(
             f"Unknown inference engine {name!r}; supported: {supported}"
         ) from None
-    return engine_cls()
+    return engine_cls(training_sampling=training_sampling)

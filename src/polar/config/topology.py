@@ -22,6 +22,10 @@ class _StrictModel(BaseModel):
 class _InferenceConfig(_StrictModel):
     engine: Literal["sglang", "vllm"] = "sglang"
     base_url: str = "http://127.0.0.1:8000"
+    # Pin temperature=1 / top_p=1 / top_k=-1 on every proxied request so the
+    # sampled distribution is the one the trainer optimizes. Off by default:
+    # the harness's own sampling params pass through unchanged.
+    training_sampling: bool = False
 
     @field_validator("base_url")
     @classmethod
@@ -75,6 +79,10 @@ class GatewayNodeConfig(_StrictModel):
     @property
     def engine(self) -> str:
         return self.inference.engine
+
+    @property
+    def training_sampling(self) -> bool:
+        return self.inference.training_sampling
 
 
 class _CompletionPersistenceConfig(_StrictModel):

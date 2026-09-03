@@ -81,7 +81,10 @@ def configure_server(topology_path: str = "topology.yaml", *, node_id: str | Non
 
 def _build_state(topology: TopologyConfig, node_id: str | None) -> GatewayState:
     node = topology.select_gateway_node(node_id)
-    inference = InferenceClient(node.inference_base_url, get_engine(node.engine))
+    inference = InferenceClient(
+        node.inference_base_url,
+        get_engine(node.engine, training_sampling=node.training_sampling),
+    )
     persistence_config = topology.gateway.completion_persistence
     save_dir = topology.rollout.save_dir
     completion_writer = CompletionWriter(
