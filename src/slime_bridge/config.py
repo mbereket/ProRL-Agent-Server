@@ -31,6 +31,7 @@ class PolarSlimeConfig:
     group_id_scope: str
     drop_zero_variance_groups: bool
     zero_variance_tol: float
+    max_consecutive_dropped_groups: int
     min_complete_accept_fraction: float
     tokenizer_name_or_path: str | None
     add_generation_prompt: bool
@@ -97,6 +98,10 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     if zero_variance_tol < 0.0:
         raise ValueError("polar_zero_variance_tol must be non-negative")
 
+    max_consecutive_dropped_groups = int(getattr(args, "polar_max_consecutive_dropped_groups", 16))
+    if max_consecutive_dropped_groups < 0:
+        raise ValueError("polar_max_consecutive_dropped_groups must be non-negative (0 disables)")
+
     min_complete_accept_fraction = float(
         getattr(args, "polar_min_complete_accept_fraction", 0.0) or 0.0
     )
@@ -125,6 +130,7 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         group_id_scope=group_id_scope,
         drop_zero_variance_groups=drop_zero_variance_groups,
         zero_variance_tol=zero_variance_tol,
+        max_consecutive_dropped_groups=max_consecutive_dropped_groups,
         min_complete_accept_fraction=min_complete_accept_fraction,
         tokenizer_name_or_path=getattr(args, "hf_checkpoint", None),
         add_generation_prompt=bool(getattr(args, "polar_add_generation_prompt", True)),

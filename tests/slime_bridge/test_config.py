@@ -152,3 +152,10 @@ def test_resolve_polar_slime_config_validates_group_id_scope() -> None:
     assert resolve_polar_slime_config(_args(polar_group_id_scope="prompt")).group_id_scope == "prompt"
     with pytest.raises(ValueError, match="polar_group_id_scope"):
         resolve_polar_slime_config(_args(polar_group_id_scope="batch"))
+
+
+def test_resolve_polar_slime_config_consecutive_drop_limit() -> None:
+    assert resolve_polar_slime_config(_args()).max_consecutive_dropped_groups == 16
+    assert resolve_polar_slime_config(_args(polar_max_consecutive_dropped_groups=0)).max_consecutive_dropped_groups == 0
+    with pytest.raises(ValueError, match="polar_max_consecutive_dropped_groups"):
+        resolve_polar_slime_config(_args(polar_max_consecutive_dropped_groups=-1))

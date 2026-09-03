@@ -430,6 +430,10 @@ class AsyncPolarRolloutWorker:
         self._completed_buffer_size = 0
         # Per-task callback plumbing: event fires when the rollout server POSTs
         # the terminal TaskResult to our local listener.
+        # Consecutive dropped groups (task failure / zero trainable / logprob
+        # error). A run whose every session fails would otherwise pull
+        # replacement prompts forever; trip a fatal error instead.
+        self._consecutive_drops = 0
         self._task_events: dict[str, asyncio.Event] = {}
         self._task_results: dict[str, TaskResult] = {}
         self._callback_url: str | None = None
@@ -666,6 +670,7 @@ class AsyncPolarRolloutWorker:
         if self._running:
             try:
                 completed = await self._submit_attempt(client, pending)
+                self._consecutive_drops = 0
                 await self._emit_completed(completed)
                 return
             except Exception as exc:
@@ -699,6 +704,20 @@ class AsyncPolarRolloutWorker:
             reason,
             last_error,
         )
+        # Zero-variance drops are an expected filter, not a failure.
+        if not isinstance(last_error, PolarZeroVarianceGroupError):
+            self._consecutive_drops += 1
+            limit = self.config.max_consecutive_dropped_groups
+            if limit and self._consecutive_drops >= limit:
+                self._set_fatal(
+                    PolarRolloutSchedulerError(
+                        f"{self._consecutive_drops} consecutive Polar groups dropped "
+                        f"(last: {reason}: {last_error}); stopping instead of pulling "
+                        "replacement prompts forever. Raise polar_max_consecutive_dropped_groups "
+                        "or set it to 0 to disable."
+                    )
+                )
+                self._running = False
         return
 
     async def _submit_attempt(

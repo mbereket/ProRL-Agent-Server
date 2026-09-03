@@ -64,10 +64,12 @@ class ApptainerRuntime(BaseRuntime):
         for volume in self.spec.kwargs.get("volumes", []):
             args.extend(["--bind", str(volume)])
         args.extend([self.spec.image, self._instance_name])
-        rc, _, _ = await self._run_local_command(*args)
+        rc, _, stderr = await self._run_local_command(*args, capture=True)
         if rc != 0:
+            detail = (stderr or "").strip().splitlines()
+            tail = " | ".join(detail[-3:]) if detail else "no stderr"
             raise RuntimeError(
-                f"{self._binary} instance start failed with exit code {rc}"
+                f"{self._binary} instance start failed with exit code {rc}: {tail}"
             )
 
     _STOP_TIMEOUT = 30.0
