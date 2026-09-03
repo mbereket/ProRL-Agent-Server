@@ -153,7 +153,9 @@ CUSTOM_CONFIG_PATH="${CUSTOM_CONFIG_PATH:-${RUN_DIR}/polar_config.yaml}"
 COMPILER_CACHE_ROOT="${COMPILER_CACHE_ROOT:-${RUN_DIR}/compiler_cache}"
 TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${COMPILER_CACHE_ROOT}/torchinductor}"
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${COMPILER_CACHE_ROOT}/triton}"
-mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
+# sglang JIT kernels (tvm-ffi) default to ~/.cache/tvm-ffi; keep them off $HOME too.
+export TVM_FFI_CACHE_DIR="${TVM_FFI_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tvm-ffi}"
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR"
 
 # Render YAML templates: only the listed ${VARS} are expanded.
 command -v envsubst >/dev/null || { echo "ERROR: envsubst not found (install gettext-base)"; exit 1; }
@@ -236,6 +238,7 @@ RUNTIME_ENV_JSON="{
     \"WANDB_DIR\": \"${PROJECT_ROOT}/logs\",
     \"TORCHINDUCTOR_CACHE_DIR\": \"${TORCHINDUCTOR_CACHE_DIR}\",
     \"TRITON_CACHE_DIR\": \"${TRITON_CACHE_DIR}\",
+    \"TVM_FFI_CACHE_DIR\": \"${TVM_FFI_CACHE_DIR}\",
     \"LD_LIBRARY_PATH\": \"${RUNTIME_LD_LIBRARY_PATH}\",
     \"PYTORCH_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
     \"PYTORCH_CUDA_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
