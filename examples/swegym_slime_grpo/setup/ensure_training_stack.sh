@@ -81,5 +81,10 @@ if [ "${COMPUTE_CAP:-}" = "10.0" ]; then
 fi
 
 log "training stack: gate"
-te_ok || die "Transformer Engine ${te_version} is not importable after install"
+if ! te_ok; then
+    # Show the actual import error before dying (te_ok swallows it).
+    echo "  transformer-engine dist version: $(pip_version transformer-engine)"
+    "${PYTHON_BIN}" -c 'import torch; torch.cuda.init(); import transformer_engine.pytorch' 2>&1 | tail -15 || true
+    die "Transformer Engine ${te_version} is not importable after install"
+fi
 "${PYTHON_BIN}" -c 'from importlib.metadata import version; print("  OK: transformer-engine", version("transformer-engine"))'
