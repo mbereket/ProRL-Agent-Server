@@ -79,6 +79,14 @@ def configure_server(topology_path: str = "topology.yaml", *, node_id: str | Non
     _state = None
 
 
+def _session_base_dir() -> str | None:
+    path = os.environ.get("POLAR_SESSION_DIR")
+    if not path:
+        return None
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _build_state(topology: TopologyConfig, node_id: str | None) -> GatewayState:
     node = topology.select_gateway_node(node_id)
     inference = InferenceClient(
@@ -114,6 +122,11 @@ def _build_state(topology: TopologyConfig, node_id: str | None) -> GatewayState:
         default_runtime=node.default_runtime,
         rollout_server_url=topology.gateway.rollout_server_url or None,
         heartbeat_interval_seconds=topology.gateway.heartbeat_interval_seconds,
+        # Where per-session dirs (logs/agent, artifacts, overlay) are created.
+        # Default: the system temp dir. Do NOT steer this with TMPDIR: apptainer
+        # forwards the host environment into the sandbox and a host-only TMPDIR
+        # breaks mktemp inside it (the SWE-Gym verifier, for one).
+        session_base_dir=_session_base_dir(),
     )
     return GatewayState(
         topology=topology,
