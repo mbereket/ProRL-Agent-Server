@@ -173,7 +173,11 @@ export TVM_FFI_CACHE_DIR="${TVM_FFI_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tvm-ffi}"
 # tilelang (FLA GatedDeltaNet kernels in the trainer) defaults to ~/.tilelang/cache.
 export TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tilelang}"
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR" "$TILELANG_CACHE_DIR"
-# flashinfer norm kernels: use the CUDA JIT implementation. Its default CuTe-DSL
+# flashinfer JIT workspace (cached_ops, cubins) defaults to $HOME/.cache/flashinfer;
+# keep it on the run dir like the other compiler caches ($HOME may be full).
+export FLASHINFER_WORKSPACE_BASE="${FLASHINFER_WORKSPACE_BASE:-${COMPILER_CACHE_ROOT}/flashinfer}"
+mkdir -p "$FLASHINFER_WORKSPACE_BASE"
+# flashinfer norm kernels: use the CUDA JIT implementation. The default CuTe-DSL
 # path compiles rmsnorm through nvidia-cutlass-dsl at SGLang cuda-graph capture
 # and fails there with an MLIR binding TypeError on this stack (sglang 0.5.13,
 # flashinfer 0.6.12, nvidia-cutlass-dsl 4.5.2). Set to 0 to try the DSL path.
