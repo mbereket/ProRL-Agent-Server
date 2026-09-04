@@ -39,7 +39,7 @@ from polar.gateway.session import (
 )
 from polar.gateway.storage import SessionStore
 from polar.gateway.transform import TransformManager
-from polar.gateway.transform.reasoning import reasoning_replay_keys
+from polar.gateway.transform.reasoning import assistant_replay_entries
 from polar.gateway.transform.base import BaseTransformer
 from polar.platform.events import SSE_HEADERS, EventBus
 from polar.rollout.models import SessionDispatchRequest, SessionDispatchResponse, SessionStatus
@@ -68,7 +68,7 @@ class GatewayState:
     event_bus: EventBus
     # Per-session reasoning produced by the model, keyed for replay into
     # histories that omit it (see OpenAIResponsesTransformer._replay_reasoning).
-    reasoning_replay: dict[str, dict[str, str]] = field(default_factory=dict)
+    reasoning_replay: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
 
 
 _state: GatewayState | None = None
@@ -694,7 +694,7 @@ _REASONING_REPLAY_MAX_SESSIONS = 4096
 
 
 def _remember_reasoning(state: GatewayState, session_id: str, response: dict[str, Any]) -> None:
-    keys = reasoning_replay_keys(response)
+    keys = assistant_replay_entries(response)
     if not keys:
         return
     store = state.reasoning_replay

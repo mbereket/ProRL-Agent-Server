@@ -114,6 +114,7 @@ class BaseTransformer(ABC):
         token ids) are added later by the inference engine.
         """
         request.pop("_polar_model_served", None)
+        request.pop("_polar_reasoning_replay", None)
 
         request = self._merge_developer_role(request)
 

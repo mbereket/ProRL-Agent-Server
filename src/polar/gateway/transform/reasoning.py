@@ -110,23 +110,31 @@ def extract_reasoning_from_responses_item(item: dict[str, Any]) -> str:
     return decrypt_reasoning(item.get("encrypted_content"))
 
 
-def reasoning_replay_keys(response: dict[str, Any]) -> dict[str, str]:
-    """Map replay keys → reasoning text for a chat completion response.
+def assistant_replay_entries(response: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Map replay keys → what the assistant produced in a chat completion turn.
 
-    Keys are ``call:<tool_call_id>`` for each tool call the assistant turn made;
-    the Responses transform hands the same id back to the harness as
-    ``function_call.call_id``, which is what it echoes on the next turn.
+    Keys are ``call:<tool_call_id>`` for each tool call the turn made; the
+    Responses transform hands the same id back to the harness as
+    ``function_call.call_id``, which is what it echoes on the next turn. The
+    entry carries the raw assistant ``content`` (with SGLang's split reasoning
+    parser off this is ``<thinking>\n</think>\n\n<visible text>``, which the
+    chat template re-splits) and ``reasoning_content`` when a parser filled it.
     """
     try:
         message = response["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
         return {}
+    content = message.get("content")
     reasoning = message.get("reasoning_content")
-    if not isinstance(reasoning, str) or not reasoning:
+    entry = {
+        "content": content if isinstance(content, str) else "",
+        "reasoning": reasoning if isinstance(reasoning, str) else "",
+    }
+    if not entry["content"] and not entry["reasoning"]:
         return {}
-    keys: dict[str, str] = {}
+    entries: dict[str, dict[str, str]] = {}
     for tool_call in message.get("tool_calls") or []:
         call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
         if call_id:
-            keys[f"call:{call_id}"] = reasoning
-    return keys
+            entries[f"call:{call_id}"] = entry
+    return entries

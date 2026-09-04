@@ -20,6 +20,17 @@ from polar.gateway.transform.reasoning import (
 )
 
 
+def _responses_output_text(content: Any) -> str:
+    """Concatenate the text of a Responses message ``content`` (str or parts)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            p.get("text", "") for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)
+        )
+    return ""
+
+
 @dataclass
 class _ResponsesToolCallState:
     name: str = ""
@@ -401,7 +412,7 @@ class OpenAIResponsesTransformer(BaseTransformer):
         elif isinstance(input_data, list):
             replay = body.get("_polar_reasoning_replay")
             if replay:
-                input_data = self._replay_reasoning(input_data, replay)
+                input_data = self._replay_assistant_turns(input_data, replay)
             messages.extend(self._convert_input_items_to_messages(input_data))
 
         result: dict[str, Any] = {"messages": messages}
@@ -454,41 +465,69 @@ class OpenAIResponsesTransformer(BaseTransformer):
         )
 
     @staticmethod
-    def _replay_reasoning(
-        items: list[dict[str, Any]], replay: dict[str, str]
+    def _replay_assistant_turns(
+        items: list[dict[str, Any]], replay: dict[str, dict[str, str]]
     ) -> list[dict[str, Any]]:
-        """Re-insert this session's reasoning into a history that omits it.
+        """Restore what the assistant said in tool-call turns a harness omits.
 
-        Codex echoes our ``reasoning`` output items back on the next turn, so the
-        chat template re-renders each earlier ``<think>`` block and every request
-        is a token-prefix extension of the previous one (one merged trace per
-        session). opencode drops them, which breaks that chain on every turn. The
-        gateway keeps the reasoning it produced per tool ``call_id`` (see
-        ``reasoning_replay_keys``); for each assistant turn whose function calls
-        arrive without a preceding ``reasoning`` item, insert one. Turns that
-        already carry reasoning are left alone.
+        Codex echoes our output verbatim (assistant text — thinking included —
+        then the function calls), so the chat template re-renders each earlier
+        turn and every request is a token-prefix extension of the previous one:
+        prefix merging yields one trace per session. opencode echoes the
+        function calls but an empty assistant text, which drops the thinking and
+        visible text; the re-rendered turn then diverges from what the model
+        generated and the chain breaks on every turn. The gateway keeps each
+        turn's content per tool ``call_id`` (``assistant_replay_entries``) and
+        fills it back in here: the turn's empty assistant message gets the stored
+        text (or one is inserted), and a stored ``reasoning_content`` becomes a
+        ``reasoning`` item when the turn has none. Turns that already carry text
+        or reasoning are left alone.
         """
         out: list[dict[str, Any]] = []
         turn_has_reasoning = False
+        turn_restored = False
+        empty_text_idx: int | None = None  # this turn's assistant message with empty text
         for item in items:
             item_type = item.get("type")
+            role = item.get("role")
             if item_type == "reasoning":
                 turn_has_reasoning = True
+            elif role == "assistant" and item_type in (None, "message"):
+                text = _responses_output_text(item.get("content"))
+                if text == "":
+                    empty_text_idx = len(out)
+                else:
+                    turn_restored = True  # harness echoed the text itself
             elif item_type == "function_call":
-                if not turn_has_reasoning:
-                    text = replay.get(f"call:{item.get('call_id', '')}")
-                    if text:
+                entry = replay.get(f"call:{item.get('call_id', '')}")
+                if entry and not turn_restored:
+                    if entry.get("reasoning") and not turn_has_reasoning:
                         out.append(
                             {
                                 "type": "reasoning",
-                                "content": [{"type": "reasoning_text", "text": text}],
+                                "content": [{"type": "reasoning_text", "text": entry["reasoning"]}],
                             }
                         )
                         turn_has_reasoning = True
-            elif item_type in {"function_call_output", "local_shell_call_output", "shell_call_output"} or (
-                item.get("role") in {"user", "developer", "system"}
-            ):
+                    if entry.get("content"):
+                        message = {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": entry["content"]}],
+                        }
+                        if empty_text_idx is not None:
+                            out[empty_text_idx] = message
+                        else:
+                            out.append(message)
+                    turn_restored = True
+            elif item_type in {"function_call_output", "local_shell_call_output", "shell_call_output"} or role in {
+                "user",
+                "developer",
+                "system",
+            }:
                 turn_has_reasoning = False
+                turn_restored = False
+                empty_text_idx = None
             out.append(item)
         return out
 
