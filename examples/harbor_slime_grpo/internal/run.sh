@@ -329,6 +329,12 @@ KL_ARGS=(--use-kl-loss --kl-loss-coef "${KL_LOSS_COEF:-0.001}" --kl-loss-type lo
 [ "${USE_KL_LOSS:-1}" = 1 ] || KL_ARGS=()
 STD_NORM_ARGS=()
 [ "${GRPO_STD_NORMALIZATION:-0}" = 1 ] || STD_NORM_ARGS=(--disable-grpo-std-normalization)
+# OPTIMIZER_CPU_OFFLOAD=1 keeps Adam states and fp32 master params on the host
+# (Megatron hybrid optimizer). They are allocated at the first update, so a
+# config that fits step 0 can OOM from step 1 on; with ~65k-token traces on
+# TP4xCP2 that is ~20 GB/GPU of headroom.
+OPTIM_OFFLOAD_ARGS=()
+[ "${OPTIMIZER_CPU_OFFLOAD:-0}" = 1 ] && OPTIM_OFFLOAD_ARGS=(--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --overlap-cpu-optimizer-d2h-h2d)
 EVAL_ARGS=()
 if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
     # shellcheck disable=SC2206
@@ -392,6 +398,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --use-tis \
     "${KL_ARGS[@]}" \
     "${STD_NORM_ARGS[@]}" \
+    ${OPTIM_OFFLOAD_ARGS[@]+"${OPTIM_OFFLOAD_ARGS[@]}"} \
     "${EVAL_ARGS[@]}" \
     "${EXTRA_TRAIN_ARGS_ARR[@]}" \
     --entropy-coef 0.0 \
