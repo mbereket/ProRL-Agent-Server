@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Create the venv and install the locked python stack (internal/setup/stack/uv.lock).
 #
-# The lock pins one consistent set — SGLang 0.5.13 (CUDA 13, torch 2.11+cu130),
-# Slime v0.3.0's dependency tree, Transformer Engine 2.12 cu13 core, Polar
-# (editable) — so the install is a single `uv sync --frozen`. What the lock
-# cannot carry is layered on afterwards: the patched slime / Megatron
-# checkouts (pipeline.sh) and the Transformer Engine torch bindings source
-# build (ensure_training_stack.sh). The sync is --inexact so those layered
-# packages survive a re-run; it still resets slime to the locked version, so
-# pipeline.sh always re-applies the editable overlay after this.
+# The lock pins one consistent set — SGLang 0.5.13 and Slime v0.3.0 from the
+# polar forks (git sources at fixed commits), their dependency trees, torch
+# 2.11+cu130, Transformer Engine 2.12 cu13 core, Polar (editable) — so the
+# install is a single `uv sync --frozen`. What the lock cannot carry is layered
+# on afterwards: the patched Megatron checkout (pipeline.sh, editable) and the
+# Transformer Engine torch bindings source build (ensure_training_stack.sh).
+# The sync is --inexact so those layered packages survive a re-run. uv holds
+# its own lock on the environment while syncing, and a sync against a venv
+# that already matches the lock changes nothing.
 # Sourced by pipeline.sh after preflight (needs NEED_UV, WORKROOT, PROJECT_ROOT).
 set -euo pipefail
 SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -29,18 +30,7 @@ info "$(uv --version)"
 log "python stack: uv sync --frozen (${STACK_DIR}/uv.lock) → ${VENV_DIR}"
 # UV_PROJECT_ENVIRONMENT places the project venv; python version comes from
 # stack/.python-version (uv downloads it if the machine has none).
-# Skip the sync when the venv already matches this lock: a re-sync rewrites the
-# shared venv (re-links packages, resets the slime overlay) and can break a job
-# that is importing from it at that moment. The stamp is written after a
-# successful sync; a changed uv.lock/pyproject invalidates it.
-STACK_STAMP="${VENV_DIR}/.stack-stamp"
-stack_digest="$(cat "${STACK_DIR}/uv.lock" "${STACK_DIR}/pyproject.toml" | sha256sum | cut -c1-16)"
-if [ -x "${VENV_DIR}/bin/python" ] && [ "$(cat "${STACK_STAMP}" 2>/dev/null)" = "${stack_digest}" ]; then
-    info "venv matches lock ${stack_digest}; skipping sync"
-else
-    UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv sync --frozen --inexact --project "${STACK_DIR}"
-    printf '%s\n' "${stack_digest}" > "${STACK_STAMP}"
-fi
+UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv sync --frozen --inexact --project "${STACK_DIR}"
 PYTHON_BIN="${VENV_DIR}/bin/python"
 emit_export PYTHON_BIN "${PYTHON_BIN}"
 emit_export VIRTUAL_ENV "${VENV_DIR}"

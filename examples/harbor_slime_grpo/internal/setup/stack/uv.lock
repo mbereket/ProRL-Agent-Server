@@ -2836,7 +2836,7 @@ wheels = [
 [[package]]
 name = "sglang"
 version = "0.5.13"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/mbereket/sglang.git?subdirectory=python&rev=89782b27af01b5a6c1bac455d39db2177644a22c#89782b27af01b5a6c1bac455d39db2177644a22c" }
 dependencies = [
     { name = "aiohttp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "anthropic", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -2905,9 +2905,6 @@ dependencies = [
     { name = "watchfiles", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "xgrammar", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/6a/a1b0375467f0dddb54c7f992291711a46196d8b7ec109d2919d691ed0f7e/sglang-0.5.13-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:2c32b23dade35e3e5038ed200580a692ab378e1c232ad690d893c6cfce95c1e8", size = 11873808, upload-time = "2026-06-11T10:16:53.236Z" },
-]
 
 [[package]]
 name = "sglang-kernel"
@@ -2955,7 +2952,7 @@ wheels = [
 [[package]]
 name = "slime"
 version = "0.3.0"
-source = { git = "https://github.com/THUDM/slime.git?tag=v0.3.0#bf14dc21f9500746447f2572d0692e981c4d2a7e" }
+source = { git = "https://github.com/mbereket/slime.git?rev=12e5210eb0c9a67f5f1f3fc33bb5e451bae9c2ae#12e5210eb0c9a67f5f1f3fc33bb5e451bae9c2ae" }
 dependencies = [
     { name = "accelerate", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "anthropic", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -3191,8 +3188,8 @@ requires-dist = [
     { name = "polar", extras = ["swebench"], editable = "../../../../../" },
     { name = "pybind11" },
     { name = "setuptools" },
-    { name = "sglang", specifier = "==0.5.13" },
-    { name = "slime", git = "https://github.com/THUDM/slime.git?tag=v0.3.0" },
+    { name = "sglang", git = "https://github.com/mbereket/sglang.git?subdirectory=python&rev=89782b27af01b5a6c1bac455d39db2177644a22c" },
+    { name = "slime", git = "https://github.com/mbereket/slime.git?rev=12e5210eb0c9a67f5f1f3fc33bb5e451bae9c2ae" },
     { name = "swegym", git = "https://github.com/SWE-Gym/SWE-Bench-Package.git?rev=16dd480cce9b27bf111a362d280881c6def5d2a7" },
     { name = "torch", index = "https://download.pytorch.org/whl/cu130" },
     { name = "transformer-engine", specifier = "==2.12.0" },

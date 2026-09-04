@@ -3,10 +3,11 @@
 # head_entry.sh on slurm) exports the run config as environment variables and
 # execs this.
 #
-# Order: preflight → python stack (uv sync of setup/stack/uv.lock) → CUDA user
-# space → apptainer → slime / Megatron checkouts + patches → editable overlay →
-# training stack → sglang patch → tasks → images + harness → HF snapshot →
-# weight conversion → Polar templates → run.sh.
+# Order: preflight → python stack (uv sync of setup/stack/uv.lock; slime and
+# sglang come from the pinned polar forks) → CUDA user space → apptainer →
+# slime checkout (train scripts, conversion tool, megatron.patch) + Megatron
+# checkout (patched, editable) → training stack → tasks → images + harness →
+# HF snapshot → weight conversion → Polar templates → run.sh.
 # Every step is idempotent; re-running resumes where the previous run stopped.
 # DRY_RUN=1 (launch.sh --dry-run) skips everything that touches GPUs, images or
 # checkpoints and still builds the prompt list and renders the templates.
@@ -36,13 +37,18 @@ export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-${WORKROOT}/apptainer_tmp}"
 mkdir -p "${HF_HOME}" "${UV_CACHE_DIR}" "${APPTAINER_CACHEDIR}" "${APPTAINER_TMPDIR}"
 
 # ── Pins ───────────────────────────────────────────────────────────────────
-# Python packages are pinned in setup/stack/pyproject.toml + uv.lock. The
-# checkouts below are installed over that lock as editables (--no-deps) because
-# they carry local patches.
+# Python packages are pinned in setup/stack/pyproject.toml + uv.lock; slime and
+# sglang resolve from the polar forks at fixed commits (setup/stack/repin.sh
+# moves the pins). The slime checkout below is the same commit as the locked
+# package: run.sh needs its train.py/train_async.py, convert_weights.sh its
+# tools/, and Megatron its docker/patch/latest/megatron.patch. Megatron is the
+# one checkout still installed as an editable over the lock (it carries slime's
+# patch).
 SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
-SLIME_REPO="${SLIME_REPO:-https://github.com/THUDM/slime.git}"
-SLIME_REF="${SLIME_REF:-v0.3.0}"
-MEGATRON_DIR="${MEGATRON_DIR:-${WORKROOT}/Megatron-LM-slime-${SLIME_REF}}"
+SLIME_REPO="${SLIME_REPO:-$(sed -n 's/^slime = { git = "\([^"]*\)".*/\1/p' "${SCRIPT_DIR}/setup/stack/pyproject.toml")}"
+SLIME_REF="${SLIME_REF:-$(sed -n 's/^slime = { git = "[^"]*", rev = "\([0-9a-f]*\)".*/\1/p' "${SCRIPT_DIR}/setup/stack/pyproject.toml")}"
+[ -n "${SLIME_REPO}" ] && [ -n "${SLIME_REF}" ] || { echo "ERROR: could not read the slime git pin from setup/stack/pyproject.toml" >&2; exit 1; }
+MEGATRON_DIR="${MEGATRON_DIR:-${WORKROOT}/Megatron-LM-slime-${SLIME_REF:0:12}}"
 MEGATRON_REPO="${MEGATRON_REPO:-https://github.com/NVIDIA/Megatron-LM.git}"
 MEGATRON_REF="${MEGATRON_REF:-1dcf0dafa884ad52ffb243625717a3471643e087}"
 MEGATRON_PATCH="${MEGATRON_PATCH:-${SLIME_DIR}/docker/patch/latest/megatron.patch}"
@@ -65,7 +71,6 @@ export SAVE_ROOT="${SAVE_ROOT:-${WORKROOT}/ckpt/harbor_slime_grpo}"
 
 INSTALL_EDITABLE="${INSTALL_EDITABLE:-1}"
 INSTALL_TRAINING_STACK="${INSTALL_TRAINING_STACK:-1}"
-APPLY_SGLANG_PATCH="${APPLY_SGLANG_PATCH:-1}"
 PREPARE_IMAGES="${PREPARE_IMAGES:-1}"
 PREPARE_HARNESS="${PREPARE_HARNESS:-1}"
 APPTAINER_PREPARE_JOBS="${APPTAINER_PREPARE_JOBS:-4}"
@@ -75,9 +80,9 @@ RUN_TRAINING="${RUN_TRAINING:-1}"
 # shellcheck source=./setup/common.sh
 source "${SCRIPT_DIR}/setup/common.sh"
 
-# Shared, idempotent installs (venv, CUDA userspace, apptainer, checkouts, task
-# datasets, SIF images, harness CLI, weight conversion) are serialized across
-# concurrent jobs in this WORKROOT; the later job finds them "present; skipping".
+# Shared installs that are not atomic on their own (apptainer, checkouts, SIF
+# images, harness CLI, weight conversion) are serialized across concurrent jobs
+# in this WORKROOT; the later job finds them "present; skipping".
 setup_lock_acquire "${WORKROOT}/.setup.lock"
 
 if [ "${DRY_RUN}" = 0 ]; then
@@ -122,6 +127,8 @@ if [ "${DRY_RUN}" = 0 ]; then
     }
     log "checkouts"
     clone_retry Slime "${SLIME_REPO}" "${SLIME_REF}" "${SLIME_DIR}"
+    slime_head="$(git -C "${SLIME_DIR}" rev-parse HEAD)"
+    [ "${slime_head}" = "${SLIME_REF}" ] || die "slime checkout ${SLIME_DIR} is at ${slime_head}, the lock pins ${SLIME_REF}; move or remove the checkout"
     clone_retry Megatron-LM "${MEGATRON_REPO}" "${MEGATRON_REF}" "${MEGATRON_DIR}"
     if [ -f "${MEGATRON_PATCH}" ]; then
         if git -C "${MEGATRON_DIR}" apply --reverse --check "${MEGATRON_PATCH}" >/dev/null 2>&1; then
@@ -130,19 +137,14 @@ if [ "${DRY_RUN}" = 0 ]; then
             git -C "${MEGATRON_DIR}" apply --3way "${MEGATRON_PATCH}" && info "applied slime megatron.patch"
         fi
     fi
-    SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_router_tokens.sh"
-SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_engine_base_port.sh"
     export SLIME_DIR MEGATRON_DIR
 
-    # ── Editable overlay ───────────────────────────────────────────────────
-    # The patched checkouts replace the locked slime (and add Megatron) without
-    # touching the resolved dependency set. Always re-applied: a `uv sync` in
-    # install_python_stack.sh restores the locked slime.
+    # ── Megatron editable ──────────────────────────────────────────────────
+    # Megatron-LM is not in the lock (it carries slime's megatron.patch); it is
+    # installed --no-deps as an editable of the patched checkout. Skipped when
+    # the venv already points at this checkout.
     if [ "${INSTALL_EDITABLE}" = 1 ]; then
-        log "editable overlay (slime, Megatron-LM)"
-        # Idempotent: an editable install is already live from the checkout, so
-        # only (re)install when the venv does not point at these paths. A
-        # concurrent job may be importing from the shared venv right now.
+        log "Megatron-LM editable"
         overlay_current() {   # overlay_current DIST_NAME CHECKOUT_DIR
             "${PYTHON_BIN}" - "$1" "$2" <<'PYCHK'
 import json, sys
@@ -156,19 +158,15 @@ except (PackageNotFoundError, ValueError):
 sys.exit(0 if url.get("dir_info", {}).get("editable") and url.get("url", "").rstrip("/").endswith(path) else 1)
 PYCHK
         }
-        if overlay_current slime "${SLIME_DIR}" && overlay_current megatron-core "${MEGATRON_DIR}"; then
-            info "editable overlay already installed; skipping"
+        if overlay_current megatron-core "${MEGATRON_DIR}"; then
+            info "already installed from ${MEGATRON_DIR}; skipping"
         else
-            uv pip install --python "${PYTHON_BIN}" --no-deps -e "${SLIME_DIR}" -e "${MEGATRON_DIR}"
+            uv pip install --python "${PYTHON_BIN}" --no-deps -e "${MEGATRON_DIR}"
         fi
     fi
     if [ "${INSTALL_TRAINING_STACK}" = 1 ] && [ "${SETUP_ENV}" = 1 ]; then
         # shellcheck source=./setup/ensure_training_stack.sh
         source "${SCRIPT_DIR}/setup/ensure_training_stack.sh"
-    fi
-    if [ "${APPLY_SGLANG_PATCH}" = 1 ]; then
-        log "sglang token-metadata patch"
-        VIRTUAL_ENV="$(dirname "${PYTHON_BIN_DIR}")" bash "${PROJECT_ROOT}/scripts/patch/patch_sglang_0513_token_metadata.sh"
     fi
 else
     # Dry run: any python with pyyaml (the venv if it exists).
