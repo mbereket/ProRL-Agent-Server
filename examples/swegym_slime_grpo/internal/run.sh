@@ -79,7 +79,14 @@ case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/${MODEL_AR
 source "${MODEL_ARGS_FILE}"
 
 # First run has an empty SAVE_DIR — slime's load_checkpoint asserts on empty.
-if [ -f "$SAVE_DIR/latest_checkpointed_iteration.txt" ]; then LOAD_DIR="$SAVE_DIR"; else LOAD_DIR="$REF_LOAD"; fi
+if [ -f "$SAVE_DIR/latest_checkpointed_iteration.txt" ]; then
+    LOAD_DIR="$SAVE_DIR"; START_ROLLOUT_ARGS=()          # resume: slime derives start_rollout_id from the checkpoint
+else
+    # Fresh run from the converted reference checkpoint. Its "release" iteration
+    # loads as 0, which slime would turn into start_rollout_id=1 and silently drop
+    # one of the num_epoch x (prompts / batch) rollouts; start at 0 explicitly.
+    LOAD_DIR="$REF_LOAD"; START_ROLLOUT_ARGS=(--start-rollout-id 0)
+fi
 
 # ── Data ───────────────────────────────────────────────────────────
 PROMPT_DATA="${PROMPT_DATA:-${SCRIPT_DIR}/swegym_train_293.jsonl}"
@@ -289,6 +296,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --hf-checkpoint "$HF_CHECKPOINT" \
     --ref-load "$REF_LOAD" \
     --load "$LOAD_DIR" \
+    ${START_ROLLOUT_ARGS[@]+"${START_ROLLOUT_ARGS[@]}"} \
     --save "$SAVE_DIR" \
     --save-interval "$SAVE_INTERVAL" \
     --update-weights-interval 1 \
