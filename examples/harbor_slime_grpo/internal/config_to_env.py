@@ -76,6 +76,7 @@ SCHEMA = {
         ("use_kl_loss", "USE_KL_LOSS", False),
         ("kl_loss_coef", "KL_LOSS_COEF", 0.001),
         ("grpo_std_normalization", "GRPO_STD_NORMALIZATION", False),
+        ("loss_denominator", "LOSS_DENOMINATOR", "trainable_units"),  # trainable_units | global_batch: units the per-rollout mean divides by
         ("optimizer_cpu_offload", "OPTIMIZER_CPU_OFFLOAD", False),   # Megatron hybrid optimizer: Adam states + fp32 master params on host
         ("group_id_scope", "GROUP_ID_SCOPE", "trajectory"),
         ("timeout_reward_zero", "TIMEOUT_REWARD_ZERO", True),

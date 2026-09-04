@@ -343,6 +343,11 @@ KL_ARGS=(--use-kl-loss --kl-loss-coef "${KL_LOSS_COEF:-0.001}" --kl-loss-type lo
 [ "${USE_KL_LOSS:-1}" = 1 ] || KL_ARGS=()
 STD_NORM_ARGS=()
 [ "${GRPO_STD_NORMALIZATION:-0}" = 1 ] || STD_NORM_ARGS=(--disable-grpo-std-normalization)
+# LOSS_DENOMINATOR: what the per-rollout-mean loss (and its mean-type metrics) divides
+# by. trainable_units = units with >= 1 trainable token (placeholders for sessions
+# without a trace do not dilute the gradient; ois is exactly 1 on the first update);
+# global_batch = every unit in the step (upstream slime).
+LOSS_DENOM_ARGS=(--loss-denominator "${LOSS_DENOMINATOR:-trainable_units}")
 # OPTIMIZER_CPU_OFFLOAD=1 keeps Adam states and fp32 master params on the host
 # (Megatron hybrid optimizer). They are allocated at the first update, so a
 # config that fits step 0 can OOM from step 1 on; with ~65k-token traces on
@@ -432,6 +437,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --use-tis \
     "${KL_ARGS[@]}" \
     "${STD_NORM_ARGS[@]}" \
+    "${LOSS_DENOM_ARGS[@]}" \
     ${OPTIM_OFFLOAD_ARGS[@]+"${OPTIM_OFFLOAD_ARGS[@]}"} \
     "${EVAL_ARGS[@]}" \
     "${EXTRA_TRAIN_ARGS_ARR[@]}" \
