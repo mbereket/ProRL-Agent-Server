@@ -193,9 +193,10 @@ polar serve_rollout -c "${TOPOLOGY_PATH}" &
 PIDS+=($!)
 sleep 2
 echo "=== Starting Polar gateway (:${POLAR_GATEWAY_PORT}) ==="
-# Session dirs (agent logs) on the shared run dir instead of the node's /tmp.
+# Session dirs (agent logs) on the shared run dir instead of the node's /tmp
+# (POLAR_SESSION_DIR, not TMPDIR: apptainer forwards TMPDIR into the sandbox).
 SESSION_ROOT="${SESSION_ROOT:-${RUN_DIR}/sessions}"; mkdir -p "${SESSION_ROOT}"
-TMPDIR="${SESSION_ROOT}" polar serve_gateway -c "${TOPOLOGY_PATH}" --node-id localhost-node-01 &
+POLAR_SESSION_DIR="${SESSION_ROOT}" polar serve_gateway -c "${TOPOLOGY_PATH}" --node-id localhost-node-01 &
 PIDS+=($!)
 sleep 2
 curl -sf "http://127.0.0.1:${POLAR_ROLLOUT_PORT}/health" >/dev/null || { echo "Polar rollout server not healthy on :${POLAR_ROLLOUT_PORT}"; exit 1; }
