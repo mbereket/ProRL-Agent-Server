@@ -170,6 +170,9 @@ TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${COMPILER_CACHE_ROOT}/torch
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${COMPILER_CACHE_ROOT}/triton}"
 # sglang JIT kernels (tvm-ffi) default to ~/.cache/tvm-ffi; keep them off $HOME too.
 export TVM_FFI_CACHE_DIR="${TVM_FFI_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tvm-ffi}"
+# SGLang's torch.compile / piecewise-CUDA-graph cache defaults to ~/.cache/sglang
+# ($HOME is quota-limited on clusters; a new model tag means a fresh write).
+export SGLANG_CACHE_DIR="${SGLANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/sglang}"
 # tilelang (FLA GatedDeltaNet kernels in the trainer) defaults to ~/.tilelang/cache.
 export TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tilelang}"
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR" "$TILELANG_CACHE_DIR"
@@ -218,7 +221,7 @@ Using Polar config:   ${CUSTOM_CONFIG_PATH}
 Polar rollout/gateway ${POLAR_ROLLOUT_URL} / ${POLAR_GATEWAY_URL} (bind ${POLAR_BIND_HOST})
 SGLang router:        ${SGLANG_ROUTER_BASE_URL}
 Apptainer:            ${POLAR_APPTAINER_BIN}; images ${APPTAINER_IMAGE_DIR}
-Model / args:         ${HF_CHECKPOINT} / ${MODEL_ARGS_FILE}
+Model / args:         ${HF_CHECKPOINT} / ${MODEL_ARGS_FILE} (fp32 LM head: ${FP32_LM_HEAD:-0}, sglang parser ${SGLANG_TOOL_CALL_PARSER:-qwen3_coder})
 Layout:               ${NUM_NODES} node(s) × ${GPUS_PER_NODE} GPUs: train ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}), rollout ${ROLLOUT_NUM_GPUS} engine GPUs; ${MAX_TOKENS_PER_GPU} tok/GPU
 Sandboxes:            ${#SANDBOX_HOSTS[@]} host(s) [${SANDBOX_NODES}]: ${SANDBOX_HOSTS[*]}
 Trainer:              ${TRAIN_SCRIPT}; prompts ${PROMPT_DATA}
@@ -318,6 +321,7 @@ RUNTIME_ENV_JSON="{
     \"TORCHINDUCTOR_CACHE_DIR\": \"${TORCHINDUCTOR_CACHE_DIR}\",
     \"TRITON_CACHE_DIR\": \"${TRITON_CACHE_DIR}\",
     \"TVM_FFI_CACHE_DIR\": \"${TVM_FFI_CACHE_DIR}\",
+    \"SGLANG_CACHE_DIR\": \"${SGLANG_CACHE_DIR}\",
     \"TILELANG_CACHE_DIR\": \"${TILELANG_CACHE_DIR}\",
     \"TMPDIR\": \"/tmp\",
     \"WANDB_CACHE_DIR\": \"${RUN_DIR}/wandb_cache\",
@@ -353,7 +357,9 @@ LOSS_DENOM_ARGS=(--loss-denominator "${LOSS_DENOMINATOR:-trainable_units}")
 # config that fits step 0 can OOM from step 1 on; with ~65k-token traces on
 # TP4xCP2 that is ~20 GB/GPU of headroom.
 OPTIM_OFFLOAD_ARGS=()
-[ "${OPTIMIZER_CPU_OFFLOAD:-0}" = 1 ] && OPTIM_OFFLOAD_ARGS=(--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --overlap-cpu-optimizer-d2h-h2d)
+# Megatron asserts that the hybrid device optimizer runs on the precision-aware
+# optimizer code path, so the flag comes with the offload.
+[ "${OPTIMIZER_CPU_OFFLOAD:-0}" = 1 ] && OPTIM_OFFLOAD_ARGS=(--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
 # NUM_ROLLOUT overrides the epoch-derived step count (slime then ignores --num-epoch);
 # 0 runs only the eval pass (rollout.num_rollout: 0 + eval.prompt_data).
 NUM_ROLLOUT_ARGS=()
@@ -378,6 +384,11 @@ if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
     # shellcheck disable=SC2206
     EVAL_ARGS=(--eval-prompt-data ${EVAL_PROMPT_DATA} --eval-interval "${EVAL_INTERVAL:-10}" --n-samples-per-eval-prompt "${N_SAMPLES_PER_EVAL_PROMPT:-1}")
 fi
+# FP32_LM_HEAD=1 builds the actor/ref output_layer in fp32 (weight + GEMM) via a
+# custom model provider; the sampler side is --sglang-enable-fp32-lm-head
+# (training.extra_train_args). Keep constant within a run (checkpoint dtype).
+FP32_HEAD_ARGS=()
+[ "${FP32_LM_HEAD:-0}" = 1 ] && FP32_HEAD_ARGS=(--custom-model-provider-path slime_bridge.fp32_head_provider.model_provider)
 # shellcheck disable=SC2206
 EXTRA_TRAIN_ARGS_ARR=(${EXTRA_TRAIN_ARGS:-})
 
@@ -440,6 +451,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     "${LOSS_DENOM_ARGS[@]}" \
     ${OPTIM_OFFLOAD_ARGS[@]+"${OPTIM_OFFLOAD_ARGS[@]}"} \
     "${EVAL_ARGS[@]}" \
+    ${FP32_HEAD_ARGS[@]+"${FP32_HEAD_ARGS[@]}"} \
     "${EXTRA_TRAIN_ARGS_ARR[@]}" \
     --entropy-coef 0.0 \
     --eps-clip 0.2 \
@@ -458,7 +470,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --no-gradient-accumulation-fusion \
     --sglang-mem-fraction-static 0.8 \
     --sglang-context-length "$SGLANG_CONTEXT_LENGTH" \
-    --sglang-tool-call-parser qwen3_coder \
+    --sglang-tool-call-parser "${SGLANG_TOOL_CALL_PARSER:-qwen3_coder}" \
     --router-policy "${SGLANG_ROUTER_POLICY:-round_robin}" \
     --use-wandb \
     --wandb-project "${WANDB_PROJECT:-harbor-slime-grpo}" \
