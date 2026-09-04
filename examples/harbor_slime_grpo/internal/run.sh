@@ -343,7 +343,9 @@ STD_NORM_ARGS=()
 # config that fits step 0 can OOM from step 1 on; with ~65k-token traces on
 # TP4xCP2 that is ~20 GB/GPU of headroom.
 OPTIM_OFFLOAD_ARGS=()
-[ "${OPTIMIZER_CPU_OFFLOAD:-0}" = 1 ] && OPTIM_OFFLOAD_ARGS=(--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --overlap-cpu-optimizer-d2h-h2d)
+# Megatron asserts that the hybrid device optimizer runs on the precision-aware
+# optimizer code path, so the flag comes with the offload.
+[ "${OPTIMIZER_CPU_OFFLOAD:-0}" = 1 ] && OPTIM_OFFLOAD_ARGS=(--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
 # NUM_ROLLOUT overrides the epoch-derived step count (slime then ignores --num-epoch);
 # 0 runs only the eval pass (rollout.num_rollout: 0 + eval.prompt_data).
 NUM_ROLLOUT_ARGS=()
