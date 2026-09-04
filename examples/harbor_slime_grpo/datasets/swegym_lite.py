@@ -12,7 +12,7 @@ needed (see prepare_tasks.py):
 
     <output>/manifest.json
     <output>/harbor/<instance_id>/
-        task.toml            [environment] docker_image, workdir=/testbed; timeouts
+        task.toml            [environment] docker_image, workdir=/testbed, agent_path_prepend; timeouts
         instruction.md       problem statement
         tests/test.sh        verifier (hidden from the agent; uploaded after the run)
         tests/config.json    FAIL_TO_PASS / PASS_TO_PASS lists the parser reads
@@ -168,6 +168,9 @@ def write_task(task_dir: Path, row: dict, template: str, opts: argparse.Namespac
             "[environment]",
             f'docker_image = "{image_for(row["instance_id"])}"',
             'workdir = "/testbed"',
+            # SWE-Gym images keep the repo's dependencies in this conda env; the agent's
+            # python/pytest must come from it (prepended to PATH by the Polar template).
+            'agent_path_prepend = "/opt/miniconda3/envs/testbed/bin"',
             "",
             "[agent]",
             f"timeout_sec = {opts.agent_timeout}",

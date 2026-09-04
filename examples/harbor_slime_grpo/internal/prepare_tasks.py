@@ -6,7 +6,9 @@ Input is any directory of Harbor tasks: either ``<root>/manifest.json`` +
 plain directory whose subdirectories each hold a ``task.toml``. Every task must
 have ``instruction.md``, ``task.toml`` with ``[environment] docker_image``, and
 ``tests/test.sh`` (the verifier). ``environment/files/`` and its ``setup.sh``
-are optional staging the runtime applies before the agent starts.
+are optional staging the runtime applies before the agent starts;
+``[environment] agent_path_prepend`` (optional) is put first on the agent's PATH
+after the harness dirs (SWE-Gym images: the repo's conda env).
 
 Output:
   --output-jsonl   one line per task for the Polar/Slime bridge (--input-key prompt,
@@ -123,6 +125,8 @@ def main() -> None:
                 "source_id": source_id,
                 "image_sif": sif,
                 "workdir": env.get("workdir", "/app"),
+                # Prepended to the agent's PATH (e.g. the image's conda env); "" when unset.
+                "path_prepend": (env["agent_path_prepend"].rstrip(":") + ":") if env.get("agent_path_prepend") else "",
                 "has_setup": (task_dir / "environment" / "files" / "setup.sh").is_file(),
                 "agent_timeout_sec": float(spec.get("agent", {}).get("timeout_sec", args.default_agent_timeout)),
                 "verifier_timeout_sec": float(spec.get("verifier", {}).get("timeout_sec", args.default_verifier_timeout)),

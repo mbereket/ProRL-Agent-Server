@@ -29,8 +29,9 @@ polar_task_template:
     workdir: "{sample.metadata.workdir}"
     env:
       HOME: "/polar/session/home"
-      # Harness binaries first (mounted read-only below), then the image's PATH.
-      PATH: "{args.polar_harness_dir}/bin:{args.polar_harness_dir}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      # Harness binaries first (mounted read-only below), then the task's
+      # agent_path_prepend (e.g. the repo's conda env), then system paths.
+      PATH: "{args.polar_harness_dir}/bin:{args.polar_harness_dir}/node/bin:{sample.metadata.path_prepend}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     kwargs:
       volumes:
         # Same path inside and outside: Python-based harnesses carry absolute paths.
