@@ -135,7 +135,8 @@ if [ "${DRY_RUN}" = 0 ]; then
     if [ "${slime_head}" != "${SLIME_REF}" ]; then
         [ -z "$(git -C "${SLIME_DIR}" status --porcelain)" ] || die "slime checkout ${SLIME_DIR} is at ${slime_head} with local changes; the lock pins ${SLIME_REF}"
         info "slime checkout at ${slime_head:0:12}; moving to the pinned ${SLIME_REF:0:12}"
-        git -C "${SLIME_DIR}" fetch -q --depth 1 origin "${SLIME_REF}" && git -C "${SLIME_DIR}" checkout -q "${SLIME_REF}" \
+        git -C "${SLIME_DIR}" remote set-url origin "${SLIME_REPO}" \
+          && git -C "${SLIME_DIR}" fetch -q --depth 1 origin "${SLIME_REF}" && git -C "${SLIME_DIR}" checkout -q "${SLIME_REF}" \
           || die "could not check out slime ${SLIME_REF} in ${SLIME_DIR}"
     fi
     clone_retry Megatron-LM "${MEGATRON_REPO}" "${MEGATRON_REF}" "${MEGATRON_DIR}"
