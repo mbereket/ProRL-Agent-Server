@@ -127,8 +127,17 @@ if [ "${DRY_RUN}" = 0 ]; then
     }
     log "checkouts"
     clone_retry Slime "${SLIME_REPO}" "${SLIME_REF}" "${SLIME_DIR}"
+    # The checkout must be the commit the lock installs (run.sh runs its train.py,
+    # convert_weights.sh its tools/, Megatron its megatron.patch). After a repin the
+    # existing checkout is moved to the pinned commit; local edits would be lost, so
+    # a dirty tree is an error instead.
     slime_head="$(git -C "${SLIME_DIR}" rev-parse HEAD)"
-    [ "${slime_head}" = "${SLIME_REF}" ] || die "slime checkout ${SLIME_DIR} is at ${slime_head}, the lock pins ${SLIME_REF}; move or remove the checkout"
+    if [ "${slime_head}" != "${SLIME_REF}" ]; then
+        [ -z "$(git -C "${SLIME_DIR}" status --porcelain)" ] || die "slime checkout ${SLIME_DIR} is at ${slime_head} with local changes; the lock pins ${SLIME_REF}"
+        info "slime checkout at ${slime_head:0:12}; moving to the pinned ${SLIME_REF:0:12}"
+        git -C "${SLIME_DIR}" fetch -q --depth 1 origin "${SLIME_REF}" && git -C "${SLIME_DIR}" checkout -q "${SLIME_REF}" \
+          || die "could not check out slime ${SLIME_REF} in ${SLIME_DIR}"
+    fi
     clone_retry Megatron-LM "${MEGATRON_REPO}" "${MEGATRON_REF}" "${MEGATRON_DIR}"
     if [ -f "${MEGATRON_PATCH}" ]; then
         if git -C "${MEGATRON_DIR}" apply --reverse --check "${MEGATRON_PATCH}" >/dev/null 2>&1; then
