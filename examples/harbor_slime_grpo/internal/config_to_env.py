@@ -81,6 +81,7 @@ SCHEMA = {
         ("timeout_reward_zero", "TIMEOUT_REWARD_ZERO", True),
         ("drop_zero_variance_groups", "DROP_ZERO_VARIANCE_GROUPS", True),
         ("save_interval", "SAVE_INTERVAL", 5),
+        ("checkpoint_keep_every", "CHECKPOINT_KEEP_EVERY", 0),  # >0: prune saved iterations that are not multiples of this (latest always kept)
         ("extra_train_args", "EXTRA_TRAIN_ARGS", ""),
     ],
     "eval": [

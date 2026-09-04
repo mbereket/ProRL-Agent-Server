@@ -219,6 +219,7 @@ INFO
 # ── Cleanup on exit ────────────────────────────────────────────────
 PIDS=()
 cleanup() {
+    [ -n "${PRUNE_PID:-}" ] && kill "${PRUNE_PID}" 2>/dev/null || true
     echo "Shutting down..."
     for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
     ray stop --force 2>/dev/null || true
@@ -350,6 +351,13 @@ if [ -n "${NUM_ROLLOUT:-}" ]; then
     # a state saved from a different GPU layout (e.g. 8-GPU TP4xCP2) does not fit
     # when re-sharded onto a smaller eval allocation.
     [ "${NUM_ROLLOUT}" = 0 ] && NUM_ROLLOUT_ARGS+=(--lr-decay-iters 1 --no-load-optim --no-load-rng)
+fi
+# CHECKPOINT_KEEP_EVERY=N prunes saved iterations that are not multiples of N
+# (the latest is always kept), every 5 min while training runs. Lets
+# save_interval feed periodic evals without accumulating ~180 GB per step.
+if [ "${CHECKPOINT_KEEP_EVERY:-0}" -gt 0 ]; then
+    ( while :; do bash "${SCRIPT_DIR}/prune_checkpoints.sh" "${SAVE_DIR}" "${CHECKPOINT_KEEP_EVERY}" || true; sleep 300; done ) &
+    PRUNE_PID=$!   # stopped by cleanup() on exit
 fi
 EVAL_ARGS=()
 if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
