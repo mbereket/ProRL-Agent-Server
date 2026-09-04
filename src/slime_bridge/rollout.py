@@ -57,22 +57,114 @@ class PolarZeroVarianceGroupError(PolarRolloutSchedulerError):
     """Raised when every trainable trajectory in a group has the same reward."""
 
 
-def _task_result_session_rewards(task_result: Any) -> list[float]:
-    """One evaluator reward per session of a task result (0.0 when absent)."""
-    rewards: list[float] = []
+# (evaluator reward, terminal session status) of a session that is not trained on.
+_SessionOutcome = tuple[float, str]
+
+
+def _task_result_session_outcomes(task_result: Any) -> list[_SessionOutcome]:
+    """One (reward, status) per session of a task result (reward 0.0 when absent)."""
+    outcomes: list[_SessionOutcome] = []
     for result in getattr(task_result, "results", None) or []:
         trajectory = getattr(result, "trajectory", None)
         metadata = getattr(trajectory, "metadata", None) or {}
         value = (metadata.get("evaluation") or {}).get("reward")
-        rewards.append(float(value) if isinstance(value, (int, float)) else 0.0)
-    return rewards
+        status = getattr(result, "status", None)
+        status = str(getattr(status, "value", status) or "UNKNOWN")
+        outcomes.append((float(value) if isinstance(value, (int, float)) else 0.0, status))
+    return outcomes
 
 
-def _with_session_rewards(exc: BaseException, rewards: list[float]) -> BaseException:
-    """Tag a group-rejection error with the group's session rewards so a dropped
-    group still counts in the all-sessions reward metrics."""
-    exc.session_rewards = rewards  # type: ignore[attr-defined]
+def _sample_session_outcomes(samples: list[Any], reward_key: str) -> list[_SessionOutcome]:
+    """One (reward, status) per distinct session among converted samples."""
+    outcomes: dict[str, _SessionOutcome] = {}
+    for sample in samples:
+        polar_meta = (getattr(sample, "metadata", {}) or {}).get("polar", {})
+        session_id = polar_meta.get("session_id")
+        if not session_id or session_id in outcomes:
+            continue
+        evaluation = (polar_meta.get("trajectory_metadata") or {}).get("evaluation") or {}
+        value = evaluation.get("reward")
+        if isinstance(value, (int, float)):
+            reward = float(value)
+        elif polar_meta.get("placeholder"):
+            reward = 0.0
+        else:
+            reward = _extract_sample_reward(sample, reward_key)
+        outcomes[session_id] = (reward, str(_sample_session_status(sample) or "UNKNOWN"))
+    return list(outcomes.values())
+
+
+def _with_session_outcomes(exc: BaseException, outcomes: list[_SessionOutcome]) -> BaseException:
+    """Tag a group-rejection error with the group's session outcomes so a dropped
+    group still counts in the all-sessions metrics."""
+    exc.session_outcomes = outcomes  # type: ignore[attr-defined]
     return exc
+
+
+def _p90(values: list[float]) -> float:
+    """Nearest-rank 90th percentile."""
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(round(0.9 * (len(ordered) - 1))))]
+
+
+class _OccupancySampler:
+    """Background thread appending scheduler gauges to a CSV at a fixed interval.
+
+    One row per sample: wall-clock, current rollout id, active groups/sessions,
+    completed buffer, output and deferred queue sizes, requested groups, and
+    whether any generation is in flight (active sessions > 0).
+    """
+
+    COLUMNS = (
+        "wall_clock_utc", "rollout_id", "active_groups", "active_sessions",
+        "completed_buffer", "output_queue", "deferred_queue", "requested_groups",
+        "generation_in_flight",
+    )
+
+    def __init__(self, path: Path, interval_s: float, snapshot: Any) -> None:
+        self._path = path
+        self._interval_s = float(interval_s)
+        self._snapshot = snapshot
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="polar-occupancy")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+    def sample_once(self) -> None:
+        snap = self._snapshot()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not self._path.exists() or self._path.stat().st_size == 0
+        active_sessions = int(snap.get("polar/scheduler/active_sessions", 0))
+        row = (
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            int(snap.get("rollout_id", -1)),
+            int(snap.get("polar/scheduler/active_groups", 0)),
+            active_sessions,
+            int(snap.get("polar/scheduler/completed_buffer", 0)),
+            int(snap.get("polar/scheduler/output_queue", 0)),
+            int(snap.get("polar/scheduler/deferred_queue", 0)),
+            int(snap.get("polar/scheduler/requested_groups", 0)),
+            int(active_sessions > 0),
+        )
+        with open(self._path, "a", encoding="utf-8") as f:
+            if write_header:
+                f.write(",".join(self.COLUMNS) + "\n")
+            f.write(",".join(str(v) for v in row) + "\n")
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.sample_once()
+            except Exception:
+                logger.exception("Occupancy sampler failed to write %s", self._path)
+            self._stop.wait(self._interval_s)
 
 
 
@@ -444,12 +536,25 @@ class AsyncPolarRolloutWorker:
         self._fatal_error: BaseException | None = None
         self._state_lock = threading.RLock()
         self._metrics: dict[str, float] = {}
-        # Evaluator rewards of sessions in dropped groups, per rollout id: they
-        # count in the all-sessions reward metrics even though nothing is trained on.
-        self._dropped_session_rewards: dict[int, list[float]] = {}
+        # Outcomes of sessions in dropped groups since the last step boundary:
+        # they count in the all-sessions metrics even though nothing is trained
+        # on. ``_dropped_missing_sessions`` counts dropped sessions with no
+        # outcome at all (failed task without results).
+        self._dropped_session_outcomes: list[_SessionOutcome] = []
+        self._dropped_missing_sessions = 0
         self._active_groups = 0
         self._active_sessions = 0
         self._completed_buffer_size = 0
+        # Wall time with >= 1 session in flight, accumulated between step boundaries.
+        self._gen_active_since: float | None = None
+        self._gen_active_accum_s = 0.0
+        self._occupancy: _OccupancySampler | None = None
+        if self.config.run_dir and self.config.occupancy_interval_s > 0:
+            self._occupancy = _OccupancySampler(
+                Path(self.config.run_dir) / "occupancy.csv",
+                self.config.occupancy_interval_s,
+                self._occupancy_snapshot,
+            )
         # Per-task callback plumbing: event fires when the rollout server POSTs
         # the terminal TaskResult to our local listener.
         # Consecutive dropped groups (task failure / zero trainable / logprob
@@ -465,9 +570,13 @@ class AsyncPolarRolloutWorker:
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="polar-async-rollout")
         self._thread.start()
+        if self._occupancy is not None:
+            self._occupancy.start()
 
     def stop(self) -> None:
         self._running = False
+        if self._occupancy is not None:
+            self._occupancy.stop()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=10)
 
@@ -519,6 +628,10 @@ class AsyncPolarRolloutWorker:
                 self._inc_metric("polar/dropped_groups")
                 self._inc_metric("polar/dropped_stale_groups")
                 self._inc_metric("polar/dropped_sessions", completed.session_count)
+                self._record_dropped_sessions(
+                    completed.session_count,
+                    _sample_session_outcomes(completed.samples, self.config.reward_key),
+                )
                 logger.warning(
                     "Dropping stale Polar group %s task=%s: %s",
                     completed.group_id,
@@ -550,10 +663,43 @@ class AsyncPolarRolloutWorker:
                 + self.deferred_queue.qsize()
             )
 
-    def take_dropped_session_rewards(self, rollout_id: int) -> list[float]:
-        """Rewards of sessions whose groups were dropped for this rollout (consumed once)."""
+    def take_dropped_session_outcomes(self) -> tuple[list[_SessionOutcome], int]:
+        """Outcomes of sessions in groups dropped since the previous call, plus the
+        number of dropped sessions that left no outcome (consumed once)."""
         with self._state_lock:
-            return self._dropped_session_rewards.pop(rollout_id, [])
+            outcomes = self._dropped_session_outcomes
+            missing = self._dropped_missing_sessions
+            self._dropped_session_outcomes = []
+            self._dropped_missing_sessions = 0
+            return outcomes, missing
+
+    def _record_dropped_sessions(self, session_count: int, outcomes: list[_SessionOutcome]) -> None:
+        with self._state_lock:
+            self._dropped_session_outcomes.extend(outcomes)
+            self._dropped_missing_sessions += max(0, int(session_count) - len(outcomes))
+
+    def mark_step_start(self) -> None:
+        """Reset the in-flight generation clock at a training step boundary."""
+        with self._state_lock:
+            self._gen_active_accum_s = 0.0
+            self._gen_active_since = time.monotonic() if self._active_sessions > 0 else None
+
+    def take_gen_active_seconds(self) -> float:
+        """Wall seconds since ``mark_step_start`` during which >= 1 session was in flight."""
+        with self._state_lock:
+            total = self._gen_active_accum_s
+            if self._gen_active_since is not None:
+                now = time.monotonic()
+                total += now - self._gen_active_since
+                self._gen_active_since = now
+            self._gen_active_accum_s = 0.0
+            return total
+
+    def _occupancy_snapshot(self) -> dict[str, float]:
+        out = self.snapshot_metrics()
+        with self._state_lock:
+            out["rollout_id"] = float(self._current_rollout_id)
+        return out
 
     def snapshot_metrics(self) -> dict[str, float]:
         with self._state_lock:
@@ -725,10 +871,9 @@ class AsyncPolarRolloutWorker:
         self._inc_metric("polar/dropped_groups")
         self._inc_metric(category_metric)
         self._inc_metric("polar/dropped_sessions", pending.session_cost)
-        dropped_rewards = getattr(last_error, "session_rewards", None)
-        if dropped_rewards:
-            with self._state_lock:
-                self._dropped_session_rewards.setdefault(pending.submitted_rollout_id, []).extend(dropped_rewards)
+        self._record_dropped_sessions(
+            pending.session_cost, list(getattr(last_error, "session_outcomes", None) or [])
+        )
         logger.warning(
             "Dropping Polar group %s because of %s: %s",
             pending.group_id,
@@ -769,35 +914,35 @@ class AsyncPolarRolloutWorker:
         )
         task_result = await self._submit_with_callback(client, payload)
 
-        session_rewards = _task_result_session_rewards(task_result)
+        session_outcomes = _task_result_session_outcomes(task_result)
         rejection_reason = self._task_rejection_reason(task_result, pending.group)
         if rejection_reason is not None:
-            raise _with_session_rewards(PolarRolloutSchedulerError(
+            raise _with_session_outcomes(PolarRolloutSchedulerError(
                 f"Task {task_result.task_id} cannot be accepted: {rejection_reason}"
-            ), session_rewards)
+            ), session_outcomes)
 
         group_samples = _convert_task_result_to_samples(
             self.config, task_result, pending.group,
             max_tokens=_resolve_max_tokens(self.args),
         )
         if not group_samples:
-            raise _with_session_rewards(PolarRolloutSchedulerError(f"Task {task_result.task_id} converted to zero samples"), session_rewards)
+            raise _with_session_outcomes(PolarRolloutSchedulerError(f"Task {task_result.task_id} converted to zero samples"), session_outcomes)
         if not _has_trainable_tokens(group_samples):
-            raise _with_session_rewards(PolarRolloutSchedulerError(
+            raise _with_session_outcomes(PolarRolloutSchedulerError(
                 f"Task {task_result.task_id} produced zero trainable tokens"
-            ), session_rewards)
+            ), session_outcomes)
         rejection_reason = _low_complete_accept_fraction_rejection_reason(
             self.config, task_result, group_samples
         )
         if rejection_reason is not None:
-            raise _with_session_rewards(PolarLowCompleteAcceptFractionError(
+            raise _with_session_outcomes(PolarLowCompleteAcceptFractionError(
                 f"Task {task_result.task_id} cannot be accepted: {rejection_reason}"
-            ), session_rewards)
+            ), session_outcomes)
         rejection_reason = _zero_variance_rejection_reason(self.config, group_samples)
         if rejection_reason is not None:
-            raise _with_session_rewards(PolarZeroVarianceGroupError(
+            raise _with_session_outcomes(PolarZeroVarianceGroupError(
                 f"Task {task_result.task_id} dropped: {rejection_reason}"
-            ), session_rewards)
+            ), session_outcomes)
 
         return _CompletedGroup(
             group_id=pending.group_id,
@@ -892,6 +1037,12 @@ class AsyncPolarRolloutWorker:
         with self._state_lock:
             self._active_groups = len(active)
             self._active_sessions = active_session_cost
+            now = time.monotonic()
+            if active_session_cost > 0 and self._gen_active_since is None:
+                self._gen_active_since = now
+            elif active_session_cost == 0 and self._gen_active_since is not None:
+                self._gen_active_accum_s += now - self._gen_active_since
+                self._gen_active_since = None
 
     def _inc_metric(self, key: str, amount: float = 1.0) -> None:
         with self._state_lock:
@@ -1056,10 +1207,12 @@ async def _submit_eval_groups(
             )
             return await _submit_and_wait_for_task(client, config.rollout_server_url, payload)
 
+    eval_start = time.monotonic()
     async with httpx.AsyncClient(timeout=timeout) as client:
         task_results = await asyncio.gather(
             *(_run_one(pos, g) for pos, g in enumerate(sample_groups))
         )
+    eval_wall_s = time.monotonic() - eval_start
 
     output_groups: list[list[Any]] = []
     max_tokens = _resolve_max_tokens(args)
@@ -1076,7 +1229,15 @@ async def _submit_eval_groups(
         task_results,
         output_groups,
         reward_filter="completed",
+        sessions_requested=sum(len(group) for group in sample_groups),
+        rollout_wall_s=eval_wall_s,
     )
+    csv_path = _write_per_task_eval_csv(
+        config.run_dir, dataset_name, rollout_id,
+        _per_task_eval_rows(sample_groups, task_results, output_groups, config.reward_key),
+    )
+    if csv_path is not None:
+        logger.info("Wrote per-task eval results for %s to %s", dataset_name, csv_path)
     flat_samples = [sample for group in output_groups for sample in group]
     reward_samples = _completed_session_samples(flat_samples)
 
@@ -1222,6 +1383,8 @@ def _build_metrics(
     output_groups: list[list[Any]],
     *,
     reward_filter: str = "all",
+    sessions_requested: int | None = None,
+    rollout_wall_s: float | None = None,
 ) -> dict[str, Any]:
     flat_samples = [sample for group in output_groups for sample in group]
     all_rewards = [_extract_sample_reward(s, config.reward_key) for s in flat_samples]
@@ -1236,7 +1399,11 @@ def _build_metrics(
     else:
         raise ValueError("reward_filter must be 'all' or 'completed'")
     metrics: dict[str, Any] = {}
-    metrics.update(_polar_extra_metrics(flat_samples, rewards, config.reward_key))
+    metrics.update(_polar_extra_metrics(
+        flat_samples, rewards, config.reward_key,
+        sessions_requested=sessions_requested,
+        rollout_wall_s=rollout_wall_s,
+    ))
     return metrics
 
 
@@ -1256,6 +1423,7 @@ def generate_rollout_polar_async(args: Any, rollout_id: int, data_source: Any, e
 
     async_worker = get_global_async_worker(args, data_source)
     async_worker.set_rollout_context(rollout_id)
+    async_worker.mark_step_start()
     target = getattr(args, "rollout_batch_size", 1)
     async_worker.request_groups(int(target))
 
@@ -1294,10 +1462,14 @@ def generate_rollout_polar_async(args: Any, rollout_id: int, data_source: Any, e
     RolloutFnTrainOutput = _load_rollout_train_output_type()
     flat = [s for g in data for s in g]
     rewards = [_extract_sample_reward(s, async_worker.config.reward_key) for s in flat]
+    dropped_outcomes, dropped_missing = async_worker.take_dropped_session_outcomes()
     metrics: dict[str, Any] = {}
     metrics.update(_polar_extra_metrics(
         flat, rewards, async_worker.config.reward_key,
-        extra_session_rewards=async_worker.take_dropped_session_rewards(rollout_id),
+        extra_session_outcomes=dropped_outcomes,
+        extra_missing_sessions=dropped_missing,
+        rollout_wall_s=elapsed,
+        gen_active_s=async_worker.take_gen_active_seconds(),
     ))
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
@@ -1416,15 +1588,27 @@ def _polar_extra_metrics(
     flat_samples: list[Any],
     rewards: list[float],
     reward_key: str,
-    extra_session_rewards: list[float] | None = None,
+    extra_session_outcomes: list[_SessionOutcome] | None = None,
+    *,
+    extra_missing_sessions: int = 0,
+    sessions_requested: int | None = None,
+    rollout_wall_s: float | None = None,
+    gen_active_s: float | None = None,
 ) -> dict[str, float]:
     """Compact user-facing Polar metrics for W&B.
 
     ``polar/reward_mean`` averages over trained traces only. The
-    ``*_all_sessions`` metrics count every session once — including sessions
-    with no trainable trace (context overflow, placeholders) and, via
-    ``extra_session_rewards``, sessions of groups the scheduler dropped
-    (zero variance etc.) — so they report the complete outcome distribution.
+    ``*_all_sessions`` metrics are over *requested* sessions: every session
+    with an outcome counts once — sessions in ``flat_samples`` (including
+    placeholders for sessions with no trainable trace) plus
+    ``extra_session_outcomes`` (sessions of groups the scheduler dropped) —
+    and every requested session without an outcome counts as reward 0 /
+    status ``MISSING``. ``sessions_requested`` is the known request size
+    (eval: prompts x n); when ``None`` it is observed sessions plus
+    ``extra_missing_sessions`` (train: dropped sessions that left no outcome).
+
+    ``rollout_wall_s`` and ``gen_active_s`` (wall time with >= 1 session in
+    flight) feed the ``polar/gen/*`` throughput metrics.
     """
     out: dict[str, float] = {}
     session_eval_reward: dict[str, float] = {}
@@ -1495,7 +1679,11 @@ def _polar_extra_metrics(
             sum(register_to_init_queue_ms) / len(register_to_init_queue_ms)
         )
         out["polar/session_ms/init_mean"] = sum(init_ms) / len(init_ms)
+        out["polar/session_ms/init_max"] = max(init_ms)
+        out["polar/session_ms/init_p90"] = _p90(init_ms)
         out["polar/session_ms/run_mean"] = sum(run_ms) / len(run_ms)
+        out["polar/session_ms/run_max"] = max(run_ms)
+        out["polar/session_ms/run_p90"] = _p90(run_ms)
         out["polar/session_ms/postrun_mean"] = sum(postrun_ms) / len(postrun_ms)
     if rewards:
         out["polar/reward_mean"] = sum(rewards) / len(rewards)
@@ -1507,14 +1695,34 @@ def _polar_extra_metrics(
         )
     if policy_staleness:
         out["polar/staleness/mean"] = sum(policy_staleness) / len(policy_staleness)
-    all_session_rewards = list(session_eval_reward.values()) + list(extra_session_rewards or [])
-    if all_session_rewards:
-        out["polar/reward_mean_all_sessions"] = sum(all_session_rewards) / len(all_session_rewards)
+        out["polar/staleness/max"] = max(policy_staleness)
+
+    # Outcome distribution over requested sessions.
+    extra = list(extra_session_outcomes or [])
+    observed_rewards = list(session_eval_reward.values()) + [r for r, _ in extra]
+    observed_statuses = list(session_status.values()) + [st for _, st in extra]
+    observed = len(observed_rewards)
+    if sessions_requested is None:
+        requested = observed + max(0, int(extra_missing_sessions))
+    else:
+        requested = int(sessions_requested)
+    missing = max(0, requested - observed)
+    if requested > 0:
+        out["polar/sessions_requested"] = float(requested)
+        out["polar/sessions_all"] = float(observed)
+        out["polar/sessions_dropped"] = float(len(extra))
+        out["polar/sessions_missing"] = float(missing)
+        out["polar/reward_mean_all_sessions"] = sum(observed_rewards) / requested
         out["polar/success_rate_all_sessions"] = (
-            sum(1 for r in all_session_rewards if r > 0) / len(all_session_rewards)
+            sum(1 for r in observed_rewards if r > 0) / requested
         )
-        out["polar/sessions_all"] = float(len(all_session_rewards))
-        out["polar/sessions_dropped"] = float(len(extra_session_rewards or []))
+        status_counts: dict[str, int] = {}
+        for st in observed_statuses:
+            status_counts[st] = status_counts.get(st, 0) + 1
+        if missing:
+            status_counts["MISSING"] = status_counts.get("MISSING", 0) + missing
+        for status, count in sorted(status_counts.items()):
+            out[f"polar/status/{status.lower()}_fraction"] = count / requested
 
     total_sessions = len(seen)
     empty_sessions = sum(1 for p in session_is_placeholder.values() if p)
@@ -1522,10 +1730,6 @@ def _polar_extra_metrics(
         out["polar/rollout_success_rate"] = (
             total_sessions - empty_sessions
         ) / total_sessions
-        for status in sorted(set(session_status.values())):
-            out[f"polar/status/{status.lower()}_fraction"] = (
-                sum(1 for s in session_status.values() if s == status) / total_sessions
-            )
     if session_traces:
         n = len(session_traces)
         out["polar/traj/traces_mean"] = sum(session_traces.values()) / n
@@ -1549,7 +1753,64 @@ def _polar_extra_metrics(
         graded_sessions = len(session_report)
         resolved = sum(1 for r in session_report.values() if r.get("resolved"))
         out["polar/eval/resolved_rate"] = resolved / graded_sessions
+    if rollout_wall_s is not None and rollout_wall_s > 0:
+        out["polar/gen/response_tokens_per_s"] = (
+            sum(session_response_tokens.values()) / rollout_wall_s
+        )
+        if gen_active_s is not None:
+            out["polar/gen/active_fraction"] = min(1.0, max(0.0, gen_active_s / rollout_wall_s))
     return out
+
+
+def _per_task_eval_rows(
+    sample_groups: list[list[Any]],
+    task_results: list[Any],
+    output_groups: list[list[Any]],
+    reward_key: str,
+) -> list[dict[str, Any]]:
+    """One row per eval prompt: requested vs observed sessions and their outcomes."""
+    rows: list[dict[str, Any]] = []
+    for position, (group, task_result, samples) in enumerate(
+        zip(sample_groups, task_results, output_groups, strict=True)
+    ):
+        outcomes = _sample_session_outcomes(samples, reward_key)
+        source_meta = getattr(group[0], "metadata", None) if group else None
+        source_task_id = ""
+        if isinstance(source_meta, dict):
+            for key in ("task_id", "instance_id", "id"):
+                if source_meta.get(key) not in (None, ""):
+                    source_task_id = str(source_meta[key])
+                    break
+        n_requested = len(group)
+        n_observed = len(outcomes)
+        rows.append({
+            "position": position,
+            "task_id": str(getattr(task_result, "task_id", "")),
+            "source_task_id": source_task_id,
+            "n_requested": n_requested,
+            "n_observed": n_observed,
+            "n_missing": max(0, n_requested - n_observed),
+            "n_success": sum(1 for r, _ in outcomes if r > 0),
+            "reward_mean": (sum(r for r, _ in outcomes) / n_requested) if n_requested else 0.0,
+        })
+    return rows
+
+
+def _write_per_task_eval_csv(
+    run_dir: str | None, dataset_name: str, rollout_id: int, rows: list[dict[str, Any]]
+) -> Path | None:
+    """Write ``${run_dir}/eval/<dataset>/step_<rollout_id>.csv``; ``None`` when no run dir."""
+    if not run_dir or not rows:
+        return None
+    safe_dataset = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in dataset_name)
+    path = Path(run_dir) / "eval" / safe_dataset / f"step_{int(rollout_id)}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = list(rows[0].keys())
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(",".join(columns) + "\n")
+        for row in rows:
+            f.write(",".join(str(row[c]) for c in columns) + "\n")
+    return path
 
 
 def _is_truncated(sample: Any) -> bool:

@@ -36,6 +36,8 @@ class PolarSlimeConfig:
     tokenizer_name_or_path: str | None
     add_generation_prompt: bool
     eval_dataset_name: str
+    run_dir: str | None
+    occupancy_interval_s: float
 
 
 def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
@@ -108,6 +110,20 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     if not 0.0 <= min_complete_accept_fraction <= 1.0:
         raise ValueError("polar_min_complete_accept_fraction must be between 0 and 1")
 
+    # Run directory for bridge-written files (per-task eval CSVs, occupancy
+    # time series): explicit ``polar_run_dir``, else the parent of the
+    # topology's rollout ``save_dir`` (``${RUN_DIR}/rollout_results``).
+    run_dir = getattr(args, "polar_run_dir", None)
+    if not run_dir and topology_path:
+        save_dir = TopologyConfig.load(topology_path).rollout.save_dir
+        if save_dir:
+            run_dir = str(Path(save_dir).parent)
+    run_dir = str(run_dir) if run_dir else None
+
+    occupancy_interval_s = float(getattr(args, "polar_occupancy_interval_s", 30.0) or 0.0)
+    if occupancy_interval_s < 0.0:
+        raise ValueError("polar_occupancy_interval_s must be non-negative (0 disables)")
+
     return PolarSlimeConfig(
         rollout_server_url=str(rollout_server_url).rstrip("/"),
         task_template=task_template,
@@ -135,6 +151,8 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         tokenizer_name_or_path=getattr(args, "hf_checkpoint", None),
         add_generation_prompt=bool(getattr(args, "polar_add_generation_prompt", True)),
         eval_dataset_name=str(getattr(args, "polar_eval_dataset_name", "polar_eval")),
+        run_dir=run_dir,
+        occupancy_interval_s=occupancy_interval_s,
     )
 
 
