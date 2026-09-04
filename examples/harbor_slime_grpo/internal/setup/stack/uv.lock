@@ -2952,7 +2952,7 @@ wheels = [
 [[package]]
 name = "slime"
 version = "0.3.0"
-source = { git = "https://github.com/mbereket/slime.git?rev=e88f1d97039029130b8a260231762ee4afb8e66f#e88f1d97039029130b8a260231762ee4afb8e66f" }
+source = { git = "https://github.com/mbereket/slime.git?rev=022334ac6a2ed5432d92fd4cb2b519ad73fcfb36#022334ac6a2ed5432d92fd4cb2b519ad73fcfb36" }
 dependencies = [
     { name = "accelerate", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "anthropic", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -3189,7 +3189,7 @@ requires-dist = [
     { name = "pybind11" },
     { name = "setuptools" },
     { name = "sglang", git = "https://github.com/mbereket/sglang.git?subdirectory=python&rev=89782b27af01b5a6c1bac455d39db2177644a22c" },
-    { name = "slime", git = "https://github.com/mbereket/slime.git?rev=e88f1d97039029130b8a260231762ee4afb8e66f" },
+    { name = "slime", git = "https://github.com/mbereket/slime.git?rev=022334ac6a2ed5432d92fd4cb2b519ad73fcfb36" },
     { name = "swegym", git = "https://github.com/SWE-Gym/SWE-Bench-Package.git?rev=16dd480cce9b27bf111a362d280881c6def5d2a7" },
     { name = "torch", index = "https://download.pytorch.org/whl/cu130" },
     { name = "transformer-engine", specifier = "==2.12.0" },
