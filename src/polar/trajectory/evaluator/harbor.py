@@ -114,6 +114,9 @@ class HarborEvaluator(BaseTrajectoryEvaluator):
             "verifier_exit_code": result.return_code,
             "verifier_timeout": result.return_code == -1,
             "test_output_path": str(test_output_path),
+            # The session dir (and so test_output_path) is removed after the
+            # session completes; keep the verifier's tail with the trajectory.
+            "verifier_output_tail": test_output[-4000:],
         }
         return EvalResult(outcome_reward=reward, metadata=metadata)
 
