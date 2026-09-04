@@ -346,7 +346,10 @@ if [ -n "${NUM_ROLLOUT:-}" ]; then
     NUM_ROLLOUT_ARGS=(--num-rollout "${NUM_ROLLOUT}")
     # slime sizes Megatron's LR schedule from num_rollout; with 0 the scheduler
     # asserts lr_decay_steps > 0. No optimizer step runs in eval-only mode.
-    [ "${NUM_ROLLOUT}" = 0 ] && NUM_ROLLOUT_ARGS+=(--lr-decay-iters 1)
+    # Eval-only also skips the checkpoint's optimizer/RNG state: it is unused, and
+    # a state saved from a different GPU layout (e.g. 8-GPU TP4xCP2) does not fit
+    # when re-sharded onto a smaller eval allocation.
+    [ "${NUM_ROLLOUT}" = 0 ] && NUM_ROLLOUT_ARGS+=(--lr-decay-iters 1 --no-load-optim --no-load-rng)
 fi
 EVAL_ARGS=()
 if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
