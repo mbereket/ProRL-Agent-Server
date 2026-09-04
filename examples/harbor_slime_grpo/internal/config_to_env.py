@@ -51,7 +51,9 @@ SCHEMA = {
         ("model_args_file", "MODEL_ARGS_FILE", "model_args_9b.sh"),
         ("end_of_turn_token_id", "EOT_TOKEN_ID", 248046),
         ("torch_dist_dir", "TORCH_DIST_DIR_CFG", PATH),
-        ("load_dir", "MODEL_LOAD_DIR", PATH),               # explicit checkpoint dir to load (e.g. another run's save dir); default: own save dir, else the reference
+        ("load_dir", "MODEL_LOAD_DIR", PATH),
+        ("sglang_tool_call_parser", "SGLANG_TOOL_CALL_PARSER", "qwen3_coder"),  # SGLang parser matching the model's tool-call format (qwen25 for Qwen3 dense)
+        ("fp32_lm_head", "FP32_LM_HEAD", False),          # trainer output_layer in fp32 (slime_bridge.fp32_head_provider); pair with --sglang-enable-fp32-lm-head               # explicit checkpoint dir to load (e.g. another run's save dir); default: own save dir, else the reference
     ],
     "cluster": [
         ("num_nodes", "NUM_NODES", 1),

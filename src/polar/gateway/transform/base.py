@@ -51,9 +51,11 @@ class BaseTransformer(ABC):
 
     @staticmethod
     def _is_qwen35_model(model_name: str | None) -> bool:
+        # Qwen3 family (Qwen3 dense, Qwen3.5, Qwen3.6): all take the
+        # ``enable_thinking`` chat-template kwarg, so the forced value applies.
         if not model_name:
             return False
-        return "qwen3.5" in model_name.lower()
+        return "qwen3" in model_name.lower()
 
     @staticmethod
     def _content_to_text(content: Any) -> str:
