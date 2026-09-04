@@ -21,6 +21,7 @@ A task directory is a [Harbor task](https://www.harborframework.com/docs/tasks):
 <tasks>/harbor/<task>/           (or <tasks>/<task>/ without a manifest)
     instruction.md               the prompt the agent receives
     task.toml                    [environment] docker_image (pullable ref) + workdir,
+                                 optional agent_path_prepend (first on the agent's PATH, e.g. a conda env)
                                  [agent] timeout_sec, [verifier] timeout_sec
     tests/test.sh                verifier; writes 0..1 to /logs/verifier/reward.txt
     environment/files/setup.sh   optional staging run before the agent starts, with
