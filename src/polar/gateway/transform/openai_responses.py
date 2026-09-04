@@ -399,6 +399,9 @@ class OpenAIResponsesTransformer(BaseTransformer):
         if isinstance(input_data, str):
             messages.append({"role": "user", "content": input_data})
         elif isinstance(input_data, list):
+            replay = body.get("_polar_reasoning_replay")
+            if replay:
+                input_data = self._replay_reasoning(input_data, replay)
             messages.extend(self._convert_input_items_to_messages(input_data))
 
         result: dict[str, Any] = {"messages": messages}
@@ -449,6 +452,45 @@ class OpenAIResponsesTransformer(BaseTransformer):
             result,
             body.get("_polar_model_served"),
         )
+
+    @staticmethod
+    def _replay_reasoning(
+        items: list[dict[str, Any]], replay: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        """Re-insert this session's reasoning into a history that omits it.
+
+        Codex echoes our ``reasoning`` output items back on the next turn, so the
+        chat template re-renders each earlier ``<think>`` block and every request
+        is a token-prefix extension of the previous one (one merged trace per
+        session). opencode drops them, which breaks that chain on every turn. The
+        gateway keeps the reasoning it produced per tool ``call_id`` (see
+        ``reasoning_replay_keys``); for each assistant turn whose function calls
+        arrive without a preceding ``reasoning`` item, insert one. Turns that
+        already carry reasoning are left alone.
+        """
+        out: list[dict[str, Any]] = []
+        turn_has_reasoning = False
+        for item in items:
+            item_type = item.get("type")
+            if item_type == "reasoning":
+                turn_has_reasoning = True
+            elif item_type == "function_call":
+                if not turn_has_reasoning:
+                    text = replay.get(f"call:{item.get('call_id', '')}")
+                    if text:
+                        out.append(
+                            {
+                                "type": "reasoning",
+                                "content": [{"type": "reasoning_text", "text": text}],
+                            }
+                        )
+                        turn_has_reasoning = True
+            elif item_type in {"function_call_output", "local_shell_call_output", "shell_call_output"} or (
+                item.get("role") in {"user", "developer", "system"}
+            ):
+                turn_has_reasoning = False
+            out.append(item)
+        return out
 
     def _response_format_from_text_config(
         self,

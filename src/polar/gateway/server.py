@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
@@ -39,6 +39,7 @@ from polar.gateway.session import (
 )
 from polar.gateway.storage import SessionStore
 from polar.gateway.transform import TransformManager
+from polar.gateway.transform.reasoning import reasoning_replay_keys
 from polar.gateway.transform.base import BaseTransformer
 from polar.platform.events import SSE_HEADERS, EventBus
 from polar.rollout.models import SessionDispatchRequest, SessionDispatchResponse, SessionStatus
@@ -65,6 +66,9 @@ class GatewayState:
     node_manager: GatewayNodeManager
     completion_writer: CompletionWriter
     event_bus: EventBus
+    # Per-session reasoning produced by the model, keyed for replay into
+    # histories that omit it (see OpenAIResponsesTransformer._replay_reasoning).
+    reasoning_replay: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 _state: GatewayState | None = None
@@ -615,6 +619,7 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
 
     state.session_registry.remove(safe_session_id)
+    state.reasoning_replay.pop(safe_session_id, None)
     return SessionDeleteResponse(
         session_id=safe_session_id,
         deleted=True,
@@ -659,6 +664,7 @@ async def proxy_request(request: Request, path: str):
 
     transformed_body = body.copy()
     transformed_body["_polar_model_served"] = state.node.model_served
+    transformed_body["_polar_reasoning_replay"] = state.reasoning_replay.get(session_id)
     openai_request = transformer.transform_request(transformed_body)
     openai_request["model"] = state.node.model_served
     is_streaming = openai_request.get("stream", False)
@@ -684,6 +690,19 @@ async def proxy_request(request: Request, path: str):
     )
 
 
+_REASONING_REPLAY_MAX_SESSIONS = 4096
+
+
+def _remember_reasoning(state: GatewayState, session_id: str, response: dict[str, Any]) -> None:
+    keys = reasoning_replay_keys(response)
+    if not keys:
+        return
+    store = state.reasoning_replay
+    store.setdefault(session_id, {}).update(keys)
+    while len(store) > _REASONING_REPLAY_MAX_SESSIONS:
+        store.pop(next(iter(store)))
+
+
 async def _handle_non_streaming(
     api_type: APIType,
     transformer: BaseTransformer,
@@ -701,6 +720,7 @@ async def _handle_non_streaming(
         logger.warning("Non-streaming upstream error for session %s: %s", session_id, exc)
         return _upstream_error_response(api_type, exc)
 
+    _remember_reasoning(state, session_id, response)
     state.storage.save_message(
         session_id,
         openai_request,
@@ -736,6 +756,7 @@ async def _handle_streaming(
         logger.warning("Upstream error for streaming session %s: %s", session_id, exc)
         return _upstream_error_response(api_type, exc)
 
+    _remember_reasoning(state, session_id, response)
     state.storage.save_message(
         session_id,
         openai_request,

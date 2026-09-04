@@ -108,3 +108,25 @@ def extract_reasoning_from_responses_item(item: dict[str, Any]) -> str:
         if joined:
             return joined
     return decrypt_reasoning(item.get("encrypted_content"))
+
+
+def reasoning_replay_keys(response: dict[str, Any]) -> dict[str, str]:
+    """Map replay keys → reasoning text for a chat completion response.
+
+    Keys are ``call:<tool_call_id>`` for each tool call the assistant turn made;
+    the Responses transform hands the same id back to the harness as
+    ``function_call.call_id``, which is what it echoes on the next turn.
+    """
+    try:
+        message = response["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return {}
+    reasoning = message.get("reasoning_content")
+    if not isinstance(reasoning, str) or not reasoning:
+        return {}
+    keys: dict[str, str] = {}
+    for tool_call in message.get("tool_calls") or []:
+        call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
+        if call_id:
+            keys[f"call:{call_id}"] = reasoning
+    return keys
