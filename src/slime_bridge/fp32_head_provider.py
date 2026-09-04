@@ -53,6 +53,21 @@ def _upcast_output_layer(layer: torch.nn.Module) -> None:
         return args, kwargs
 
     layer.register_forward_pre_hook(_cast_input, with_kwargs=True)
+
+    # Megatron wraps the model in Float16Module, whose __init__ calls
+    # ``module.bfloat16()``; that reaches this layer through ``_apply`` and
+    # would cast the head back. Keep dtype casts away from this layer while
+    # still honouring device moves (``.cuda()`` also goes through ``_apply``).
+    orig_apply = layer._apply
+
+    def _apply_keep_fp32(fn, recurse=True):
+        probe = fn(torch.zeros((), dtype=torch.float32))
+        if probe.dtype != torch.float32:
+            device = probe.device
+            return orig_apply(lambda t: t.to(device=device) if t.device != device else t, recurse)
+        return orig_apply(fn, recurse)
+
+    layer._apply = _apply_keep_fp32
     logger.info("fp32 LM head: output_layer.weight %s -> float32, input cast hook installed", tuple(old.shape))
 
 
