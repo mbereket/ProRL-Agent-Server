@@ -173,6 +173,11 @@ export TVM_FFI_CACHE_DIR="${TVM_FFI_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tvm-ffi}"
 # tilelang (FLA GatedDeltaNet kernels in the trainer) defaults to ~/.tilelang/cache.
 export TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tilelang}"
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR" "$TILELANG_CACHE_DIR"
+# flashinfer norm kernels: use the CUDA JIT implementation. Its default CuTe-DSL
+# path compiles rmsnorm through nvidia-cutlass-dsl at SGLang cuda-graph capture
+# and fails there with an MLIR binding TypeError on this stack (sglang 0.5.13,
+# flashinfer 0.6.12, nvidia-cutlass-dsl 4.5.2). Set to 0 to try the DSL path.
+export FLASHINFER_USE_CUDA_NORM="${FLASHINFER_USE_CUDA_NORM:-1}"
 # wandb artifact staging on the run dir (a full $HOME breaks it). The Ray job's
 # TMPDIR stays node-local /tmp: SGLang binds zmq IPC sockets there and Unix
 # socket paths are capped at 107 chars, which a lustre run dir exceeds. Polar
