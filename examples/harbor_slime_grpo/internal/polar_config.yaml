@@ -31,7 +31,12 @@ polar_task_template:
       HOME: "/polar/session/home"
       # Harness binaries first (mounted read-only below), then the task's
       # agent_path_prepend (e.g. the repo's conda env), then system paths.
-      PATH: "{args.polar_harness_dir}/bin:{args.polar_harness_dir}/node/bin:{sample.metadata.path_prepend}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      PATH: "{args.polar_harness_dir}/bin:{args.polar_harness_dir}/node/bin:{sample.metadata.path_prepend}@PATH_PREPEND@/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      LD_LIBRARY_PATH: "@LD_LIBRARY_PATH@"
+      # Rubric judge for judge-backed tasks (empty when the config has no judge:).
+      RUBRIC_MODEL: "@RUBRIC_MODEL@"
+      RUBRIC_MODEL_API_BASE: "@RUBRIC_MODEL_API_BASE@"
+      RUBRIC_MODEL_API_KEY: "@RUBRIC_MODEL_API_KEY@"
     kwargs:
       volumes:
         # Same path inside and outside: Python-based harnesses carry absolute paths.
@@ -67,5 +72,8 @@ polar_task_template:
       fail_on_nonzero_exit: false
     env:
       HOME: "/polar/session/home"
+      RUBRIC_MODEL: "@RUBRIC_MODEL@"
+      RUBRIC_MODEL_API_BASE: "@RUBRIC_MODEL_API_BASE@"
+      RUBRIC_MODEL_API_KEY: "@RUBRIC_MODEL_API_KEY@"
 
 polar_task_id_template: "@RUN_NAME@-{rollout_id}-{sample.group_index}"

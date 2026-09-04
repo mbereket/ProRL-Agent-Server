@@ -42,6 +42,9 @@ SCHEMA = {
         ("max_async_level", "MAX_ASYNC_LEVEL", 1),
         ("thinking", "ENABLE_THINKING", None),
         ("keep_sessions", "POLAR_KEEP_SESSION_DIRS", False),   # keep per-session dirs (agent logs, verifier output) for debugging      # Qwen3.5: true/false force chat-template thinking; null = built-in rule (off)
+        ("path_prepend", "HARNESS_PATH_PREPEND", ""),       # put first on the agent PATH for every task (after per-task agent_path_prepend)
+        ("ld_library_path", "HARNESS_LD_LIBRARY_PATH", ""), # LD_LIBRARY_PATH inside the sandbox (e.g. the image's env libs)
+        ("cli_version", "HARNESS_CLI_VERSION", ""),         # pin the harness CLI version installed by prepare_harness.sh
     ],
     "model": [
         ("hf_checkpoint", "HF_CHECKPOINT", "Qwen/Qwen3.5-9B"),
@@ -81,6 +84,11 @@ SCHEMA = {
         ("prompt_data", "EVAL_PROMPT_DATA", ""),
         ("interval", "EVAL_INTERVAL", 10),
         ("n_samples_per_prompt", "N_SAMPLES_PER_EVAL_PROMPT", 1),
+    ],
+    "judge": [                                             # LLM judge for rubric-graded tasks (BixBench-Hypothesis)
+        ("model", "RUBRIC_MODEL", ""),
+        ("api_base", "RUBRIC_MODEL_API_BASE", ""),
+        ("api_key_env", "RUBRIC_MODEL_API_KEY_ENV", ""),     # host env var holding the key; read when templates are rendered
     ],
     "wandb": [
         ("project", "WANDB_PROJECT", "harbor-slime-grpo"),

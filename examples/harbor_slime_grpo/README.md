@@ -92,6 +92,10 @@ harness:
   request_timeout: 3600
   max_run_workers: 16               # concurrent sandboxes per sandbox host
   thinking: true                    # Qwen3.5 chat-template thinking (null = gateway default: off)
+  keep_sessions: false              # keep per-session dirs (agent logs, verifier output) under <run>/sessions
+  cli_version: ""                   # pin the harness CLI version (e.g. opencode-ai 1.18.18)
+  path_prepend: ""                  # first on the agent PATH for every task (SWE-Gym tasks set their own per task)
+  ld_library_path: ""               # LD_LIBRARY_PATH inside the sandbox
   max_async_level: 1
 model:
   hf_checkpoint: Qwen/Qwen3.5-9B
@@ -125,6 +129,10 @@ eval:
   prompt_data: ""                   # "<name> <path.jsonl>" enables a held-out eval
   interval: 10
   n_samples_per_prompt: 1
+judge:                              # rubric judge for judge-graded tasks (BixBench-Hypothesis); empty = none
+  model: openai/nvidia/zai-org/glm-5.2
+  api_base: https://inference-api.nvidia.com/v1
+  api_key_env: NVINF_API_KEY        # host env var; injected into the sandbox and the verifier
 wandb:
   project: harbor-slime-grpo
   group: <name>

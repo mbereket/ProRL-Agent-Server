@@ -170,7 +170,15 @@ if [ "${DRY_RUN}" = 0 ]; then
         bash "${SCRIPT_DIR}/prepare_images.sh" "${ASSET_DIR}/images.txt" "${APPTAINER_IMAGE_DIR}" "${APPTAINER_PREPARE_JOBS}"
     fi
     if [ "${PREPARE_HARNESS}" = 1 ]; then
-        log "harness ${HARNESS}"
+        log "harness ${HARNESS}${HARNESS_CLI_VERSION:+ @ ${HARNESS_CLI_VERSION}}"
+        # harness.cli_version pins the CLI prepare_harness.sh installs.
+        if [ -n "${HARNESS_CLI_VERSION:-}" ]; then
+            case "${HARNESS}" in
+                codex) export CODEX_VERSION="${HARNESS_CLI_VERSION}" ;;  opencode) export OPENCODE_VERSION="${HARNESS_CLI_VERSION}" ;;
+                claude_code) export CLAUDE_CODE_VERSION="${HARNESS_CLI_VERSION}" ;;  qwen_code) export QWEN_CODE_VERSION="${HARNESS_CLI_VERSION}" ;;
+                pi) export PI_VERSION="${HARNESS_CLI_VERSION}" ;;  mini_swe_agent) export MINI_SWE_AGENT_VERSION="${HARNESS_CLI_VERSION}" ;;  hermes) export HERMES_VERSION="${HARNESS_CLI_VERSION}" ;;
+            esac
+        fi
         bash "${SCRIPT_DIR}/prepare_harness.sh" "${HARNESS_DIR}" "${HARNESS}"
     fi
 
@@ -202,6 +210,11 @@ tokens = {
     "@HARNESS@": env["HARNESS"], "@HARNESS_MODEL_NAME@": env["HARNESS_MODEL_NAME"],
     "@HARNESS_DIR@": env["HARNESS_DIR"], "@HARBOR_DATASET_DIR@": env["HARBOR_DATASET_DIR"],
     "@RUN_NAME@": env["RUN_NAME"], "@GROUP_ID_SCOPE@": env["GROUP_ID_SCOPE"],
+    "@PATH_PREPEND@": (env.get("HARNESS_PATH_PREPEND", "").rstrip(":") + ":") if env.get("HARNESS_PATH_PREPEND") else "",
+    "@LD_LIBRARY_PATH@": env.get("HARNESS_LD_LIBRARY_PATH", ""),
+    # Rubric judge: model/base from the config, the key from the host env var it names.
+    "@RUBRIC_MODEL@": env.get("RUBRIC_MODEL", ""), "@RUBRIC_MODEL_API_BASE@": env.get("RUBRIC_MODEL_API_BASE", ""),
+    "@RUBRIC_MODEL_API_KEY@": os.environ.get(env.get("RUBRIC_MODEL_API_KEY_ENV", "") or "__unset__", ""),
 }
 typed = {
     "@SESSION_TIMEOUT@": int(env["SESSION_TIMEOUT"]), "@REQUEST_TIMEOUT@": int(env["REQUEST_TIMEOUT"]),

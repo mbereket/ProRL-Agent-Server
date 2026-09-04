@@ -162,6 +162,9 @@ export TVM_FFI_CACHE_DIR="${TVM_FFI_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tvm-ffi}"
 # tilelang (FLA GatedDeltaNet kernels in the trainer) defaults to ~/.tilelang/cache.
 export TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tilelang}"
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR" "$TILELANG_CACHE_DIR"
+# Ray job temp + wandb artifact staging on the run dir (a full $HOME breaks both).
+# Only the Ray job env gets this TMPDIR; Polar gateways must not (apptainer forwards it).
+mkdir -p "${RUN_DIR}/tmp" "${RUN_DIR}/wandb_cache"
 
 # Render YAML templates: only the listed ${VARS} are expanded.
 command -v envsubst >/dev/null || { echo "ERROR: envsubst not found (install gettext-base)"; exit 1; }
@@ -293,6 +296,9 @@ RUNTIME_ENV_JSON="{
     \"TRITON_CACHE_DIR\": \"${TRITON_CACHE_DIR}\",
     \"TVM_FFI_CACHE_DIR\": \"${TVM_FFI_CACHE_DIR}\",
     \"TILELANG_CACHE_DIR\": \"${TILELANG_CACHE_DIR}\",
+    \"TMPDIR\": \"${RUN_DIR}/tmp\",
+    \"WANDB_CACHE_DIR\": \"${RUN_DIR}/wandb_cache\",
+    \"WANDB_DATA_DIR\": \"${RUN_DIR}/wandb_cache\",
     \"SLIME_ENGINE_BASE_PORT\": \"${SLIME_ENGINE_BASE_PORT:-15000}\",
     \"LD_LIBRARY_PATH\": \"${RUNTIME_LD_LIBRARY_PATH}\",
     \"PYTORCH_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
