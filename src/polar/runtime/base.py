@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Final
@@ -154,20 +155,27 @@ class BaseRuntime(ABC):
     ) -> tuple[int, str | None, str | None]:
         """Run a local subprocess, optionally capturing stdout/stderr.
 
-        ``stderr_file`` writes stderr to a file (returned as the stderr string)
-        instead of a pipe. Use it for commands that fork a long-lived child, such
-        as ``apptainer instance start``: the daemon inherits a pipe and
-        ``communicate()`` would wait for its EOF forever.
+        Output is never captured through pipes: a long-lived child left behind by
+        the command (``apptainer instance start``'s daemon, a task setup script
+        that starts a server) would inherit the pipe and ``communicate()`` would
+        wait for its EOF forever. ``capture`` writes both streams to temporary
+        files and returns once the command itself exits; ``stderr_file`` writes
+        stderr to the given path (returned as the stderr string).
         """
         process_env = None if env is None else {**os.environ, **env}
-        stderr_fh = None
+        stdout_fh = stderr_fh = None
+        stdout_path: Path | None = None
+        stderr_path: Path | None = stderr_file
         if stderr_file is not None:
             stderr_fh = open(stderr_file, "wb")
             stdout_target = asyncio.subprocess.DEVNULL
             stderr_target = stderr_fh
         elif capture:
-            stdout_target = asyncio.subprocess.PIPE
-            stderr_target = asyncio.subprocess.PIPE
+            fd_out, out_name = tempfile.mkstemp(prefix="polar-exec-", suffix=".out")
+            fd_err, err_name = tempfile.mkstemp(prefix="polar-exec-", suffix=".err")
+            stdout_fh, stderr_fh = os.fdopen(fd_out, "wb"), os.fdopen(fd_err, "wb")
+            stdout_path, stderr_path = Path(out_name), Path(err_name)
+            stdout_target, stderr_target = stdout_fh, stderr_fh
         else:
             stdout_target = asyncio.subprocess.DEVNULL
             stderr_target = asyncio.subprocess.DEVNULL
@@ -175,33 +183,41 @@ class BaseRuntime(ABC):
         process = await asyncio.create_subprocess_exec(
             *args,
             env=process_env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=stdout_target,
             stderr=stderr_target,
         )
         self._active_process = process
+        timed_out = False
         try:
             if timeout is None:
-                stdout_bytes, stderr_bytes = await process.communicate()
+                await process.wait()
             else:
                 try:
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        process.communicate(), timeout=timeout
-                    )
+                    await asyncio.wait_for(process.wait(), timeout=timeout)
                 except asyncio.TimeoutError:
+                    timed_out = True
                     process.kill()
                     try:
                         await process.wait()
                     except ProcessLookupError:
                         pass
-                    return -1, None, None
         finally:
             self._active_process = None
-            if stderr_fh is not None:
-                stderr_fh.close()
+            for fh in (stdout_fh, stderr_fh):
+                if fh is not None:
+                    fh.close()
 
-        rc = process.returncode or 0
-        stdout_str = stdout_bytes.decode(errors="replace") if stdout_bytes else None
-        stderr_str = stderr_bytes.decode(errors="replace") if stderr_bytes else None
-        if stderr_file is not None:
-            stderr_str = stderr_file.read_text(errors="replace") or None
-        return rc, stdout_str, stderr_str
+        def _read(path: Path | None) -> str | None:
+            if path is None:
+                return None
+            try:
+                return path.read_text(errors="replace") or None
+            finally:
+                if path is not stderr_file:
+                    path.unlink(missing_ok=True)
+
+        stdout_str, stderr_str = _read(stdout_path), _read(stderr_path)
+        if timed_out:
+            return -1, None, None
+        return process.returncode or 0, stdout_str, stderr_str

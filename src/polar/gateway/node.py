@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 import os
 import shutil
@@ -281,11 +282,17 @@ class GatewayNodeManager:
             elif action.type == "exec":
                 merged_env = {**base_env, **(action.env or {})}
                 effective_cwd = action.cwd or runtime.runtime_session_dir
+                started = time.monotonic()
                 result = await runtime.exec(
                     action.command,
                     cwd=effective_cwd,
                     env=merged_env,
                     timeout_sec=self._remaining_budget(managed),
+                )
+                logger.info(
+                    "%s action %d for session %s: rc=%s in %.1fs",
+                    log_prefix, i, request.session_id, result.return_code,
+                    time.monotonic() - started,
                 )
                 log_dir = managed.session_dir / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
