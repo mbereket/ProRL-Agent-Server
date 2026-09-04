@@ -85,7 +85,11 @@ case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/${MODEL_AR
 source "${MODEL_ARGS_FILE}"
 
 # First run has an empty SAVE_DIR — slime's load_checkpoint asserts on empty.
-if [ -f "$SAVE_DIR/latest_checkpointed_iteration.txt" ]; then
+if [ -n "${MODEL_LOAD_DIR:-}" ]; then
+    # Explicit checkpoint (e.g. another run's save dir, for evaluation or forking).
+    [ -f "$MODEL_LOAD_DIR/latest_checkpointed_iteration.txt" ] || { echo "ERROR: model.load_dir has no checkpoint: $MODEL_LOAD_DIR"; exit 1; }
+    LOAD_DIR="$MODEL_LOAD_DIR"; START_ROLLOUT_ARGS=()
+elif [ -f "$SAVE_DIR/latest_checkpointed_iteration.txt" ]; then
     LOAD_DIR="$SAVE_DIR"; START_ROLLOUT_ARGS=()          # resume: slime derives start_rollout_id from the checkpoint
 else
     # Fresh run from the converted reference checkpoint. Its "release" iteration
@@ -335,6 +339,10 @@ STD_NORM_ARGS=()
 # TP4xCP2 that is ~20 GB/GPU of headroom.
 OPTIM_OFFLOAD_ARGS=()
 [ "${OPTIMIZER_CPU_OFFLOAD:-0}" = 1 ] && OPTIM_OFFLOAD_ARGS=(--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --overlap-cpu-optimizer-d2h-h2d)
+# NUM_ROLLOUT overrides the epoch-derived step count (slime then ignores --num-epoch);
+# 0 runs only the eval pass (rollout.num_rollout: 0 + eval.prompt_data).
+NUM_ROLLOUT_ARGS=()
+[ -n "${NUM_ROLLOUT:-}" ] && NUM_ROLLOUT_ARGS=(--num-rollout "${NUM_ROLLOUT}")
 EVAL_ARGS=()
 if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
     # shellcheck disable=SC2206
@@ -374,6 +382,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --rollout-shuffle \
     --reward-key score \
     --num-epoch "${NUM_EPOCH:-1}" \
+    ${NUM_ROLLOUT_ARGS[@]+"${NUM_ROLLOUT_ARGS[@]}"} \
     --rollout-batch-size "$ROLLOUT_BATCH_SIZE" \
     --n-samples-per-prompt "$N_SAMPLES_PER_PROMPT" \
     --rollout-max-response-len "$ROLLOUT_MAX_RESPONSE_LEN" \

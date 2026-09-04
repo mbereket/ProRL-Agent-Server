@@ -51,6 +51,7 @@ SCHEMA = {
         ("model_args_file", "MODEL_ARGS_FILE", "model_args_9b.sh"),
         ("end_of_turn_token_id", "EOT_TOKEN_ID", 248046),
         ("torch_dist_dir", "TORCH_DIST_DIR_CFG", PATH),
+        ("load_dir", "MODEL_LOAD_DIR", PATH),               # explicit checkpoint dir to load (e.g. another run's save dir); default: own save dir, else the reference
     ],
     "cluster": [
         ("num_nodes", "NUM_NODES", 1),
@@ -63,6 +64,7 @@ SCHEMA = {
         ("batch_size", "ROLLOUT_BATCH_SIZE", 8),
         ("n_samples_per_prompt", "N_SAMPLES_PER_PROMPT", 16),
         ("num_epoch", "NUM_EPOCH", 50),
+        ("num_rollout", "NUM_ROLLOUT", ""),                 # overrides the epoch-derived step count; 0 = eval only (needs eval.prompt_data)
         ("max_prompt_len", "ROLLOUT_MAX_PROMPT_LEN", 24000),
         ("max_response_len", "ROLLOUT_MAX_RESPONSE_LEN", 8000),
         ("sglang_context_length", "SGLANG_CONTEXT_LENGTH", 32768),
