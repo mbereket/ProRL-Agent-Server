@@ -140,7 +140,27 @@ SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_engine_
     # install_python_stack.sh restores the locked slime.
     if [ "${INSTALL_EDITABLE}" = 1 ]; then
         log "editable overlay (slime, Megatron-LM)"
-        uv pip install --python "${PYTHON_BIN}" --no-deps -e "${SLIME_DIR}" -e "${MEGATRON_DIR}"
+        # Idempotent: an editable install is already live from the checkout, so
+        # only (re)install when the venv does not point at these paths. A
+        # concurrent job may be importing from the shared venv right now.
+        overlay_current() {   # overlay_current DIST_NAME CHECKOUT_DIR
+            "${PYTHON_BIN}" - "$1" "$2" <<'PYCHK'
+import json, sys
+from importlib.metadata import distribution, PackageNotFoundError
+name, path = sys.argv[1], sys.argv[2].rstrip("/")
+try:
+    d = distribution(name)
+    url = json.loads(d.read_text("direct_url.json") or "{}")
+except (PackageNotFoundError, ValueError):
+    sys.exit(1)
+sys.exit(0 if url.get("dir_info", {}).get("editable") and url.get("url", "").rstrip("/").endswith(path) else 1)
+PYCHK
+        }
+        if overlay_current slime "${SLIME_DIR}" && overlay_current megatron-core "${MEGATRON_DIR}"; then
+            info "editable overlay already installed; skipping"
+        else
+            uv pip install --python "${PYTHON_BIN}" --no-deps -e "${SLIME_DIR}" -e "${MEGATRON_DIR}"
+        fi
     fi
     if [ "${INSTALL_TRAINING_STACK}" = 1 ] && [ "${SETUP_ENV}" = 1 ]; then
         # shellcheck source=./setup/ensure_training_stack.sh

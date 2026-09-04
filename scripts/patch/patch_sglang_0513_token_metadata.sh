@@ -149,7 +149,8 @@ protocol_text = replace_once(
     "            data.pop(\"meta_info\", None)\n",
     label=str(protocol_path),
 )
-protocol_path.write_text(protocol_text)
+if protocol_text != protocol_path.read_text():
+    protocol_path.write_text(protocol_text)   # write only when changed: a concurrent job may be importing sglang
 
 # ---------------------------------------------------------------------------
 # utils.py - preserve token ids while converting internal logprobs to OpenAI.
@@ -174,7 +175,8 @@ utils_text = replace_once(
     "            ret_logprobs.text_offset.append(-1)\n",
     label=str(utils_path),
 )
-utils_path.write_text(utils_text)
+if utils_text != utils_path.read_text():
+    utils_path.write_text(utils_text)   # write only when changed: a concurrent job may be importing sglang
 
 # ---------------------------------------------------------------------------
 # serving_chat.py - when logprobs are requested, emit the same training
@@ -253,9 +255,10 @@ serving_chat_text = replace_once(
     "                )\n",
     label=str(serving_chat_path),
 )
-serving_chat_path.write_text(serving_chat_text)
+if serving_chat_text != serving_chat_path.read_text():
+    serving_chat_path.write_text(serving_chat_text)   # write only when changed: a concurrent job may be importing sglang
 
-print(f"Patched SGLang {SUPPORTED_SGLANG_VERSION} token metadata in {root}")
+print(f"SGLang {SUPPORTED_SGLANG_VERSION} token metadata patch in place at {root}")
 PY
 
 if [[ -n "${SERVER_URL}" ]]; then
