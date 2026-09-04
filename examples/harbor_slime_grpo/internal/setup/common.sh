@@ -74,3 +74,16 @@ config_python() {
         die "no python with pyyaml found (install uv: https://astral.sh/uv, or pyyaml for python3)"
     fi
 }
+
+# setup_lock_acquire FILE / setup_lock_release — serialize shared setup across
+# concurrent jobs in one WORKROOT (flock on fd 9; waits up to 2 h). If the
+# filesystem lacks flock support we warn and continue unlocked.
+setup_lock_acquire() {
+    local lock="$1"
+    mkdir -p "$(dirname "${lock}")"
+    exec 9>>"${lock}"
+    if ! flock -w 7200 9 2>/dev/null; then
+        echo "  WARNING: could not take setup lock ${lock} (no flock support or 2 h timeout); continuing unlocked" >&2
+    fi
+}
+setup_lock_release() { flock -u 9 2>/dev/null || true; exec 9>&-; }

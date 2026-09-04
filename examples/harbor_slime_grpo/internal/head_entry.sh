@@ -47,7 +47,12 @@ export POLAR_BIND_HOST=0.0.0.0
 export POLAR_PUBLIC_HOST="${HEAD_IP}"
 export GPUS_PER_NODE="${GPUS_PER_NODE:-${SLURM_GPUS_PER_NODE:-8}}"
 export WORKROOT="${WORKROOT:-$(cd -- "${EXAMPLE_DIR}/../.." && pwd)/tmp}"
-export ENV_FILE="${ENV_FILE:-${WORKROOT}/env.sh}"
+# The persisted setup environment is per run (pipeline.sh writes
+# ${RUN_DIR}/env.sh); workers source the same file, so derive the path here.
+# shellcheck source=./setup/common.sh
+source "${SCRIPT_DIR}/setup/common.sh"
+RUN_NAME_CFG="$(config_python "${SCRIPT_DIR}/config_to_env.py" "${RUN_CONFIG}" | sed -n 's/^export RUN_NAME=//p' | tr -d "'")"
+export ENV_FILE="${ENV_FILE:-${WORKROOT}/harbor_slime_grpo/${RUN_ID:-${RUN_NAME_CFG}}/env.sh}"
 
 WORKER_PIDS=()
 for w in "${WORKERS[@]}"; do

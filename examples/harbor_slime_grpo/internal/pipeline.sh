@@ -23,7 +23,7 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 cd "${PROJECT_ROOT}"
 export PROJECT_ROOT
 export WORKROOT="${WORKROOT:-${PROJECT_ROOT}/tmp}"
-export ENV_FILE="${ENV_FILE:-${WORKROOT}/env.sh}"
+# ENV_FILE (the persisted setup environment) is per run; set below once RUN_DIR is known.
 export SETUP_ENV="${SETUP_ENV:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 mkdir -p "${WORKROOT}"
@@ -53,6 +53,9 @@ export RUN_ID="${RUN_ID:-${RUN_NAME}}"
 export RUN_DIR="${WORKROOT}/harbor_slime_grpo/${RUN_ID}"
 ASSET_DIR="${RUN_DIR}/assets"
 mkdir -p "${ASSET_DIR}"
+# Per-run copy of the setup environment (PATH, CUDA, caches). Jobs sharing a
+# WORKROOT run concurrently; nothing job-written may live at WORKROOT level.
+export ENV_FILE="${ENV_FILE:-${RUN_DIR}/env.sh}"
 export HARNESS_DIR="${HARNESS_DIR_CFG:-${WORKROOT}/harbor_harness}"
 export APPTAINER_IMAGE_DIR="${APPTAINER_IMAGE_DIR:-${WORKROOT}/harbor_sif_images}"
 export HARBOR_DATASET_DIR="${TASKS_MOUNT_ROOT:-${TASKS_DIR}}"
@@ -71,6 +74,11 @@ RUN_TRAINING="${RUN_TRAINING:-1}"
 
 # shellcheck source=./setup/common.sh
 source "${SCRIPT_DIR}/setup/common.sh"
+
+# Shared, idempotent installs (venv, CUDA userspace, apptainer, checkouts, task
+# datasets, SIF images, harness CLI, weight conversion) are serialized across
+# concurrent jobs in this WORKROOT; the later job finds them "present; skipping".
+setup_lock_acquire "${WORKROOT}/.setup.lock"
 
 if [ "${DRY_RUN}" = 0 ]; then
     # ── Environment ────────────────────────────────────────────────────────
@@ -199,6 +207,7 @@ if [ "${DRY_RUN}" = 0 ]; then
 fi
 
 # ── Polar templates: @TOKENS@ from the run config, ${VARS} later by run.sh ──
+setup_lock_release
 log "polar templates"
 # Judge-backed tasks: the key named by judge.api_key_env must be set on the host,
 # otherwise the MCP/judge never starts and every reward is silently 0.
