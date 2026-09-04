@@ -56,7 +56,7 @@ constraint-dependencies = [
 
 [tool.uv.sources]
 polar = { path = "../../../../..", editable = true }
-slime = { git = "https://github.com/mbereket/slime.git", rev = "b6fab12eae849da2386cc1f5470e9fe3e24b31e4" }
+slime = { git = "https://github.com/mbereket/slime.git", rev = "e88f1d97039029130b8a260231762ee4afb8e66f" }
 sglang = { git = "https://github.com/mbereket/sglang.git", rev = "89782b27af01b5a6c1bac455d39db2177644a22c", subdirectory = "python" }
 swegym = { git = "https://github.com/SWE-Gym/SWE-Bench-Package.git", rev = "16dd480cce9b27bf111a362d280881c6def5d2a7" }
 torch = { index = "pytorch-cu130" }
