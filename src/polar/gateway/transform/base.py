@@ -9,6 +9,10 @@ from typing import Any
 class BaseTransformer(ABC):
     """Abstract base class for API transformers.
 
+    ``qwen35_thinking`` (set by TransformManager from the gateway node's
+    ``inference.enable_thinking``): None applies the built-in Qwen3.5 rule
+    (thinking off), True/False force the chat template flag.
+
     Transforms requests from source API format to OpenAI format (for the
     inference backend), and transforms responses back to source API format.
     """
@@ -114,13 +118,15 @@ class BaseTransformer(ABC):
         request = self._merge_developer_role(request)
 
         if self._is_qwen35_model(model_name):
-            # Qwen3.5 outputs tool calls inside thinking; disable thinking.
+            # Qwen3.5 outputs tool calls inside thinking; disable thinking unless
+            # the topology forces a value (inference.enable_thinking).
+            forced = getattr(self, "qwen35_thinking", None)
             # https://www.reddit.com/r/LocalLLaMA/comments/1sccqt2/i_think_i_got_solutions_for_qwen_35_tool_call_in/
             # Assigned, not defaulted: per-API transforms may already have
             # mapped a reasoning request param (Responses ``reasoning.effort``,
             # Anthropic ``thinking``) to ``enable_thinking=True``.
             chat_template_kwargs = dict(request.get("chat_template_kwargs") or {})
-            chat_template_kwargs["enable_thinking"] = False
+            chat_template_kwargs["enable_thinking"] = False if forced is None else bool(forced)
             request["chat_template_kwargs"] = chat_template_kwargs
 
         return request

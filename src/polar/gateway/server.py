@@ -94,7 +94,7 @@ def _build_state(topology: TopologyConfig, node_id: str | None) -> GatewayState:
         enabled=persistence_config.enabled and bool(save_dir),
     )
     storage = SessionStore(completion_writer=completion_writer)
-    transform_manager = TransformManager()
+    transform_manager = TransformManager(qwen35_thinking=node.enable_thinking)
     session_registry = SessionRegistry()
     builder_registry = default_builder_registry()
     evaluator_registry = default_evaluator_registry()

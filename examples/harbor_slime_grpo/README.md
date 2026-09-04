@@ -91,6 +91,7 @@ harness:
   session_timeout: 3000             # per-session budget: agent + verifier + margin
   request_timeout: 3600
   max_run_workers: 16               # concurrent sandboxes per sandbox host
+  thinking: true                    # Qwen3.5 chat-template thinking (null = gateway default: off)
   max_async_level: 1
 model:
   hf_checkpoint: Qwen/Qwen3.5-9B

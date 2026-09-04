@@ -26,6 +26,9 @@ class _InferenceConfig(_StrictModel):
     # sampled distribution is the one the trainer optimizes. Off by default:
     # the harness's own sampling params pass through unchanged.
     training_sampling: bool = False
+    # Qwen3.5 chat-template thinking. None keeps the built-in rule (off: the
+    # model tends to put tool calls inside the thinking block); true/false force it.
+    enable_thinking: bool | None = None
 
     @field_validator("base_url")
     @classmethod
@@ -83,6 +86,10 @@ class GatewayNodeConfig(_StrictModel):
     @property
     def training_sampling(self) -> bool:
         return self.inference.training_sampling
+
+    @property
+    def enable_thinking(self) -> bool | None:
+        return self.inference.enable_thinking
 
 
 class _CompletionPersistenceConfig(_StrictModel):

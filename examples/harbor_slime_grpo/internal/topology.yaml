@@ -28,3 +28,4 @@ gateway:
         # Sample from the distribution the trainer optimizes (T=1, top_p=1, top_k=-1),
         # whatever the harness asks for.
         training_sampling: true
+        enable_thinking: "@ENABLE_THINKING@"   # dropped when the config leaves harness.thinking unset

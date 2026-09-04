@@ -11,13 +11,15 @@ from polar.gateway.transform.openai_responses import OpenAIResponsesTransformer
 class TransformManager:
     """Route to the correct transformer based on detected API type."""
 
-    def __init__(self):
+    def __init__(self, *, qwen35_thinking: bool | None = None):
         self._transformers: dict[APIType, BaseTransformer] = {
             APIType.ANTHROPIC: AnthropicTransformer(),
             APIType.OPENAI_CHAT: OpenAIChatTransformer(),
             APIType.OPENAI_RESPONSES: OpenAIResponsesTransformer(),
             APIType.GOOGLE: GoogleTransformer(),
         }
+        for t in self._transformers.values():
+            t.qwen35_thinking = qwen35_thinking
 
     def get(self, api_type: APIType) -> BaseTransformer:
         return self._transformers[api_type]

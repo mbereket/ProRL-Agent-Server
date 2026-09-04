@@ -208,10 +208,11 @@ typed = {
     "@MAX_ASYNC_LEVEL@": int(env["MAX_ASYNC_LEVEL"]), "@EOT_TOKEN_ID@": int(env["EOT_TOKEN_ID"]),
     "@MAX_RUN_WORKERS@": int(env["MAX_RUN_WORKERS"]),
     "@TIMEOUT_REWARD_ZERO@": env["TIMEOUT_REWARD_ZERO"] == "1",
+    "@ENABLE_THINKING@": {"1": True, "0": False}.get(env.get("ENABLE_THINKING", ""), None),
     "@DROP_ZERO_VARIANCE_GROUPS@": env["DROP_ZERO_VARIANCE_GROUPS"] == "1",
 }
 def fill(node):
-    if isinstance(node, dict): return {k: fill(v) for k, v in node.items()}
+    if isinstance(node, dict): return {k: fill(v) for k, v in node.items() if not (isinstance(v, str) and v in typed and typed[v] is None)}
     if isinstance(node, list): return [fill(v) for v in node]
     if isinstance(node, str):
         if node in typed: return typed[node]
