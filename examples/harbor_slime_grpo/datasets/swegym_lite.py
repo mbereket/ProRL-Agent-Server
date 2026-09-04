@@ -4,8 +4,9 @@
 Follows the Harbor SWE-Gym adapter (harbor-framework/harbor, adapters/swegym,
 Apache-2.0): same instruction (the GitHub issue text), same prebuilt images
 (``xingyaoww/sweb.eval.x86_64.<owner>_s_<repo>-<issue>``), same verifier
-(``swegym_test.sh.tmpl``: run FAIL_TO_PASS + PASS_TO_PASS with pytest inside
-the image's ``testbed`` conda env, parse, write 0/1 to /logs/verifier/reward.txt).
+(``swegym_test.sh.tmpl``: run FAIL_TO_PASS + PASS_TO_PASS with the repo's test
+command from the SWE-Gym harness specs, ``pytest -rA`` by default, inside the
+image's ``testbed`` conda env, parse, write 0/1 to /logs/verifier/reward.txt).
 The one difference is the output layout: the adapter emits a Dockerfile per
 task, this writes the pullable image into ``task.toml`` so no image build is
 needed (see prepare_tasks.py):
@@ -17,9 +18,12 @@ needed (see prepare_tasks.py):
         tests/test.sh        verifier (hidden from the agent; uploaded after the run)
         tests/config.json    FAIL_TO_PASS / PASS_TO_PASS lists the parser reads
 
+Dependencies: ``datasets`` and (for repo specs) the ``swegym`` package, both in
+the venv.
+
 Splits: ``--dataset lite`` (SWE-Gym/SWE-Gym-Lite, 230 tasks; every image is
 published) or ``--dataset full`` (SWE-Gym/SWE-Gym, 2438 tasks; 38 images are
-missing upstream and fail at pull time). Dependency: ``datasets`` (in the venv).
+missing upstream and fail at pull time).
 
     python datasets/swegym_lite.py --output <dir>              # all 230 lite tasks
     python datasets/swegym_lite.py --output <dir> --limit 10   # first 10 (dataset order)
@@ -85,6 +89,21 @@ def select_tests(fail_to_pass: list[str], pass_to_pass: list[str], test_patch: s
     return selected
 
 
+def repo_specs(repo: str, version: str) -> dict:
+    """Per-repo/version harness specs (test command, eval env, install) from the
+    SWE-Gym fork of swebench (what the swegym example evaluates with); upstream
+    swebench as a fallback; empty when neither knows the repo."""
+    for mod in ("swegym.harness.constants", "swebench.harness.constants"):
+        try:
+            m = __import__(mod, fromlist=["MAP_REPO_VERSION_TO_SPECS"]).MAP_REPO_VERSION_TO_SPECS
+        except Exception:
+            continue
+        specs = m.get(repo, m.get(repo.lower(), {})).get(str(version))
+        if specs:
+            return dict(specs)
+    return {}
+
+
 EVAL_SCRIPT = dedent("""\
     set -o pipefail -x
 
@@ -94,6 +113,10 @@ EVAL_SCRIPT = dedent("""\
     conda activate testbed
     set -x
     set -u
+
+    # Repo-specific eval environment and (re)install, as in the swebench harness.
+    @EVAL_COMMANDS@
+    @INSTALL@
 
     # Reset the files the test patch touches, then apply the test patch.
     @RESET_CMD@
@@ -109,7 +132,8 @@ EVAL_SCRIPT = dedent("""\
     echo ">>>>> Applied Patch (pred)"
 
     set +x
-    # Batch to avoid OOM on large selections.
+    # Batch to avoid OOM on large selections. -rA (from the specs) prints one
+    # PASSED/FAILED line per test, which the parser below needs.
     BATCH_SIZE=40
     TESTS=(@TESTS@)
     if [ "${#TESTS[@]}" -gt "$BATCH_SIZE" ]; then
@@ -118,12 +142,12 @@ EVAL_SCRIPT = dedent("""\
         for ((i=0; i<${#TESTS[@]}; i+=BATCH_SIZE)); do
             BATCH=("${TESTS[@]:i:BATCH_SIZE}")
             BATCH_NUM=$((BATCH_NUM + 1))
-            pytest "${BATCH[@]}" > "$TEST_OUTPUT_DIR/batch_$BATCH_NUM.txt" 2>&1 || true
+            @TEST_CMD@ "${BATCH[@]}" > "$TEST_OUTPUT_DIR/batch_$BATCH_NUM.txt" 2>&1 || true
         done
         cat "$TEST_OUTPUT_DIR"/batch_*.txt
         rm -rf "$TEST_OUTPUT_DIR"
     else
-        pytest "${TESTS[@]}" || true
+        @TEST_CMD@ "${TESTS[@]}" || true
     fi
     exec 1>&3 2>&4
     exec 3>&- 4>&-
@@ -134,13 +158,21 @@ EVAL_SCRIPT = dedent("""\
 
 
 def eval_script(row: dict, fail_to_pass: list[str], pass_to_pass: list[str]) -> str:
-    """The adapter's eval script. SWE-Gym repos have no upstream swebench specs, so
-    the harness is the adapter's default: conda env ``testbed``, plain ``pytest``."""
+    """The Harbor adapter's eval script with the SWE-Gym fork's per-repo specs."""
     test_patch = row["test_patch"] or ""
+    specs = repo_specs(row["repo"], row["version"])
+    test_cmd = specs.get("test_cmd", "pytest -rA").strip()
+    if test_cmd.endswith("-k"):          # node ids are passed directly
+        test_cmd = test_cmd[:-2].rstrip()
+    if "-rA" not in test_cmd and test_cmd.startswith("pytest"):
+        test_cmd += " -rA"
     patched = re.findall(r"--- a/(.*)", test_patch)
     reset_cmd = f"git checkout {row['base_commit']} {' '.join(shlex.quote(f) for f in patched)}" if patched else ":"
     tests = select_tests(fail_to_pass, pass_to_pass, test_patch)
-    return (EVAL_SCRIPT.replace("@RESET_CMD@", reset_cmd)
+    return (EVAL_SCRIPT.replace("@EVAL_COMMANDS@", "\n".join(specs.get("eval_commands", [])) or ":")
+            .replace("@INSTALL@", specs.get("install", "") or ":")
+            .replace("@TEST_CMD@", test_cmd)
+            .replace("@RESET_CMD@", reset_cmd)
             .replace("@TEST_PATCH@", shlex.quote(test_patch))
             .replace("@TESTS@", " ".join(shlex.quote(t) for t in tests)))
 
