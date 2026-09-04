@@ -57,6 +57,25 @@ class PolarZeroVarianceGroupError(PolarRolloutSchedulerError):
     """Raised when every trainable trajectory in a group has the same reward."""
 
 
+def _task_result_session_rewards(task_result: Any) -> list[float]:
+    """One evaluator reward per session of a task result (0.0 when absent)."""
+    rewards: list[float] = []
+    for result in getattr(task_result, "results", None) or []:
+        trajectory = getattr(result, "trajectory", None)
+        metadata = getattr(trajectory, "metadata", None) or {}
+        value = (metadata.get("evaluation") or {}).get("reward")
+        rewards.append(float(value) if isinstance(value, (int, float)) else 0.0)
+    return rewards
+
+
+def _with_session_rewards(exc: BaseException, rewards: list[float]) -> BaseException:
+    """Tag a group-rejection error with the group's session rewards so a dropped
+    group still counts in the all-sessions reward metrics."""
+    exc.session_rewards = rewards  # type: ignore[attr-defined]
+    return exc
+
+
+
 @dataclass(slots=True)
 class _DeferredGroup:
     group: list[Any]
@@ -425,6 +444,9 @@ class AsyncPolarRolloutWorker:
         self._fatal_error: BaseException | None = None
         self._state_lock = threading.RLock()
         self._metrics: dict[str, float] = {}
+        # Evaluator rewards of sessions in dropped groups, per rollout id: they
+        # count in the all-sessions reward metrics even though nothing is trained on.
+        self._dropped_session_rewards: dict[int, list[float]] = {}
         self._active_groups = 0
         self._active_sessions = 0
         self._completed_buffer_size = 0
@@ -527,6 +549,11 @@ class AsyncPolarRolloutWorker:
                 + self._completed_buffer_size
                 + self.deferred_queue.qsize()
             )
+
+    def take_dropped_session_rewards(self, rollout_id: int) -> list[float]:
+        """Rewards of sessions whose groups were dropped for this rollout (consumed once)."""
+        with self._state_lock:
+            return self._dropped_session_rewards.pop(rollout_id, [])
 
     def snapshot_metrics(self) -> dict[str, float]:
         with self._state_lock:
@@ -698,6 +725,10 @@ class AsyncPolarRolloutWorker:
         self._inc_metric("polar/dropped_groups")
         self._inc_metric(category_metric)
         self._inc_metric("polar/dropped_sessions", pending.session_cost)
+        dropped_rewards = getattr(last_error, "session_rewards", None)
+        if dropped_rewards:
+            with self._state_lock:
+                self._dropped_session_rewards.setdefault(pending.submitted_rollout_id, []).extend(dropped_rewards)
         logger.warning(
             "Dropping Polar group %s because of %s: %s",
             pending.group_id,
@@ -738,34 +769,35 @@ class AsyncPolarRolloutWorker:
         )
         task_result = await self._submit_with_callback(client, payload)
 
+        session_rewards = _task_result_session_rewards(task_result)
         rejection_reason = self._task_rejection_reason(task_result, pending.group)
         if rejection_reason is not None:
-            raise PolarRolloutSchedulerError(
+            raise _with_session_rewards(PolarRolloutSchedulerError(
                 f"Task {task_result.task_id} cannot be accepted: {rejection_reason}"
-            )
+            ), session_rewards)
 
         group_samples = _convert_task_result_to_samples(
             self.config, task_result, pending.group,
             max_tokens=_resolve_max_tokens(self.args),
         )
         if not group_samples:
-            raise PolarRolloutSchedulerError(f"Task {task_result.task_id} converted to zero samples")
+            raise _with_session_rewards(PolarRolloutSchedulerError(f"Task {task_result.task_id} converted to zero samples"), session_rewards)
         if not _has_trainable_tokens(group_samples):
-            raise PolarRolloutSchedulerError(
+            raise _with_session_rewards(PolarRolloutSchedulerError(
                 f"Task {task_result.task_id} produced zero trainable tokens"
-            )
+            ), session_rewards)
         rejection_reason = _low_complete_accept_fraction_rejection_reason(
             self.config, task_result, group_samples
         )
         if rejection_reason is not None:
-            raise PolarLowCompleteAcceptFractionError(
+            raise _with_session_rewards(PolarLowCompleteAcceptFractionError(
                 f"Task {task_result.task_id} cannot be accepted: {rejection_reason}"
-            )
+            ), session_rewards)
         rejection_reason = _zero_variance_rejection_reason(self.config, group_samples)
         if rejection_reason is not None:
-            raise PolarZeroVarianceGroupError(
+            raise _with_session_rewards(PolarZeroVarianceGroupError(
                 f"Task {task_result.task_id} dropped: {rejection_reason}"
-            )
+            ), session_rewards)
 
         return _CompletedGroup(
             group_id=pending.group_id,
@@ -1263,7 +1295,10 @@ def generate_rollout_polar_async(args: Any, rollout_id: int, data_source: Any, e
     flat = [s for g in data for s in g]
     rewards = [_extract_sample_reward(s, async_worker.config.reward_key) for s in flat]
     metrics: dict[str, Any] = {}
-    metrics.update(_polar_extra_metrics(flat, rewards, async_worker.config.reward_key))
+    metrics.update(_polar_extra_metrics(
+        flat, rewards, async_worker.config.reward_key,
+        extra_session_rewards=async_worker.take_dropped_session_rewards(rollout_id),
+    ))
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
 
@@ -1381,9 +1416,18 @@ def _polar_extra_metrics(
     flat_samples: list[Any],
     rewards: list[float],
     reward_key: str,
+    extra_session_rewards: list[float] | None = None,
 ) -> dict[str, float]:
-    """Compact user-facing Polar metrics for W&B."""
+    """Compact user-facing Polar metrics for W&B.
+
+    ``polar/reward_mean`` averages over trained traces only. The
+    ``*_all_sessions`` metrics count every session once — including sessions
+    with no trainable trace (context overflow, placeholders) and, via
+    ``extra_session_rewards``, sessions of groups the scheduler dropped
+    (zero variance etc.) — so they report the complete outcome distribution.
+    """
     out: dict[str, float] = {}
+    session_eval_reward: dict[str, float] = {}
     seen: set[str] = set()
     register_to_init_queue_ms: list[float] = []
     init_ms: list[float] = []
@@ -1433,6 +1477,11 @@ def _polar_extra_metrics(
                 postrun_ms.append(float(timing.get("postrun_ms", 0.0)))
             session_is_placeholder[session_id] = is_placeholder
             evaluation = (polar_meta.get("trajectory_metadata") or {}).get("evaluation") or {}
+            eval_reward = evaluation.get("reward")
+            session_eval_reward[session_id] = (
+                float(eval_reward) if isinstance(eval_reward, (int, float))
+                else (0.0 if is_placeholder else _extract_sample_reward(sample, reward_key))
+            )
             report = evaluation.get("report") or {}
             if isinstance(report, dict) and report:
                 session_report[session_id] = report
@@ -1458,6 +1507,14 @@ def _polar_extra_metrics(
         )
     if policy_staleness:
         out["polar/staleness/mean"] = sum(policy_staleness) / len(policy_staleness)
+    all_session_rewards = list(session_eval_reward.values()) + list(extra_session_rewards or [])
+    if all_session_rewards:
+        out["polar/reward_mean_all_sessions"] = sum(all_session_rewards) / len(all_session_rewards)
+        out["polar/success_rate_all_sessions"] = (
+            sum(1 for r in all_session_rewards if r > 0) / len(all_session_rewards)
+        )
+        out["polar/sessions_all"] = float(len(all_session_rewards))
+        out["polar/sessions_dropped"] = float(len(extra_session_rewards or []))
 
     total_sessions = len(seen)
     empty_sessions = sum(1 for p in session_is_placeholder.values() if p)
