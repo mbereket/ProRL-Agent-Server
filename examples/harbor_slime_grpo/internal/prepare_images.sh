@@ -14,6 +14,9 @@ set -euo pipefail
 MANIFEST="${1:?usage: prepare_images.sh <images.txt> <sif_dir> [jobs]}"
 SIF_DIR="${2:?usage: prepare_images.sh <images.txt> <sif_dir> [jobs]}"
 JOBS="${3:-${APPTAINER_PREPARE_JOBS:-4}}"
+# SIF creation is mksquashfs compression of a 1-6 GB tree; single-threaded it
+# dominates a pull. Give each build a share of the node's cores.
+export APPTAINER_MKSQUASHFS_PROCS="${APPTAINER_MKSQUASHFS_PROCS:-$(( $(nproc) / JOBS > 0 ? $(nproc) / JOBS : 1 ))}"
 mkdir -p "${SIF_DIR}"
 APPTAINER_BIN="${POLAR_APPTAINER_BIN:-$(command -v apptainer || command -v singularity || true)}"
 
@@ -29,7 +32,9 @@ pull_one() {
     case "${ref}" in docker://*|oras://*|library://*|docker-daemon:*) ;; *) uri="docker://${ref}" ;; esac
     echo "pulling ${ref} -> ${sif}"
     # Pull to a temp name so a killed pull never leaves a truncated SIF behind.
-    "${APPTAINER_BIN}" pull --disable-cache "${target}.part" "${uri}" >/dev/null && mv "${target}.part" "${target}"
+    # OCI layers go through APPTAINER_CACHEDIR (set by the pipeline on the work
+    # root), so layers shared between images are downloaded once.
+    "${APPTAINER_BIN}" pull "${target}.part" "${uri}" >/dev/null && mv "${target}.part" "${target}"
 }
 export -f pull_one
 export SIF_DIR APPTAINER_BIN HARBOR_SIF_SEED_DIR
