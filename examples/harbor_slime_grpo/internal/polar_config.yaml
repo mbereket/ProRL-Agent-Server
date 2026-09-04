@@ -17,6 +17,7 @@ polar_timeout_reward_zero: "@TIMEOUT_REWARD_ZERO@"
 polar_drop_zero_variance_groups: "@DROP_ZERO_VARIANCE_GROUPS@"
 polar_min_complete_accept_fraction: 0.0
 polar_group_id_scope: "@GROUP_ID_SCOPE@"
+polar_overlong_policy: "@OVERLONG_POLICY@"
 
 polar_task_template:
   # Agent budget + verifier budget + margin; the agent itself is stopped by the

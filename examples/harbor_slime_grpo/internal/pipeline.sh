@@ -243,6 +243,7 @@ tokens = {
     "@HARNESS@": env["HARNESS"], "@HARNESS_MODEL_NAME@": env["HARNESS_MODEL_NAME"],
     "@HARNESS_DIR@": env["HARNESS_DIR"], "@HARBOR_DATASET_DIR@": env["HARBOR_DATASET_DIR"],
     "@RUN_NAME@": env["RUN_NAME"], "@GROUP_ID_SCOPE@": env["GROUP_ID_SCOPE"],
+    "@OVERLONG_POLICY@": env.get("OVERLONG_POLICY", "zero_reward_train"),
     "@PATH_PREPEND@": (env.get("HARNESS_PATH_PREPEND", "").rstrip(":") + ":") if env.get("HARNESS_PATH_PREPEND") else "",
     "@LD_LIBRARY_PATH@": env.get("HARNESS_LD_LIBRARY_PATH", ""),
     # Rubric judge: model/base from the config, the key from the host env var it names.

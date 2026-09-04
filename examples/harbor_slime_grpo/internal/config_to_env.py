@@ -79,6 +79,7 @@ SCHEMA = {
         ("optimizer_cpu_offload", "OPTIMIZER_CPU_OFFLOAD", False),   # Megatron hybrid optimizer: Adam states + fp32 master params on host
         ("group_id_scope", "GROUP_ID_SCOPE", "trajectory"),
         ("timeout_reward_zero", "TIMEOUT_REWARD_ZERO", True),
+        ("overlong_policy", "OVERLONG_POLICY", "zero_reward_train"),  # zero_reward_train | drop: attempts that ran out of context
         ("drop_zero_variance_groups", "DROP_ZERO_VARIANCE_GROUPS", True),
         ("save_interval", "SAVE_INTERVAL", 5),
         ("checkpoint_keep_every", "CHECKPOINT_KEEP_EVERY", 0),  # >0: prune saved iterations that are not multiples of this (latest always kept)
