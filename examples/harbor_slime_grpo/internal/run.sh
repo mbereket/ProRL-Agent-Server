@@ -170,6 +170,9 @@ TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${COMPILER_CACHE_ROOT}/torch
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${COMPILER_CACHE_ROOT}/triton}"
 # sglang JIT kernels (tvm-ffi) default to ~/.cache/tvm-ffi; keep them off $HOME too.
 export TVM_FFI_CACHE_DIR="${TVM_FFI_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tvm-ffi}"
+# SGLang's torch.compile / piecewise-CUDA-graph cache defaults to ~/.cache/sglang
+# ($HOME is quota-limited on clusters; a new model tag means a fresh write).
+export SGLANG_CACHE_DIR="${SGLANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/sglang}"
 # tilelang (FLA GatedDeltaNet kernels in the trainer) defaults to ~/.tilelang/cache.
 export TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-${COMPILER_CACHE_ROOT}/tilelang}"
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$TVM_FFI_CACHE_DIR" "$TILELANG_CACHE_DIR"
@@ -309,6 +312,7 @@ RUNTIME_ENV_JSON="{
     \"TORCHINDUCTOR_CACHE_DIR\": \"${TORCHINDUCTOR_CACHE_DIR}\",
     \"TRITON_CACHE_DIR\": \"${TRITON_CACHE_DIR}\",
     \"TVM_FFI_CACHE_DIR\": \"${TVM_FFI_CACHE_DIR}\",
+    \"SGLANG_CACHE_DIR\": \"${SGLANG_CACHE_DIR}\",
     \"TILELANG_CACHE_DIR\": \"${TILELANG_CACHE_DIR}\",
     \"TMPDIR\": \"/tmp\",
     \"WANDB_CACHE_DIR\": \"${RUN_DIR}/wandb_cache\",
