@@ -40,7 +40,8 @@ SCHEMA = {
         ("request_timeout", "REQUEST_TIMEOUT", 3600),
         ("max_run_workers", "MAX_RUN_WORKERS", 16),
         ("max_async_level", "MAX_ASYNC_LEVEL", 1),
-        ("thinking", "ENABLE_THINKING", None),      # Qwen3.5: true/false force chat-template thinking; null = built-in rule (off)
+        ("thinking", "ENABLE_THINKING", None),
+        ("keep_sessions", "POLAR_KEEP_SESSION_DIRS", False),   # keep per-session dirs (agent logs, verifier output) for debugging      # Qwen3.5: true/false force chat-template thinking; null = built-in rule (off)
     ],
     "model": [
         ("hf_checkpoint", "HF_CHECKPOINT", "Qwen/Qwen3.5-9B"),

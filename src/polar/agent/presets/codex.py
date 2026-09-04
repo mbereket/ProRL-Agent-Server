@@ -107,6 +107,12 @@ class CodexHarness(BaseHarness):
             if value is not None:
                 flags.append(f"{cli}={shlex.quote(str(value))}")
 
+        # Codex config overrides (-c key=value) from agent.settings.codex_config,
+        # e.g. {"features.multi_agent": "false", "features.code_mode": "false",
+        # "web_search": "disabled", "history.persistence": "none"}.
+        for key, value in (self.settings.get("codex_config") or {}).items():
+            flags.append(f"-c {key}={shlex.quote(str(value))}")
+
         flags_str = " ".join(flags)
         return [
             # Write synthetic auth.json so codex picks up OPENAI_API_KEY
