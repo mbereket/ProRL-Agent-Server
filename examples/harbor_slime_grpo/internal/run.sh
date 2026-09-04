@@ -342,7 +342,12 @@ OPTIM_OFFLOAD_ARGS=()
 # NUM_ROLLOUT overrides the epoch-derived step count (slime then ignores --num-epoch);
 # 0 runs only the eval pass (rollout.num_rollout: 0 + eval.prompt_data).
 NUM_ROLLOUT_ARGS=()
-[ -n "${NUM_ROLLOUT:-}" ] && NUM_ROLLOUT_ARGS=(--num-rollout "${NUM_ROLLOUT}")
+if [ -n "${NUM_ROLLOUT:-}" ]; then
+    NUM_ROLLOUT_ARGS=(--num-rollout "${NUM_ROLLOUT}")
+    # slime sizes Megatron's LR schedule from num_rollout; with 0 the scheduler
+    # asserts lr_decay_steps > 0. No optimizer step runs in eval-only mode.
+    [ "${NUM_ROLLOUT}" = 0 ] && NUM_ROLLOUT_ARGS+=(--lr-decay-iters 1)
+fi
 EVAL_ARGS=()
 if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
     # shellcheck disable=SC2206
