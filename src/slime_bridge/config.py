@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from polar.config import TopologyConfig
+from slime_bridge.adapter import OVERLONG_POLICIES
 
 _PLACEHOLDER_RE = re.compile(r"{([^{}]+)}")
 
@@ -38,6 +39,7 @@ class PolarSlimeConfig:
     eval_dataset_name: str
     run_dir: str | None
     occupancy_interval_s: float
+    overlong_policy: str
 
 
 def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
@@ -121,6 +123,9 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     run_dir = str(run_dir) if run_dir else None
 
     occupancy_interval_s = float(getattr(args, "polar_occupancy_interval_s", 30.0) or 0.0)
+    overlong_policy = str(getattr(args, "polar_overlong_policy", "zero_reward_train") or "zero_reward_train").strip().lower()
+    if overlong_policy not in OVERLONG_POLICIES:
+        raise ValueError(f"polar_overlong_policy must be one of {OVERLONG_POLICIES}")
     if occupancy_interval_s < 0.0:
         raise ValueError("polar_occupancy_interval_s must be non-negative (0 disables)")
 
@@ -153,6 +158,7 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         eval_dataset_name=str(getattr(args, "polar_eval_dataset_name", "polar_eval")),
         run_dir=run_dir,
         occupancy_interval_s=occupancy_interval_s,
+        overlong_policy=overlong_policy,
     )
 
 

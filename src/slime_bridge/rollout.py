@@ -354,6 +354,7 @@ def _convert_task_result_to_samples(
                 max_tokens=max_tokens,
                 timeout_reward_zero=config.timeout_reward_zero,
                 group_id_scope=config.group_id_scope,
+                overlong_policy=config.overlong_policy,
             )
         )
     return group_samples
@@ -1628,6 +1629,7 @@ def _polar_extra_metrics(
     session_response_tokens: dict[str, int] = {}
     session_trainable_tokens: dict[str, int] = {}
     session_status: dict[str, str] = {}
+    overlong_sessions: set[str] = set()
     for sample in flat_samples:
         polar_meta = sample.metadata.get("polar", {})
         if "policy_staleness" in polar_meta:
@@ -1636,6 +1638,8 @@ def _polar_extra_metrics(
         is_placeholder = bool(polar_meta.get("placeholder"))
         if not session_id:
             continue
+        if polar_meta.get("overlong"):
+            overlong_sessions.add(session_id)
         if not is_placeholder:
             session_traces[session_id] = session_traces.get(session_id, 0) + 1
             session_response_tokens[session_id] = (
@@ -1723,6 +1727,8 @@ def _polar_extra_metrics(
             status_counts["MISSING"] = status_counts.get("MISSING", 0) + missing
         for status, count in sorted(status_counts.items()):
             out[f"polar/status/{status.lower()}_fraction"] = count / requested
+        out["polar/overlong_sessions"] = float(len(overlong_sessions))
+        out["polar/overlong_fraction"] = len(overlong_sessions) / requested
 
     total_sessions = len(seen)
     empty_sessions = sum(1 for p in session_is_placeholder.values() if p)

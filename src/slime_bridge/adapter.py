@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import logging
+import re
 from typing import Any, TYPE_CHECKING
 
 from slime_bridge._messages import messages_to_text
@@ -28,6 +29,18 @@ class RolloutLogprobError(ValueError):
     """Raised when a trainable Polar trace lacks aligned rollout logprobs."""
 
 
+OVERLONG_POLICIES = ("zero_reward_train", "drop")
+
+# Error text a harness or inference engine emits when the conversation no
+# longer fits the model's context window.
+_CONTEXT_OVERFLOW_RE = re.compile(
+    r"context[ _-]?overflow|context[ _-]?length|context[ _-]?window|maximum context"
+    r"|exceeds? the (?:maximum|model)|input (?:length|tokens?) .*exceed|too many tokens"
+    r"|prompt is too long|input is too long|token limit|max_tokens_exceeded|length_exceeded",
+    re.IGNORECASE,
+)
+
+
 def session_result_to_samples(
     result: "SessionResult",
     group_index: int,
@@ -37,6 +50,7 @@ def session_result_to_samples(
     max_tokens: int | None = None,
     timeout_reward_zero: bool = False,
     group_id_scope: str = "trajectory",
+    overlong_policy: str = "zero_reward_train",
 ) -> list[Any]:
     """Convert one Polar session result into Slime samples — one per trace.
 
@@ -47,16 +61,29 @@ def session_result_to_samples(
     trajectory weighs the same) or ``prompt`` (token-mean within the prompt's
     n_samples trajectories, i.e. SkyRL's ``prompt_mean``).
 
+    ``overlong_policy`` decides what happens to attempts that ran out of
+    context. Under ``zero_reward_train`` (default) they train with reward 0
+    and status COMPLETED: a trace longer than ``max_tokens`` has its response
+    side truncated to fit (tokens, loss mask and rollout logprobs stay
+    aligned; the prompt is kept whole), a session whose error text reports a
+    context overflow keeps its traces trainable, and a trace whose final
+    completion stopped on ``finish_reason == "length"`` keeps its TRUNCATED
+    status but gets reward 0. Under ``drop`` over-long traces are dropped,
+    overflowed sessions stay masked, and length-stopped traces keep the
+    evaluator reward. Affected samples carry ``polar.overlong`` metadata.
+
     Every usable trace becomes an independent Sample sharing the same
     ``group_id`` key. Slime's loss reducer then averages all trace
     contributions as one trajectory, while the reward post-processor can still
     assign each trace its own advantage.
 
-    Traces with empty tokens or exceeding ``max_tokens`` are dropped
-    (logged). If *all* traces are dropped we emit a single zero-gradient
-    placeholder so Slime's flattener doesn't crash on an empty list and
-    the rest of the group can still train.
+    Traces with empty tokens (or, under ``drop``, exceeding ``max_tokens``) are
+    dropped (logged). If *all* traces are dropped we emit a single
+    zero-gradient placeholder so Slime's flattener doesn't crash on an empty
+    list and the rest of the group can still train.
     """
+    if overlong_policy not in OVERLONG_POLICIES:
+        raise ValueError(f"overlong_policy must be one of {OVERLONG_POLICIES}, got {overlong_policy!r}")
     Sample = _load_sample_type()
     traces = result.trajectory.traces
     group_id = group_index if group_id_scope == "prompt" else trajectory_index
@@ -73,6 +100,7 @@ def session_result_to_samples(
             reward_key=reward_key,
             max_tokens=max_tokens,
             timeout_reward_zero=timeout_reward_zero,
+            overlong_policy=overlong_policy,
         )
         if sample is not None:
             samples.append(sample)
@@ -106,6 +134,7 @@ def _build_sample(
     reward_key: str,
     max_tokens: int | None = None,
     timeout_reward_zero: bool = False,
+    overlong_policy: str = "zero_reward_train",
 ) -> Any | None:
     prompt_ids = list(trace.prompt_ids)
     response_ids = list(trace.response_ids)
@@ -117,13 +146,25 @@ def _build_sample(
         )
         return None
 
-    total_len = len(prompt_ids) + len(response_ids)
-    if max_tokens is not None and total_len > max_tokens:
-        logger.warning(
-            "Dropping trace %d from session %s: total_len=%d > max_tokens=%d",
-            trace_index, result.session_id, total_len, max_tokens,
-        )
-        return None
+    zero_reward_train = overlong_policy == "zero_reward_train"
+    original_total_len = len(prompt_ids) + len(response_ids)
+    original_response_len = len(response_ids)
+    overlong_reason: str | None = None
+    if max_tokens is not None and original_total_len > max_tokens:
+        keep = max_tokens - len(prompt_ids)
+        if not zero_reward_train or keep <= 0:
+            logger.warning(
+                "Dropping trace %d from session %s: total_len=%d > max_tokens=%d%s",
+                trace_index, result.session_id, original_total_len, max_tokens,
+                "" if not zero_reward_train else " (prompt alone does not fit)",
+            )
+            return None
+        response_ids = response_ids[:keep]
+        overlong_reason = "max_tokens"
+    elif zero_reward_train and _is_context_overflow(result):
+        overlong_reason = "context_overflow"
+    elif zero_reward_train and trace.finish_reason == "length":
+        overlong_reason = "length_stop"
 
     prompt_messages = deepcopy(trace.prompt_messages)
     response_messages = deepcopy(trace.response_messages)
@@ -134,25 +175,31 @@ def _build_sample(
     if timeout_reward_zero and status is Sample.Status.ABORTED and _is_timeout(result):
         status = Sample.Status.COMPLETED
         reward_value = 0.0
+    if overlong_reason is not None:
+        # The attempt did not finish inside the context budget: it trains as a
+        # failed attempt regardless of what the evaluator saw.
+        reward_value = 0.0
+        if overlong_reason != "length_stop":
+            status = Sample.Status.COMPLETED
 
     trainable = status not in (Sample.Status.ABORTED, Sample.Status.FAILED)
     loss_mask = _loss_mask_from_trace(
         trace,
-        len(response_ids),
+        original_response_len,
         require_loss_mask=trainable,
         session_id=result.session_id,
         trace_index=trace_index,
-    )
+    )[: len(response_ids)]
     if status in (Sample.Status.ABORTED, Sample.Status.FAILED):
         loss_mask = [0] * len(response_ids)
     response_log_probs = _extract_rollout_log_probs(
         trace,
-        response_len=len(response_ids),
-        loss_mask=loss_mask,
+        response_len=original_response_len,
+        loss_mask=loss_mask + [0] * (original_response_len - len(loss_mask)),
         require_trainable_logprobs=trainable,
         session_id=result.session_id,
         trace_index=trace_index,
-    )
+    )[: len(response_ids)]
 
     prompt_value = prompt_messages if prompt_messages else ""
 
@@ -169,6 +216,10 @@ def _build_sample(
         "trajectory_error": result.trajectory.error,
         "trajectory_metadata": deepcopy(result.trajectory.metadata),
         "trajectory_status": result.trajectory.status,
+        "overlong": overlong_reason is not None,
+        "overlong_reason": overlong_reason,
+        "original_total_len": original_total_len,
+        "original_response_len": original_response_len,
         # Preserved for the longest-trace wandb artifact dump; training reads
         # tokens+logprobs, not these.
         "trace_debug": {
@@ -270,6 +321,20 @@ def _scheduler_metadata(result: "SessionResult", trace: "Trace | None") -> dict[
 
 def _is_timeout(result: "SessionResult") -> bool:
     return result.trajectory.status == "TIMEOUT" or result.status == "TIMEOUT"
+
+
+def _is_context_overflow(result: "SessionResult") -> bool:
+    """True when the session's error text or metadata reports a context overflow."""
+    texts: list[str] = []
+    for value in (result.error, result.trajectory.error):
+        if value:
+            texts.append(str(value))
+    for source in (getattr(result, "metadata", None), getattr(result.trajectory, "metadata", None)):
+        if isinstance(source, dict):
+            for key, value in source.items():
+                if isinstance(value, str) and ("error" in str(key).lower() or "reason" in str(key).lower()):
+                    texts.append(value)
+    return any(_CONTEXT_OVERFLOW_RE.search(text) for text in texts)
 
 
 def _sample_status(Sample: Any, result: "SessionResult", trace: "Trace") -> Any:
