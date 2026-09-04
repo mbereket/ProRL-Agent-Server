@@ -200,6 +200,12 @@ fi
 
 # ── Polar templates: @TOKENS@ from the run config, ${VARS} later by run.sh ──
 log "polar templates"
+# Judge-backed tasks: the key named by judge.api_key_env must be set on the host,
+# otherwise the MCP/judge never starts and every reward is silently 0.
+if [ -n "${RUBRIC_MODEL_API_KEY_ENV:-}" ]; then
+    [ -n "${!RUBRIC_MODEL_API_KEY_ENV:-}" ] || die "judge.api_key_env=${RUBRIC_MODEL_API_KEY_ENV} is not set in the environment"
+    info "judge key ${RUBRIC_MODEL_API_KEY_ENV}: set"
+fi
 export POLAR_CONFIG_TEMPLATE="${ASSET_DIR}/polar_config.yaml"
 export TOPOLOGY_TEMPLATE="${ASSET_DIR}/topology.yaml"
 "${PYTHON_BIN}" - "${SCRIPT_DIR}" "${ASSET_DIR}" <<'PY'
