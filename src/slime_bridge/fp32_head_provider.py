@@ -61,10 +61,13 @@ def _upcast_output_layer(layer: torch.nn.Module) -> None:
     orig_apply = layer._apply
 
     def _apply_keep_fp32(fn, recurse=True):
+        # A dtype-only conversion (Float16Module's ``module.bfloat16()``) is
+        # skipped for this layer; anything else (``.cuda()``) passes through.
+        # Re-applying a no-op lambda instead would hand the optimizer a
+        # non-leaf tensor ("can't optimize a non-leaf Tensor").
         probe = fn(torch.zeros((), dtype=torch.float32))
-        if probe.dtype != torch.float32:
-            device = probe.device
-            return orig_apply(lambda t: t.to(device=device) if t.device != device else t, recurse)
+        if probe.dtype != torch.float32 and probe.device.type == "cpu":
+            return layer
         return orig_apply(fn, recurse)
 
     layer._apply = _apply_keep_fp32
