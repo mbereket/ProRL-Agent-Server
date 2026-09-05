@@ -146,7 +146,8 @@ def resolve(path: str) -> dict[str, str]:
                 v = json.dumps(v)
             elif isinstance(v, bool):
                 v = int(v)
-            out[env] = "" if v is None else str(v)
+            # ${VAR} in any string value refers to the machine-side environment (WORKROOT, HOME, ...).
+            out[env] = "" if v is None else os.path.expandvars(str(v))
     if out["SANDBOX_NODES"] not in ("head", "all"):
         raise ConfigError(f"{path}: cluster.sandbox_nodes must be head or all")
     out["TRAIN_SCRIPT"] = "train.py" if out["TRAIN_SYNC"] == "1" else "train_async.py"
