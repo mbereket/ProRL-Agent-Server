@@ -166,9 +166,16 @@ POLAR_CONFIG_TEMPLATE="${POLAR_CONFIG_TEMPLATE:-${SCRIPT_DIR}/polar_config.yaml}
 TOPOLOGY_PATH="${TOPOLOGY_PATH:-${RUN_DIR}/topology.yaml}"
 CUSTOM_CONFIG_PATH="${CUSTOM_CONFIG_PATH:-${RUN_DIR}/polar_config.yaml}"
 # Compiler caches (Triton, TorchInductor, tvm-ffi, tilelang, flashinfer, sglang) are
-# content-addressed and shared by every run in this work root, so only the first run
-# pays JIT compilation for a given kernel shape.
-COMPILER_CACHE_ROOT="${COMPILER_CACHE_ROOT:-${WORKROOT}/compiler_cache}"
+# per run: concurrent jobs writing one Triton cache on a network filesystem corrupt
+# it (stale file handles, missing cubins). A run starts warm by copying the work
+# root's seed snapshot, ${WORKROOT}/compiler_cache_seed, when one exists; refresh the
+# seed by copying a finished run's compiler_cache there.
+COMPILER_CACHE_ROOT="${COMPILER_CACHE_ROOT:-${RUN_DIR}/compiler_cache}"
+COMPILER_CACHE_SEED="${COMPILER_CACHE_SEED:-${WORKROOT}/compiler_cache_seed}"
+if [ ! -d "${COMPILER_CACHE_ROOT}" ] && [ -d "${COMPILER_CACHE_SEED}" ]; then
+    mkdir -p "${COMPILER_CACHE_ROOT}" && cp -r "${COMPILER_CACHE_SEED}/." "${COMPILER_CACHE_ROOT}/" \
+      && echo "compiler cache seeded from ${COMPILER_CACHE_SEED}"
+fi
 TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${COMPILER_CACHE_ROOT}/torchinductor}"
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${COMPILER_CACHE_ROOT}/triton}"
 # sglang JIT kernels (tvm-ffi) default to ~/.cache/tvm-ffi; keep them off $HOME too.
