@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Qwen3-8B (dense) Megatron model args. Select with MODEL_ARGS_FILE=model_args_qwen3_8b.sh.
+# Qwen3-8B (dense) Megatron model args. Select with MODEL_ARGS_FILE=qwen3_8b.sh.
 #
 # Mirrors slime/scripts/models/qwen3-8B.sh (HF config: 36 layers, hidden 4096,
 # ffn 12288, 32 heads / 8 kv groups, head_dim 128, rope_theta 1e6, untied

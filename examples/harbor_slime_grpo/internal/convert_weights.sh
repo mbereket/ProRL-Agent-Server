@@ -31,9 +31,9 @@ HF_CHECKPOINT="${HF_CHECKPOINT:-Qwen/Qwen3.5-4B}"
 OUTPUT_DIR="${TORCH_DIST_DIR:-${PROJECT_ROOT}/tmp/checkpoints/${HF_CHECKPOINT##*/}_torch_dist}"
 mkdir -p "$OUTPUT_DIR"
 
-# MODEL_ARGS_FILE: model_args.sh (Qwen3.5-4B, default) or model_args_9b.sh; relative to this dir or absolute.
-MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-model_args.sh}"
-case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/${MODEL_ARGS_FILE}" ;; esac
+# MODEL_ARGS_FILE: a file in model_args/ (qwen3_5_9b.sh default, qwen3_5_4b.sh, qwen3_8b.sh) or an absolute path.
+MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-qwen3_5_9b.sh}"
+case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/model_args/${MODEL_ARGS_FILE}" ;; esac
 # shellcheck disable=SC1090
 source "${MODEL_ARGS_FILE}"
 

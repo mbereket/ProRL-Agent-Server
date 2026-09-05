@@ -256,6 +256,27 @@ export TOPOLOGY_TEMPLATE="${ASSET_DIR}/topology.yaml"
 import json, os, sys, yaml
 tpl_dir, out_dir = sys.argv[1:3]
 env = os.environ
+
+def end_of_turn_token_id():
+    """Id of the token that closes an assistant turn (<|im_end|> on ChatML models).
+    Polar's prefix-merging builder splits each completion's prompt at this token
+    into the previous assistant body and the new interstitial, so it must match the
+    served model. Read from the chat template: render a two-turn conversation and
+    take the last special token."""
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(env["HF_CHECKPOINT"], trust_remote_code=True)
+    text = tok.apply_chat_template([{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}], tokenize=False)
+    ids = tok(text, add_special_tokens=False)["input_ids"]
+    special = set(tok.all_special_ids)
+    eot = next((t for t in reversed(ids) if t in special), tok.eos_token_id)
+    print(f"end-of-turn token: {tok.convert_ids_to_tokens(eot)!r} = {eot}")
+    return int(eot)
+
+try:
+    eot_token_id = end_of_turn_token_id()
+except Exception as e:  # dry runs may not have the tokenizer cached yet; Polar then auto-detects
+    if env.get("DRY_RUN") != "1": raise
+    print(f"end-of-turn token: not derived ({e}); left unset for the dry run"); eot_token_id = None
 tokens = {
     "@HARNESS@": env["HARNESS"], "@HARNESS_MODEL_NAME@": env["HARNESS_MODEL_NAME"],
     "@HARNESS_DIR@": env["HARNESS_DIR"], "@HARBOR_DATASET_DIR@": env["HARBOR_DATASET_DIR"],
@@ -269,7 +290,7 @@ tokens = {
 }
 typed = {
     "@SESSION_TIMEOUT@": int(env["SESSION_TIMEOUT"]), "@REQUEST_TIMEOUT@": int(env["REQUEST_TIMEOUT"]),
-    "@MAX_ASYNC_LEVEL@": int(env["MAX_ASYNC_LEVEL"]), "@EOT_TOKEN_ID@": int(env["EOT_TOKEN_ID"]),
+    "@MAX_ASYNC_LEVEL@": int(env["MAX_ASYNC_LEVEL"]), "@EOT_TOKEN_ID@": eot_token_id,
     "@MAX_RUN_WORKERS@": int(env["MAX_RUN_WORKERS"]),
     "@TIMEOUT_REWARD_ZERO@": env["TIMEOUT_REWARD_ZERO"] == "1",
     "@ENABLE_THINKING@": {"1": True, "0": False}.get(env.get("ENABLE_THINKING", ""), None),

@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Qwen3.5-9B Megatron model args. Select with MODEL_ARGS_FILE=model_args_9b.sh.
+# Qwen3.5-9B Megatron model args. Select with MODEL_ARGS_FILE=qwen3_5_9b.sh.
 #
 # Mirrors slime/scripts/models/qwen3.5-9B.sh. Differs from the 4B args only in
 # hidden/ffn sizes and untied embeddings (HF tie_word_embeddings=false for 9B).

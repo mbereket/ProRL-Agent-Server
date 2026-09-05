@@ -21,8 +21,7 @@ harness:
 
 model:
   hf_checkpoint: Qwen/Qwen3.5-9B
-  model_args_file: model_args_9b.sh
-  end_of_turn_token_id: 248046
+  model_args_file: qwen3_5_9b.sh
 
 cluster:
   num_nodes: 1
@@ -34,7 +33,7 @@ cluster:
 rollout:
   batch_size: 2
   n_samples_per_prompt: 4
-  num_epoch: 2
+  num_steps: 2
   max_prompt_len: 12000
   max_response_len: 4000
   sglang_context_length: 16384

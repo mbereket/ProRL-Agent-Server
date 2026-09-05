@@ -61,7 +61,7 @@ polar_task_template:
   builder:
     strategy: "prefix_merging"
     config:
-      end_of_turn_token_id: "@EOT_TOKEN_ID@"
+      end_of_turn_token_id: "@EOT_TOKEN_ID@"   # derived by pipeline.sh from the checkpoint's chat template
   # Harbor verifier: upload tests/ into the live runtime, run test.sh, read
   # /logs/verifier/reward.txt (or reward.json).
   evaluator:

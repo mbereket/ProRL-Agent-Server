@@ -25,8 +25,7 @@ harness:
 
 model:
   hf_checkpoint: Qwen/Qwen3.5-9B
-  model_args_file: model_args_9b.sh
-  end_of_turn_token_id: 248046           # <|im_end|> for Qwen3.5
+  model_args_file: qwen3_5_9b.sh
 
 cluster:
   num_nodes: 2
@@ -38,7 +37,7 @@ cluster:
 rollout:
   batch_size: 8                          # prompts per step
   n_samples_per_prompt: 16
-  num_epoch: 30                          # 32 tasks / 8 per step = 4 steps per epoch
+  num_steps: 120                         # 30 passes over 32 tasks at 8 per step
   max_prompt_len: 24000
   max_response_len: 8000
   # Keep sglang_context_length = max_tokens_per_gpu x context_parallel_size so

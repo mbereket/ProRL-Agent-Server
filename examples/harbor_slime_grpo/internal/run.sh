@@ -78,9 +78,9 @@ if [ ! -f "$REF_LOAD/latest_checkpointed_iteration.txt" ]; then
     echo "ERROR: Megatron torch_dist checkpoint not found at $REF_LOAD"
     echo "  Run bash examples/harbor_slime_grpo/internal/convert_weights.sh first."; exit 1
 fi
-# MODEL_ARGS_FILE: model_args_9b.sh (Qwen3.5-9B, default) or model_args.sh (4B); relative to this dir or absolute.
-MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-model_args_9b.sh}"
-case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/${MODEL_ARGS_FILE}" ;; esac
+# MODEL_ARGS_FILE: a file in model_args/ (qwen3_5_9b.sh default, qwen3_5_4b.sh, qwen3_8b.sh) or an absolute path.
+MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-qwen3_5_9b.sh}"
+case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/model_args/${MODEL_ARGS_FILE}" ;; esac
 # shellcheck disable=SC1090
 source "${MODEL_ARGS_FILE}"
 
@@ -374,17 +374,19 @@ OPTIM_OFFLOAD_ARGS=()
 # Megatron asserts that the hybrid device optimizer runs on the precision-aware
 # optimizer code path, so the flag comes with the offload.
 [ "${OPTIMIZER_CPU_OFFLOAD:-0}" = 1 ] && OPTIM_OFFLOAD_ARGS=(--optimizer-cpu-offload --optimizer-offload-fraction 1.0 --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
-# NUM_ROLLOUT overrides the epoch-derived step count (slime then ignores --num-epoch);
-# 0 runs only the eval pass (rollout.num_rollout: 0 + eval.prompt_data).
-NUM_ROLLOUT_ARGS=()
-if [ -n "${NUM_ROLLOUT:-}" ]; then
-    NUM_ROLLOUT_ARGS=(--num-rollout "${NUM_ROLLOUT}")
-    # slime sizes Megatron's LR schedule from num_rollout; with 0 the scheduler
+# Step count: NUM_STEPS directly, or NUM_EPOCH passes over the task set (slime derives
+# the steps). NUM_STEPS=0 runs only the eval pass (rollout.num_steps: 0 + eval.prompt_data).
+STEPS_ARGS=()
+if [ -n "${NUM_STEPS:-}" ]; then
+    STEPS_ARGS=(--num-rollout "${NUM_STEPS}")
+    # slime sizes Megatron's LR schedule from the step count; with 0 the scheduler
     # asserts lr_decay_steps > 0. No optimizer step runs in eval-only mode.
     # Eval-only also skips the checkpoint's optimizer/RNG state: it is unused, and
     # a state saved from a different GPU layout (e.g. 8-GPU TP4xCP2) does not fit
     # when re-sharded onto a smaller eval allocation.
-    [ "${NUM_ROLLOUT}" = 0 ] && NUM_ROLLOUT_ARGS+=(--lr-decay-iters 1 --no-load-optim --no-load-rng)
+    [ "${NUM_STEPS}" = 0 ] && STEPS_ARGS+=(--lr-decay-iters 1 --no-load-optim --no-load-rng)
+else
+    STEPS_ARGS=(--num-epoch "${NUM_EPOCH:?set NUM_STEPS or NUM_EPOCH}")
 fi
 # CHECKPOINT_KEEP_EVERY=N prunes saved iterations that are not multiples of N
 # (the latest is always kept), every 5 min while training runs. Lets
@@ -439,8 +441,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --metadata-key metadata \
     --rollout-shuffle \
     --reward-key score \
-    --num-epoch "${NUM_EPOCH:-1}" \
-    ${NUM_ROLLOUT_ARGS[@]+"${NUM_ROLLOUT_ARGS[@]}"} \
+    "${STEPS_ARGS[@]}" \
     --rollout-batch-size "$ROLLOUT_BATCH_SIZE" \
     --n-samples-per-prompt "$N_SAMPLES_PER_PROMPT" \
     --rollout-max-response-len "$ROLLOUT_MAX_RESPONSE_LEN" \

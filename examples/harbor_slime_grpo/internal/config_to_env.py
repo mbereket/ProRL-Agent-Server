@@ -48,8 +48,7 @@ SCHEMA = {
     ],
     "model": [
         ("hf_checkpoint", "HF_CHECKPOINT", "Qwen/Qwen3.5-9B"),
-        ("model_args_file", "MODEL_ARGS_FILE", "model_args_9b.sh"),
-        ("end_of_turn_token_id", "EOT_TOKEN_ID", 248046),
+        ("model_args_file", "MODEL_ARGS_FILE", "qwen3_5_9b.sh"),   # a file in internal/model_args/ or an absolute path
         ("torch_dist_dir", "TORCH_DIST_DIR_CFG", PATH),
         ("load_dir", "MODEL_LOAD_DIR", PATH),
         ("sglang_tool_call_parser", "SGLANG_TOOL_CALL_PARSER", "qwen3_coder"),  # SGLang parser matching the model's tool-call format (qwen25 for Qwen3 dense)
@@ -65,8 +64,8 @@ SCHEMA = {
     "rollout": [
         ("batch_size", "ROLLOUT_BATCH_SIZE", 8),
         ("n_samples_per_prompt", "N_SAMPLES_PER_PROMPT", 16),
-        ("num_epoch", "NUM_EPOCH", 50),
-        ("num_rollout", "NUM_ROLLOUT", ""),                 # overrides the epoch-derived step count; 0 = eval only (needs eval.prompt_data)
+        ("num_steps", "NUM_STEPS", None),                   # training steps; 0 = eval only (needs eval.prompt_data)
+        ("num_epoch", "NUM_EPOCH", None),                   # alternative: passes over the task set (steps = num_epoch x tasks / batch_size)
         ("max_prompt_len", "ROLLOUT_MAX_PROMPT_LEN", 24000),
         ("max_response_len", "ROLLOUT_MAX_RESPONSE_LEN", 8000),
         ("sglang_context_length", "SGLANG_CONTEXT_LENGTH", 32768),
@@ -148,6 +147,8 @@ def resolve(path: str) -> dict[str, str]:
                 v = int(v)
             # ${VAR} in any string value refers to the machine-side environment (WORKROOT, HOME, ...).
             out[env] = "" if v is None else os.path.expandvars(str(v))
+    if (out["NUM_STEPS"] == "") == (out["NUM_EPOCH"] == ""):
+        raise ConfigError(f"{path}: set exactly one of rollout.num_steps and rollout.num_epoch")
     if out["SANDBOX_NODES"] not in ("head", "all"):
         raise ConfigError(f"{path}: cluster.sandbox_nodes must be head or all")
     out["TRAIN_SCRIPT"] = "train.py" if out["TRAIN_SYNC"] == "1" else "train_async.py"
