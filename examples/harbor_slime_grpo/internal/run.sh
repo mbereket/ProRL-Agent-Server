@@ -165,12 +165,13 @@ TOPOLOGY_TEMPLATE="${TOPOLOGY_TEMPLATE:-${SCRIPT_DIR}/topology.yaml}"
 POLAR_CONFIG_TEMPLATE="${POLAR_CONFIG_TEMPLATE:-${SCRIPT_DIR}/polar_config.yaml}"
 TOPOLOGY_PATH="${TOPOLOGY_PATH:-${RUN_DIR}/topology.yaml}"
 CUSTOM_CONFIG_PATH="${CUSTOM_CONFIG_PATH:-${RUN_DIR}/polar_config.yaml}"
-# Compiler caches (Triton, TorchInductor, tvm-ffi, tilelang, flashinfer, sglang) are
-# per run: concurrent jobs writing one Triton cache on a network filesystem corrupt
-# it (stale file handles, missing cubins). A run starts warm by copying the work
-# root's seed snapshot, ${WORKROOT}/compiler_cache_seed, when one exists; refresh the
-# seed by copying a finished run's compiler_cache there.
-COMPILER_CACHE_ROOT="${COMPILER_CACHE_ROOT:-${RUN_DIR}/compiler_cache}"
+# Compiler caches (Triton, TorchInductor, tvm-ffi, tilelang, flashinfer, sglang) live on
+# node-local disk: many engines and trainer ranks compile concurrently, and a cache on
+# a network filesystem corrupts under that (stale file handles, metadata without
+# cubins). The path is the same on every node (Ray passes it to the workers), so each
+# node gets its own copy. Cold per job; a warm seed snapshot (COMPILER_CACHE_SEED,
+# default ${WORKROOT}/compiler_cache_seed) is copied in on the head node when present.
+COMPILER_CACHE_ROOT="${COMPILER_CACHE_ROOT:-/tmp/compiler_cache-${USER}-${SLURM_JOB_ID:-${RUN_ID}}}"
 COMPILER_CACHE_SEED="${COMPILER_CACHE_SEED:-${WORKROOT}/compiler_cache_seed}"
 if [ ! -d "${COMPILER_CACHE_ROOT}" ] && [ -d "${COMPILER_CACHE_SEED}" ]; then
     mkdir -p "${COMPILER_CACHE_ROOT}" && cp -r "${COMPILER_CACHE_SEED}/." "${COMPILER_CACHE_ROOT}/" \
