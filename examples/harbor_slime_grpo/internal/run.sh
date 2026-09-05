@@ -323,6 +323,9 @@ RUNTIME_ENV_JSON="{
     \"TVM_FFI_CACHE_DIR\": \"${TVM_FFI_CACHE_DIR}\",
     \"SGLANG_CACHE_DIR\": \"${SGLANG_CACHE_DIR}\",
     \"TILELANG_CACHE_DIR\": \"${TILELANG_CACHE_DIR}\",
+    \"FLASHINFER_WORKSPACE_BASE\": \"${FLASHINFER_WORKSPACE_BASE}\",
+    \"FLASHINFER_USE_CUDA_NORM\": \"${FLASHINFER_USE_CUDA_NORM}\",
+    \"XDG_CACHE_HOME\": \"${XDG_CACHE_HOME:-${WORKROOT}/xdg_cache}\",
     \"TMPDIR\": \"/tmp\",
     \"WANDB_CACHE_DIR\": \"${RUN_DIR}/wandb_cache\",
     \"WANDB_DATA_DIR\": \"${RUN_DIR}/wandb_cache\",
@@ -473,6 +476,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --sglang-tool-call-parser "${SGLANG_TOOL_CALL_PARSER:-qwen3_coder}" \
     --router-policy "${SGLANG_ROUTER_POLICY:-round_robin}" \
     --use-wandb \
+    --wandb-mode "${WANDB_MODE:-$([ -n "${WANDB_API_KEY:-}" ] && echo online || echo offline)}" \
     --wandb-project "${WANDB_PROJECT:-harbor-slime-grpo}" \
     --wandb-group "${WANDB_GROUP:-${RUN_ID}}" \
     --sglang-router-port "$SGLANG_ROUTER_PORT"
