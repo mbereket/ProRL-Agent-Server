@@ -3168,6 +3168,7 @@ dependencies = [
     { name = "slime", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "swegym", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch-memory-saver", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "transformer-engine", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "transformer-engine-cu13", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "wheel", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -3192,6 +3193,7 @@ requires-dist = [
     { name = "slime", git = "https://github.com/mbereket/slime.git?rev=d6d1f937781e9810d863d40679a6b6c323a33e2b" },
     { name = "swegym", git = "https://github.com/SWE-Gym/SWE-Bench-Package.git?rev=16dd480cce9b27bf111a362d280881c6def5d2a7" },
     { name = "torch", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torch-memory-saver", specifier = "==0.0.10b2" },
     { name = "transformer-engine", specifier = "==2.12.0" },
     { name = "transformer-engine-cu13", specifier = "==2.12.0" },
     { name = "wheel" },
@@ -3428,11 +3430,11 @@ wheels = [
 
 [[package]]
 name = "torch-memory-saver"
-version = "0.0.9.post1"
+version = "0.0.10b2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/81/fd/42aad783d433fd69dc108b1b2ee5860fcf33e20e5440b899bc004ff97d70/torch_memory_saver-0.0.9.post1.tar.gz", hash = "sha256:25fd4b691ed3242c3a18b2bef0dbe9de84d2e7068b96a37686a923d55c274f43", size = 15209, upload-time = "2026-05-02T05:30:54.649Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/45/7dbbe1eee47f574b1bbb48fd45eb2b563dd3134486aa7d0b3f5a44e9afb0/torch_memory_saver-0.0.10b2.tar.gz", hash = "sha256:53010e7bc92fdb008fcd3c7d9822df01a0c9ff8afb4521305351716fb81a9545", size = 36174, upload-time = "2026-09-05T00:42:16.987Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/67/6789f9048b836615d07e419fd2f253b83fb9b0f86f34d03ab75ac1f07049/torch_memory_saver-0.0.9.post1-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:b4e560fcd88a0641efb21ac530bb79a6e78fc0b31c9a654fa3b5eb7c3629e555", size = 1015832, upload-time = "2026-05-02T05:30:51.317Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/5d/05ab88b7ffb806bff1398d5f09259ddee77c16c3da51e6efc3d85a3516fc/torch_memory_saver-0.0.10b2-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:9c39dafc98cbd284627f48b5923856fc475e9bb6c8641705fc72f26c09eab21a", size = 2600126, upload-time = "2026-09-05T00:42:15.619Z" },
 ]
 
 [[package]]

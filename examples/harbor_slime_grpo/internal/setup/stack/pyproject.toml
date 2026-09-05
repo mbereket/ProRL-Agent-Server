@@ -27,6 +27,7 @@ dependencies = [
     "transformer-engine==2.12.0",      # metapackage: TE's import-time sanity check requires it next to the core
     "transformer-engine-cu13==2.12.0", # core library; torch bindings built post-sync
     "flash-linear-attention==0.5.0",   # Qwen3.5 GatedDeltaNet layers
+    "torch-memory-saver==0.0.10b2",    # colocated offload (slime --colocate): 0.0.9.post1 asserts when TMS_INIT_ENABLE=1 already activated the region (Megatron grad-buffer region()); 0.0.10b2 saves/restores it and ships the cu13 hook
     # transformer-engine-torch runtime deps (it is installed --no-deps post-sync)
     "einops",
     "onnx",
