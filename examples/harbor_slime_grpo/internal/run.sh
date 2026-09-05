@@ -383,6 +383,9 @@ if [ "${CHECKPOINT_KEEP_EVERY:-0}" -gt 0 ]; then
     PRUNE_PID=$!   # stopped by cleanup() on exit
 fi
 EVAL_ARGS=()
+# ${RUN_DIR} in eval.prompt_data resolves here: the run dir (and any cluster suffix on
+# RUN_ID) is only known at launch, so a run can evaluate on its own assets/train.jsonl.
+EVAL_PROMPT_DATA="${EVAL_PROMPT_DATA//\$\{RUN_DIR\}/${RUN_DIR}}"
 if [ -n "${EVAL_PROMPT_DATA:-}" ]; then
     # shellcheck disable=SC2206
     EVAL_ARGS=(--eval-prompt-data ${EVAL_PROMPT_DATA} --eval-interval "${EVAL_INTERVAL:-10}" --n-samples-per-eval-prompt "${N_SAMPLES_PER_EVAL_PROMPT:-1}")
