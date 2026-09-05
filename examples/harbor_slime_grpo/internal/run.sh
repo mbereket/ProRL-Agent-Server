@@ -344,6 +344,14 @@ if [ -n "${CUDNN_LIB}" ] && [ -d "$CUDNN_LIB" ]; then
 fi
 # Ray actors on every node inherit exactly this environment; anything a worker
 # node needs (CUDA compat libs, HF cache, toolkit) must be listed here.
+# Allocator: expandable segments reduce fragmentation for long variable-length
+# batches, but torch_memory_saver (the colocated offload/onload of actor and
+# engines) refuses to run with them, so the colocated layout uses the plain allocator.
+if [ "${COLOCATE}" = 1 ]; then
+    PYTORCH_ALLOC_CONF_VALUE="max_split_size_mb:2048"
+else
+    PYTORCH_ALLOC_CONF_VALUE="max_split_size_mb:2048,expandable_segments:True"
+fi
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${MEGATRON_DIR}:${PROJECT_ROOT}/src\",
@@ -366,8 +374,8 @@ RUNTIME_ENV_JSON="{
     \"WANDB_DATA_DIR\": \"${RUN_DIR}/wandb_cache\",
     \"SLIME_ENGINE_BASE_PORT\": \"${SLIME_ENGINE_BASE_PORT:-15000}\",
     \"LD_LIBRARY_PATH\": \"${RUNTIME_LD_LIBRARY_PATH}\",
-    \"PYTORCH_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
-    \"PYTORCH_CUDA_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
+    \"PYTORCH_ALLOC_CONF\": \"${PYTORCH_ALLOC_CONF_VALUE}\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_ALLOC_CONF_VALUE}\",
     \"NVTE_DEBUG\": \"1\",
     \"NVTE_DEBUG_LEVEL\": \"2\"
   }
