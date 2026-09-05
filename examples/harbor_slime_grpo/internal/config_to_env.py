@@ -61,6 +61,7 @@ SCHEMA = {
         ("tp_size", "TP_SIZE", 4),
         ("context_parallel_size", "CONTEXT_PARALLEL_SIZE", 1),
         ("sandbox_nodes", "SANDBOX_NODES", "head"),   # head | all: hosts that run agent sandboxes
+        ("colocate", "COLOCATE", False),             # engines and trainer share every GPU (slime --colocate: trainer offloaded during rollout, engine KV released during training)
     ],
     "rollout": [
         ("batch_size", "ROLLOUT_BATCH_SIZE", 8),
@@ -79,7 +80,8 @@ SCHEMA = {
         ("kl_loss_coef", "KL_LOSS_COEF", 0.001),
         ("grpo_std_normalization", "GRPO_STD_NORMALIZATION", False),
         ("loss_denominator", "LOSS_DENOMINATOR", "trainable_units"),  # trainable_units | global_batch: units the per-rollout mean divides by
-        ("optimizer_cpu_offload", "OPTIMIZER_CPU_OFFLOAD", False),   # Megatron hybrid optimizer: Adam states + fp32 master params on host
+        ("optimizer_cpu_offload", "OPTIMIZER_CPU_OFFLOAD", False),
+        ("sglang_mem_fraction_static", "SGLANG_MEM_FRACTION_STATIC", ""),  # SGLang static memory fraction; default 0.8, 0.6 when cluster.colocate   # Megatron hybrid optimizer: Adam states + fp32 master params on host
         ("group_id_scope", "GROUP_ID_SCOPE", "trajectory"),
         ("timeout_reward_zero", "TIMEOUT_REWARD_ZERO", True),
         ("overlong_policy", "OVERLONG_POLICY", "zero_reward_train"),  # zero_reward_train | drop: attempts that ran out of context

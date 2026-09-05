@@ -104,37 +104,61 @@ PROMPT_DATA="${PROMPT_DATA:?PROMPT_DATA must point at the prompt JSONL from prep
 [ -f "$PROMPT_DATA" ] || { echo "ERROR: prompt data not found: $PROMPT_DATA"; exit 1; }
 
 # ── Parallelism / sizing ───────────────────────────────────────────
-# NUM_NODES Ray nodes with GPUS_PER_NODE GPUs each. The trainer takes
-# ACTOR_NUM_GPUS of them; every remaining GPU serves an SGLang engine unless
-# ROLLOUT_NUM_GPUS is set. Generation is usually the bottleneck, so give it the
-# larger share.
+# NUM_NODES Ray nodes with GPUS_PER_NODE GPUs each.
 #
-# Slime v0.3.0 places engines assuming they fill whole nodes in rank order, so
-# on more than one node the trainer must take whole nodes: ACTOR_NUM_GPUS must
-# be a multiple of GPUS_PER_NODE (2 nodes → 8 train / 8 serve, 3 nodes →
-# 8 train / 16 serve). On a single node any split works.
+# Disjoint layout (COLOCATE=0): the trainer takes ACTOR_NUM_GPUS of them; every
+# remaining GPU serves an SGLang engine unless ROLLOUT_NUM_GPUS is set. Slime
+# v0.3.0 places engines assuming they fill whole nodes in rank order, so on more
+# than one node the trainer must take whole nodes (ACTOR_NUM_GPUS a multiple of
+# GPUS_PER_NODE). The trainer GPUs idle during rollout and the engine GPUs idle
+# during training.
+#
+# Colocated layout (COLOCATE=1, slime --colocate): trainer and engines share every
+# GPU. Slime forces --offload-train and --offload-rollout: the actor's weights and
+# optimizer state are paged out (torch_memory_saver) while engines generate, and
+# the engines release their KV/weight memory (memory saver) while the actor trains;
+# weights reach the engines through CUDA IPC (UpdateWeightFromTensor). Constraints
+# from slime: rollout GPUs = actor GPUs (overridden if not), --num-gpus-per-node
+# must equal the physical count, --update-weight-mode delta is unsupported, and
+# --sglang-mem-fraction-static must leave room for the offloaded actor's resident
+# remainder (default 0.6 here). TP×CP must divide the actor GPU count; the rest is
+# data parallel. --optimizer-cpu-offload composes (Adam state already lives on the host).
 NUM_NODES="${NUM_NODES:-1}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')}"
-ACTOR_NUM_GPUS="${ACTOR_NUM_GPUS:-4}"
-if [ "${NUM_NODES}" -gt 1 ] && [ $((ACTOR_NUM_GPUS % GPUS_PER_NODE)) -ne 0 ]; then
-    echo "ERROR: with NUM_NODES=${NUM_NODES}, ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be a multiple of GPUS_PER_NODE=${GPUS_PER_NODE}:"
-    echo "  slime assigns engine addresses per whole node, so a trainer sharing a node with engines"
-    echo "  leaves engines on other nodes with the wrong host. Use ACTOR_NUM_GPUS=${GPUS_PER_NODE} (or a multiple)."
-    exit 1
-fi
-if [ "${ACTOR_NUM_GPUS}" -ge "${GPUS_PER_NODE}" ]; then
-    [ $((ACTOR_NUM_GPUS % GPUS_PER_NODE)) -eq 0 ] || { echo "ERROR: ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be a multiple of GPUS_PER_NODE=${GPUS_PER_NODE} when it spans nodes"; exit 1; }
-    ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-$((ACTOR_NUM_GPUS / GPUS_PER_NODE))}"
-    ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-${GPUS_PER_NODE}}"
+COLOCATE="${COLOCATE:-0}"
+TOTAL_GPUS=$((NUM_NODES * GPUS_PER_NODE))
+if [ "${COLOCATE}" = 1 ]; then
+    ACTOR_NUM_GPUS="${ACTOR_NUM_GPUS:-${TOTAL_GPUS}}"
+    [ "${ACTOR_NUM_GPUS}" -eq "${TOTAL_GPUS}" ] || { echo "ERROR: COLOCATE=1 needs ACTOR_NUM_GPUS=${TOTAL_GPUS} (every GPU trains and serves); got ${ACTOR_NUM_GPUS}"; exit 1; }
+    ACTOR_NUM_NODES="${NUM_NODES}"
+    ACTOR_NUM_GPUS_PER_NODE="${GPUS_PER_NODE}"
+    ROLLOUT_NUM_GPUS="${TOTAL_GPUS}"
+    COLOCATE_ARGS=(--colocate --num-gpus-per-node "${GPUS_PER_NODE}")
 else
-    ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
-    ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-${ACTOR_NUM_GPUS}}"
+    ACTOR_NUM_GPUS="${ACTOR_NUM_GPUS:-4}"
+    if [ "${NUM_NODES}" -gt 1 ] && [ $((ACTOR_NUM_GPUS % GPUS_PER_NODE)) -ne 0 ]; then
+        echo "ERROR: with NUM_NODES=${NUM_NODES}, ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be a multiple of GPUS_PER_NODE=${GPUS_PER_NODE}:"
+        echo "  slime assigns engine addresses per whole node, so a trainer sharing a node with engines"
+        echo "  leaves engines on other nodes with the wrong host. Use ACTOR_NUM_GPUS=${GPUS_PER_NODE} (or a multiple)."
+        exit 1
+    fi
+    if [ "${ACTOR_NUM_GPUS}" -ge "${GPUS_PER_NODE}" ]; then
+        [ $((ACTOR_NUM_GPUS % GPUS_PER_NODE)) -eq 0 ] || { echo "ERROR: ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be a multiple of GPUS_PER_NODE=${GPUS_PER_NODE} when it spans nodes"; exit 1; }
+        ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-$((ACTOR_NUM_GPUS / GPUS_PER_NODE))}"
+        ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-${GPUS_PER_NODE}}"
+    else
+        ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
+        ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-${ACTOR_NUM_GPUS}}"
+    fi
+    ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-$((TOTAL_GPUS - ACTOR_NUM_NODES * ACTOR_NUM_GPUS_PER_NODE))}"
+    [ "${ROLLOUT_NUM_GPUS}" -ge 1 ] || { echo "ERROR: no GPUs left for rollout (${NUM_NODES}×${GPUS_PER_NODE} total, ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} train)"; exit 1; }
+    COLOCATE_ARGS=()
 fi
-ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-$((NUM_NODES * GPUS_PER_NODE - ACTOR_NUM_NODES * ACTOR_NUM_GPUS_PER_NODE))}"
-[ "${ROLLOUT_NUM_GPUS}" -ge 1 ] || { echo "ERROR: no GPUs left for rollout (${NUM_NODES}×${GPUS_PER_NODE} total, ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} train)"; exit 1; }
 ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
 TP_SIZE="${TP_SIZE:-4}"
 CONTEXT_PARALLEL_SIZE="${CONTEXT_PARALLEL_SIZE:-2}"   # per-trace cap = MAX_TOKENS_PER_GPU × CP; TP×CP must divide the actor GPUs
+[ $((ACTOR_NUM_NODES * ACTOR_NUM_GPUS_PER_NODE % (TP_SIZE * CONTEXT_PARALLEL_SIZE))) -eq 0 ] || { echo "ERROR: TP${TP_SIZE}×CP${CONTEXT_PARALLEL_SIZE} does not divide the ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} actor GPUs"; exit 1; }
+SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-$([ "${COLOCATE}" = 1 ] && echo 0.6 || echo 0.8)}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-16}"
 MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-16384}"     # 16384 is known to fit H100-80GB for 9B TP4; probe before raising
@@ -233,7 +257,7 @@ Polar rollout/gateway ${POLAR_ROLLOUT_URL} / ${POLAR_GATEWAY_URL} (bind ${POLAR_
 SGLang router:        ${SGLANG_ROUTER_BASE_URL}
 Apptainer:            ${POLAR_APPTAINER_BIN}; images ${APPTAINER_IMAGE_DIR}
 Model / args:         ${HF_CHECKPOINT} / ${MODEL_ARGS_FILE} (fp32 LM head: ${FP32_LM_HEAD:-0}, sglang parser ${SGLANG_TOOL_CALL_PARSER:-qwen3_coder})
-Layout:               ${NUM_NODES} node(s) × ${GPUS_PER_NODE} GPUs: train ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}), rollout ${ROLLOUT_NUM_GPUS} engine GPUs; ${MAX_TOKENS_PER_GPU} tok/GPU
+Layout:               ${NUM_NODES} node(s) × ${GPUS_PER_NODE} GPUs: $([ "${COLOCATE}" = 1 ] && echo "colocated: ${TOTAL_GPUS} GPUs shared by trainer (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE} DP$((TOTAL_GPUS / (TP_SIZE * CONTEXT_PARALLEL_SIZE)))) and ${ROLLOUT_NUM_GPUS} engines; sglang mem fraction ${SGLANG_MEM_FRACTION_STATIC}" || echo "train ${ACTOR_NUM_NODES}×${ACTOR_NUM_GPUS_PER_NODE} (TP${TP_SIZE} CP${CONTEXT_PARALLEL_SIZE}), rollout ${ROLLOUT_NUM_GPUS} engine GPUs; sglang mem fraction ${SGLANG_MEM_FRACTION_STATIC}"); ${MAX_TOKENS_PER_GPU} tok/GPU
 Sandboxes:            ${#SANDBOX_HOSTS[@]} host(s) [${SANDBOX_NODES}]: ${SANDBOX_HOSTS[*]}
 Trainer:              ${TRAIN_SCRIPT}; prompts ${PROMPT_DATA}
 Run id / save dir:    ${RUN_ID} / ${SAVE_DIR}
@@ -420,6 +444,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --actor-num-gpus-per-node "$ACTOR_NUM_GPUS_PER_NODE" \
     --rollout-num-gpus "$ROLLOUT_NUM_GPUS" \
     --rollout-num-gpus-per-engine "$ROLLOUT_NUM_GPUS_PER_ENGINE" \
+    ${COLOCATE_ARGS[@]+"${COLOCATE_ARGS[@]}"} \
     "${MODEL_ARGS[@]}" \
     --hf-checkpoint "$HF_CHECKPOINT" \
     --ref-load "$REF_LOAD" \
@@ -485,7 +510,7 @@ PYTHONUNBUFFERED=1 ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PO
     --attention-softmax-in-fp32 \
     --attention-backend auto \
     --no-gradient-accumulation-fusion \
-    --sglang-mem-fraction-static 0.8 \
+    --sglang-mem-fraction-static "${SGLANG_MEM_FRACTION_STATIC}" \
     --sglang-context-length "$SGLANG_CONTEXT_LENGTH" \
     --sglang-tool-call-parser "${SGLANG_TOOL_CALL_PARSER:-qwen3_coder}" \
     --router-policy "${SGLANG_ROUTER_POLICY:-round_robin}" \
