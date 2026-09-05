@@ -7,6 +7,7 @@ Aligned with agent-harness-proxy/src/harness_proxy/transform/openai_responses.py
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -18,6 +19,59 @@ from polar.gateway.transform.reasoning import (
     encrypt_reasoning,
     extract_reasoning_from_responses_item,
 )
+
+
+logger = logging.getLogger(__name__)
+
+# Tool types the gateway cannot dispatch to a model; each is reported once per process.
+_reported_unsupported_tool_types: set[str] = set()
+
+# Custom (freeform) tools reach the model as a function with this single argument.
+CUSTOM_TOOL_INPUT_PARAM = "input"
+
+
+def custom_tool_names(tools: Any) -> set[str]:
+    """Names of the ``custom`` (freeform-input) tools declared in a Responses request."""
+    names: set[str] = set()
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("type") == "custom":
+                name = tool.get("name")
+                if isinstance(name, str) and name:
+                    names.add(name)
+    return names
+
+
+def custom_tool_input_from_arguments(arguments: Any) -> str:
+    """The freeform ``input`` carried by a custom tool call's function arguments.
+
+    The model answers a custom tool with ``{"input": "<text>"}``; anything else
+    (a bare string, malformed JSON) is passed through verbatim so the harness
+    sees what the model produced.
+    """
+    if isinstance(arguments, dict):
+        value = arguments.get(CUSTOM_TOOL_INPUT_PARAM)
+        return value if isinstance(value, str) else json.dumps(arguments)
+    if not isinstance(arguments, str):
+        return ""
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+    if isinstance(parsed, dict) and isinstance(parsed.get(CUSTOM_TOOL_INPUT_PARAM), str):
+        return parsed[CUSTOM_TOOL_INPUT_PARAM]
+    return arguments
+
+
+def _custom_tool_call_item(call_id: str, name: str, arguments: Any, item_id: str = "") -> dict[str, Any]:
+    return {
+        "type": "custom_tool_call",
+        "id": item_id or f"ctc_{uuid.uuid4().hex[:24]}",
+        "call_id": call_id,
+        "name": name,
+        "input": custom_tool_input_from_arguments(arguments),
+        "status": "completed",
+    }
 
 
 def _responses_output_text(content: Any) -> str:
@@ -43,9 +97,13 @@ class _ResponsesToolCallState:
 class ResponsesStreamState:
     """Per-request Responses API streaming state."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, custom_tool_names: set[str] | None = None):
         self.response_id = f"resp_{uuid.uuid4().hex[:24]}"
         self.model = model
+        # Tool names declared as ``custom`` in the request: their calls stream
+        # as ``custom_tool_call`` items (input delivered whole at finalize,
+        # since it is unpacked from the model's JSON arguments).
+        self.custom_tool_names: set[str] = set(custom_tool_names or ())
         self.text_started = False
         self.text_content = ""
         self.message_output_index = 0
@@ -216,6 +274,23 @@ class ResponsesStreamState:
             output_index = self.output_index_offset + tool_index
             if tool_state.name and not tool_state.started:
                 tool_state.started = True
+                if tool_state.name in self.custom_tool_names:
+                    tool_state.fc_id = f"ctc_{uuid.uuid4().hex[:24]}"
+                    events.append(
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": output_index,
+                            "item": {
+                                "type": "custom_tool_call",
+                                "id": tool_state.fc_id,
+                                "call_id": tool_state.call_id,
+                                "name": tool_state.name,
+                                "input": "",
+                                "status": "in_progress",
+                            },
+                        }
+                    )
+                    continue
                 tool_state.fc_id = f"fc_{uuid.uuid4().hex[:24]}"
                 events.append(
                     {
@@ -240,7 +315,7 @@ class ResponsesStreamState:
                             "delta": tool_state.arguments,
                         }
                     )
-            elif tool_state.started and arguments_str:
+            elif tool_state.started and arguments_str and tool_state.name not in self.custom_tool_names:
                 events.append(
                     {
                         "type": "response.function_call_arguments.delta",
@@ -288,6 +363,22 @@ class ResponsesStreamState:
                 continue
 
             output_index = self.output_index_offset + tool_index
+            if tool_state.name in self.custom_tool_names:
+                item = _custom_tool_call_item(
+                    tool_state.call_id, tool_state.name, tool_state.arguments, tool_state.fc_id
+                )
+                events.append(
+                    {
+                        "type": "response.custom_tool_call_input.done",
+                        "output_index": output_index,
+                        "item_id": item["id"],
+                        "input": item["input"],
+                    }
+                )
+                events.append(
+                    {"type": "response.output_item.done", "output_index": output_index, "item": item}
+                )
+                continue
             events.append(
                 {
                     "type": "response.function_call_arguments.done",
@@ -333,17 +424,25 @@ class ResponsesStreamState:
             )
         for tool_index in sorted(self.tool_calls):
             tool_state = self.tool_calls[tool_index]
-            if tool_state.started:
+            if not tool_state.started:
+                continue
+            if tool_state.name in self.custom_tool_names:
                 output.append(
-                    {
-                        "type": "function_call",
-                        "id": tool_state.fc_id or f"fc_{uuid.uuid4().hex[:24]}",
-                        "call_id": tool_state.call_id,
-                        "name": tool_state.name,
-                        "arguments": tool_state.arguments,
-                        "status": "completed",
-                    }
+                    _custom_tool_call_item(
+                        tool_state.call_id, tool_state.name, tool_state.arguments, tool_state.fc_id
+                    )
                 )
+                continue
+            output.append(
+                {
+                    "type": "function_call",
+                    "id": tool_state.fc_id or f"fc_{uuid.uuid4().hex[:24]}",
+                    "call_id": tool_state.call_id,
+                    "name": tool_state.name,
+                    "arguments": tool_state.arguments,
+                    "status": "completed",
+                }
+            )
 
         events.append(
             {
@@ -410,10 +509,10 @@ class OpenAIResponsesTransformer(BaseTransformer):
         if isinstance(input_data, str):
             messages.append({"role": "user", "content": input_data})
         elif isinstance(input_data, list):
-            replay = body.get("_polar_reasoning_replay")
+            replay = body.get("_polar_reasoning_replay") or {}
             if replay:
                 input_data = self._replay_assistant_turns(input_data, replay)
-            messages.extend(self._convert_input_items_to_messages(input_data))
+            messages.extend(self._convert_input_items_to_messages(input_data, replay))
 
         result: dict[str, Any] = {"messages": messages}
         if "model" in body:
@@ -498,7 +597,7 @@ class OpenAIResponsesTransformer(BaseTransformer):
                     empty_text_idx = len(out)
                 else:
                     turn_restored = True  # harness echoed the text itself
-            elif item_type == "function_call":
+            elif item_type in {"function_call", "custom_tool_call"}:
                 entry = replay.get(f"call:{item.get('call_id', '')}")
                 if entry and not turn_restored:
                     if entry.get("reasoning") and not turn_has_reasoning:
@@ -520,7 +619,12 @@ class OpenAIResponsesTransformer(BaseTransformer):
                         else:
                             out.append(message)
                     turn_restored = True
-            elif item_type in {"function_call_output", "local_shell_call_output", "shell_call_output"} or role in {
+            elif item_type in {
+                "function_call_output",
+                "custom_tool_call_output",
+                "local_shell_call_output",
+                "shell_call_output",
+            } or role in {
                 "user",
                 "developer",
                 "system",
@@ -598,10 +702,15 @@ class OpenAIResponsesTransformer(BaseTransformer):
                 }
             )
 
+        custom_names = custom_tool_names(original_request.get("tools"))
         for tc in message.get("tool_calls") or []:
             func = tc.get("function", {})
             name = func.get("name", "")
-            if name in ("shell", "execute", "run_command"):
+            if name in custom_names:
+                output_items.append(
+                    _custom_tool_call_item(tc.get("id", ""), name, func.get("arguments", ""))
+                )
+            elif name in ("shell", "execute", "run_command"):
                 output_items.append(self._local_shell_call_from_tool_call(tc))
             else:
                 output_items.append(
@@ -637,6 +746,7 @@ class OpenAIResponsesTransformer(BaseTransformer):
     def create_stream_state(self, original_request: dict[str, Any]) -> ResponsesStreamState:
         return ResponsesStreamState(
             model=original_request.get("model", "unknown"),
+            custom_tool_names=custom_tool_names(original_request.get("tools")),
         )
 
     def transform_stream_chunk(
@@ -656,7 +766,17 @@ class OpenAIResponsesTransformer(BaseTransformer):
     def _convert_input_items_to_messages(
         self,
         items: list[dict[str, Any]],
+        replay: dict[str, dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
+        """Chat messages for a Responses ``input`` list.
+
+        ``replay`` (per tool ``call_id``, see ``assistant_replay_entries``)
+        supplies the exact ``arguments`` string the model generated for a
+        ``custom_tool_call``: the harness echoes only the unpacked ``input``,
+        and re-serializing it would change the tokens the chat template
+        renders for that turn.
+        """
+        replay = replay or {}
         messages: list[dict[str, Any]] = []
         pending_tool_calls: list[dict[str, Any]] = []
         pending_tool_outputs: list[dict[str, Any]] = []
@@ -771,6 +891,23 @@ class OpenAIResponsesTransformer(BaseTransformer):
                     pending_reasoning = ""
                 pending_tool_calls.append(self._local_shell_call_to_tool_call(item))
 
+            elif item_type == "custom_tool_call":
+                if pending_input_content:
+                    messages.extend(self._flush_input_content(pending_input_content))
+                    pending_input_content = []
+                if pending_tool_outputs:
+                    messages.extend(
+                        self._flush_tool_block(
+                            pending_tool_calls,
+                            pending_tool_outputs,
+                            pending_reasoning,
+                        )
+                    )
+                    pending_tool_calls = []
+                    pending_tool_outputs = []
+                    pending_reasoning = ""
+                pending_tool_calls.append(self._custom_tool_call_to_tool_call(item, replay))
+
             elif item_type == "function_call_output":
                 if pending_input_content:
                     messages.extend(self._flush_input_content(pending_input_content))
@@ -782,6 +919,16 @@ class OpenAIResponsesTransformer(BaseTransformer):
                     messages.extend(self._flush_input_content(pending_input_content))
                     pending_input_content = []
                 pending_tool_outputs.extend(self._local_shell_output_messages(item))
+
+            elif item_type == "custom_tool_call_output":
+                if pending_input_content:
+                    messages.extend(self._flush_input_content(pending_input_content))
+                    pending_input_content = []
+                pending_tool_outputs.extend(
+                    self._function_call_output_messages(
+                        {"call_id": item.get("call_id", ""), "output": item.get("output", "")}
+                    )
+                )
 
             else:
                 if pending_input_content:
@@ -842,6 +989,25 @@ class OpenAIResponsesTransformer(BaseTransformer):
         if image_parts:
             messages.append({"role": "user", "content": image_parts})
         return messages
+
+    def _custom_tool_call_to_tool_call(
+        self, item: dict[str, Any], replay: dict[str, dict[str, str]]
+    ) -> dict[str, Any]:
+        """Chat tool call for an echoed ``custom_tool_call`` item.
+
+        Prefers the arguments string the model actually generated (kept per
+        call id by the gateway); otherwise rebuilds ``{"input": <input>}``.
+        """
+        call_id = item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:24]}"
+        entry = replay.get(f"call:{call_id}") or {}
+        arguments = entry.get("arguments")
+        if not isinstance(arguments, str) or not arguments:
+            arguments = json.dumps({CUSTOM_TOOL_INPUT_PARAM: item.get("input", "")})
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": item.get("name", ""), "arguments": arguments},
+        }
 
     def _local_shell_call_to_tool_call(self, item: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1059,10 +1225,23 @@ class OpenAIResponsesTransformer(BaseTransformer):
                 )
                 continue
 
-            # Drop server-side tool types Polar can't dispatch (web_search,
-            # file_search, computer_use, mcp, code_interpreter, image_generation,
-            # custom, etc.). Only client-side functions/shell are convertible.
+            if tool_type == "custom":
+                custom = self._custom_tool_as_function(tool)
+                if custom is not None:
+                    converted.append(custom)
+                continue
+
+            # Server-side tool types Polar can't dispatch (web_search, file_search,
+            # computer_use, mcp, code_interpreter, image_generation, ...) are
+            # dropped; only client-side functions, shell and custom tools reach
+            # the model. Each dropped type is logged once.
             if tool_type and tool_type != "function":
+                if tool_type not in _reported_unsupported_tool_types:
+                    _reported_unsupported_tool_types.add(tool_type)
+                    logger.warning(
+                        "Dropping unsupported Responses tool type %r (name=%r); the model will not see it",
+                        tool_type, tool.get("name"),
+                    )
                 continue
 
             name = tool.get("name") or tool.get("id", "")
@@ -1089,6 +1268,46 @@ class OpenAIResponsesTransformer(BaseTransformer):
 
         return converted
 
+    def _custom_tool_as_function(self, tool: dict[str, Any]) -> dict[str, Any] | None:
+        """A ``custom`` (freeform-input) tool as the function the model can call.
+
+        Codex declares e.g. ``apply_patch`` this way: the model is expected to
+        produce free text (optionally constrained by a ``format`` grammar) and
+        the harness receives it as ``custom_tool_call.input``. Chat completion
+        models only call functions, so the tool becomes a function with one
+        required string parameter, ``input``; the tool's name and description
+        are kept, and a declared grammar is summarized in the description.
+        """
+        name = tool.get("name")
+        if not isinstance(name, str) or not name:
+            return None
+        description = tool.get("description") or ""
+        fmt = tool.get("format")
+        if isinstance(fmt, dict) and fmt.get("type") == "grammar":
+            definition = fmt.get("definition")
+            syntax = fmt.get("syntax", "grammar")
+            if isinstance(definition, str) and definition.strip():
+                description = (
+                    f"{description}\n\nThe `input` must follow this {syntax} grammar:\n{definition.strip()}"
+                ).strip()
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        CUSTOM_TOOL_INPUT_PARAM: {
+                            "type": "string",
+                            "description": "The complete freeform input for this tool.",
+                        }
+                    },
+                    "required": [CUSTOM_TOOL_INPUT_PARAM],
+                },
+            },
+        }
+
     def _tool_choice_to_openai_chat(self, tool_choice: Any) -> Any:
         if isinstance(tool_choice, str):
             if tool_choice == "shell":
@@ -1108,6 +1327,10 @@ class OpenAIResponsesTransformer(BaseTransformer):
                 return {"type": "function", "function": {"name": name}}
         if choice_type in {"shell", "local_shell"}:
             return {"type": "function", "function": {"name": "shell"}}
+        if choice_type == "custom":
+            name = tool_choice.get("name")
+            if isinstance(name, str) and name:
+                return {"type": "function", "function": {"name": name}}
         return tool_choice
 
     def _reasoning_config_enables_thinking(self, reasoning_cfg: dict[str, Any]) -> bool:

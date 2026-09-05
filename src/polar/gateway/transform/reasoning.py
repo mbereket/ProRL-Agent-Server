@@ -126,15 +126,23 @@ def assistant_replay_entries(response: dict[str, Any]) -> dict[str, dict[str, st
         return {}
     content = message.get("content")
     reasoning = message.get("reasoning_content")
-    entry = {
+    base = {
         "content": content if isinstance(content, str) else "",
         "reasoning": reasoning if isinstance(reasoning, str) else "",
     }
-    if not entry["content"] and not entry["reasoning"]:
-        return {}
     entries: dict[str, dict[str, str]] = {}
     for tool_call in message.get("tool_calls") or []:
-        call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
-        if call_id:
-            entries[f"call:{call_id}"] = entry
+        if not isinstance(tool_call, dict):
+            continue
+        call_id = tool_call.get("id")
+        if not call_id:
+            continue
+        entry = dict(base)
+        # The exact arguments string the model generated; a harness that echoes
+        # a call in another shape (``custom_tool_call`` carries only the unpacked
+        # input) gets it re-rendered verbatim on the next turn.
+        arguments = (tool_call.get("function") or {}).get("arguments")
+        if isinstance(arguments, str) and arguments:
+            entry["arguments"] = arguments
+        entries[f"call:{call_id}"] = entry
     return entries
