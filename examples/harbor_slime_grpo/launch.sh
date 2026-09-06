@@ -8,9 +8,10 @@
 #
 # Setup is idempotent: every step skips itself when its output exists. Machine
 # settings (WORKROOT, ports, WANDB_API_KEY, APPTAINER_*) are environment
-# variables; see README.md. Before the first run: stage the task directory, then
-# either `launch.sh <cfg> --setup-only` or `prepare_images.sh <task_dir>` pulls the
-# task images (needs the registry; do it where it is reachable).
+# variables; see README.md. Before the first run: stage the task directory (a
+# download, see README). Task images are pulled here on first use, which needs the
+# registry reachable from the node; `prepare_images.sh <task_dir>` pulls a whole
+# dataset ahead of time.
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 export PROJECT_ROOT="$(cd -- "${HERE}/../.." && pwd)"
@@ -84,8 +85,8 @@ else
     export PYTHON_BIN
 fi
 
-# ── Tasks -> prompts. Images: --setup-only pulls them, a run only checks them ──
-if [ "${SETUP_ONLY}" = 1 ]; then
+# ── Task images (pulled once per image; present ones are skipped), then prompts ──
+if [ "${DRY_RUN}" = 0 ]; then
     log "task images"
     bash "${HERE}/prepare_images.sh" "${CONFIG}"
 fi

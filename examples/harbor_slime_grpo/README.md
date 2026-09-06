@@ -48,21 +48,19 @@ harbor datasets download <name> -o $WORKROOT/tasks                              
 hf download <org>/<dataset> --repo-type dataset --local-dir $WORKROOT/tasks/<name>
 python examples/harbor_slime_grpo/datasets/swegym_lite.py --output $WORKROOT/tasks/swegym-lite
 
-# 2. Pull the task images as SIFs (needs the registry). A task directory pulls
-#    everything it references; a run config pulls only its selected tasks.
-#    `launch.sh <cfg> --setup-only` does this too, after installing the environment.
+# 2. Optional: pull a whole dataset's images ahead of time (needs the registry). A run
+#    pulls the images of its selected tasks itself on first use.
 bash examples/harbor_slime_grpo/prepare_images.sh $WORKROOT/tasks/swegym-lite
-bash examples/harbor_slime_grpo/prepare_images.sh examples/harbor_slime_grpo/configs/smoke-1node.yaml
 
-# 3. Run. First run also builds the venv, the harness and converts the checkpoint.
+# 3. Run. First run also builds the venv, pulls the task images, builds the harness and converts the checkpoint.
 bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/smoke-1node.yaml --dry-run     # resolve + render only
 bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/smoke-1node.yaml               # single node, no slurm
 bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/swegym-lite-9b-2node.yaml \
     --slurm --partition <p> --account <a> --time 04:00:00                                                    # sbatch, node count from the config
 ```
 
-`launch.sh <cfg> --setup-only` does everything but training, task images
-included (use it where the network is, when compute nodes have no egress). Resuming: submit the same config
+`launch.sh <cfg> --setup-only` does everything but training (use it where the
+network is, when compute nodes have no egress). Resuming: submit the same config
 again; the run is keyed by `name` and reloads its latest checkpoint. Do not
 change `rollout.num_steps` on resume (the LR schedule is sized from it).
 
