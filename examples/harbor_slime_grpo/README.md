@@ -205,6 +205,8 @@ Three ways to produce one:
 2. **Write a `datasets/<name>.py`** that downloads a source dataset and writes the
    layout above (`swegym_lite.py` and `tmax15k.py` are the templates, ~200 lines
    each). Then `tasks.dataset: <name>` in the config creates the directory on first use.
+   `bbh_max_v2.py` is the download-only variant: the HF dataset already stores this layout
+   (300 bio-synth tasks, one shared runtime image), so it snapshots and validates it.
 3. **Copy task directories** produced by another pipeline (e.g. an eval harness)
    and add a `manifest.json`, or omit it and let each subdirectory be a task.
 
