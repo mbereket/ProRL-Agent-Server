@@ -161,6 +161,8 @@ def load(path: str) -> dict:
         die(f"{path}: cluster.sandbox_nodes must be head or all")
     if cfg["harness"]["name"] not in HARNESSES:
         die(f"{path}: harness.name must be one of {HARNESSES}")
+    if cfg["rollout"]["num_steps"] == 0 and not cfg["eval"]["prompt_data"]:
+        die(f"{path}: rollout.num_steps: 0 (eval only) needs eval.prompt_data")
     if cfg["harness"]["max_async_level"] > 1 and cfg["training"]["sync"]:
         die(f"{path}: harness.max_async_level > 1 needs training.sync: false")
     return cfg
