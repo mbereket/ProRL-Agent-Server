@@ -1,12 +1,9 @@
 # Harbor Slime GRPO
 
-This example provides an initial setup for **any Harbor dataset, any Harness**
-agent RL. It supports multi-node training and uses Apptainer sandboxes. Polar
-records token-level trajectories and final rewards as a gateway between the agent
-sandbox and generation servers, and Slime (Megatron + SGLang) handles policy updates.
-
-A run can be configured through a single yaml file in `configs/`. See "Adding a New
-Dataset" for instructions to train on another dataset.
+GRPO on **any directory of Harbor tasks** with **any supported agent harness**,
+multi-node, Apptainer sandboxes. Polar sits between the agent sandbox and the
+SGLang engines, records token-level trajectories and rewards; Slime (Megatron +
+SGLang) updates the policy. One YAML run config in `configs/` drives a run.
 
 ## Requirements
 
@@ -14,249 +11,155 @@ Dataset" for instructions to train on another dataset.
   and needs glibc 2.35+; an older kernel driver is fine (forward-compat
   libraries are installed automatically).
 - **A shared filesystem** (`WORKROOT`) mounted at the same path on every node.
-  Installs, assets, checkpoints and caches default to it (compiler caches to
+  Installs, task images, checkpoints and caches go there (compiler caches to
   node-local `/tmp`); cache variables you export yourself (`HF_HOME`,
   `UV_CACHE_DIR`, `APPTAINER_CACHEDIR`, ...) are honored.
 - **Apptainer or Singularity**, or user namespaces enabled so an unprivileged
   Apptainer can be installed for you. Task images are pulled, never built.
 - **Slurm** for multi-node runs (single node needs none).
 - **Network during setup**: GitHub, PyPI, Hugging Face, your image registry.
-  Training itself needs no egress; setup can run separately on a login node.
-- **Host tools**: `gcc`/`g++`, `git`, `curl`, `tar`, `xz`, `envsubst`. Python,
-  `uv`, the CUDA toolkit and Apptainer are installed under `WORKROOT` if missing.
+  Training itself needs no egress.
+- **Host tools**: `gcc`/`g++`, `git`, `curl`, `tar`, `xz`. Python, `uv`, the
+  CUDA toolkit and Apptainer are installed under `WORKROOT` if missing.
 
 `internal/setup/preflight.sh` checks all of this and says exactly what is missing.
 
 ### What has been tested
 
-Anything outside this table is untried, not unsupported.
-
 | | tested |
 |---|---|
 | hardware | H100-80GB nodes (8 GPUs), slurm; 1, 2 and 4 nodes |
-| models | Qwen3.5-9B (all runs below); Qwen3.5-4B (earlier stack version); Qwen3-8B runs but scores 0 under codex |
-| harnesses | codex (SWE-Gym), opencode 1.18.18 (BixBench-Hypothesis); mini_swe_agent smoke only |
-| datasets | SWE-Gym-Lite and SWE-Gym full via `datasets/swegym_lite.py`; BixBench-Hypothesis MCP tasks with an LLM judge; TMax-15k materialized, not trained |
+| models | Qwen3.5-9B (all runs below); Qwen3.5-4B (earlier stack version) |
+| harnesses | codex (SWE-Gym, bio-synth), opencode (BixBench-Hypothesis, judge-graded), mini_swe_agent (smoke) |
+| datasets | SWE-Gym-Lite via `datasets/swegym_lite.py`; bio-synth task sets published on HF in Harbor layout |
 | layouts | TP4 (1 node smoke); TP4 x CP2, 32k traces (2 nodes); TP4 x CP4, 128k traces with optimizer offload (4 nodes) |
 | training modes | synchronous (reference); asynchronous `max_async_level: 2` on 4 nodes, 16 steps |
-| not yet | claude_code / qwen_code / pi / hermes harnesses, non-Qwen models, B200, multi-node without slurm, colocated train + serve |
+| not yet | non-Qwen models, B200, multi-node without slurm |
 
-## Quickstart
-
-`launch.sh` is idempotent: setup steps already done are skipped.
+## Setup and first run
 
 ```bash
 export WORKROOT=/shared/fs/harbor-grpo
 export WANDB_API_KEY=<key>                  # optional; without it wandb runs offline
 
-# Single-node smoke, no slurm (2 tasks x 4 samples x 2 steps; 4 GPUs train, 4 serve).
-# First run also builds the venv, pulls the task images, builds the harness and
-# converts the HF checkpoint. tasks.dataset in the config materializes the task
-# directory automatically, so no manual dataset step is needed.
-bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/swegym-lite-smoke-1node.yaml
+# 1. A directory of Harbor tasks. Registry datasets download directly; datasets
+#    published on HF in Harbor layout download with hf; SWE-Gym needs the converter.
+harbor datasets download <name> -o $WORKROOT/tasks                                  # -> $WORKROOT/tasks/<name>/
+hf download <org>/<dataset> --repo-type dataset --local-dir $WORKROOT/tasks/<name>
+python examples/harbor_slime_grpo/datasets/swegym_lite.py --output $WORKROOT/tasks/swegym-lite
 
-# Same config under slurm (node count comes from the config)
-bash examples/harbor_slime_grpo/slurm_launch.sh \
-    --config examples/harbor_slime_grpo/configs/swegym-lite-smoke-1node.yaml --partition <p> --account <a>
+# 2. Pull the task images as SIFs (needs the registry: login node). A task directory
+#    pulls everything it references; a run config pulls only its selected tasks.
+bash examples/harbor_slime_grpo/prepare_images.sh $WORKROOT/tasks/swegym-lite
+bash examples/harbor_slime_grpo/prepare_images.sh examples/harbor_slime_grpo/configs/smoke-1node.yaml
 
-# Full run: all 230 SWE-Gym-Lite tasks, 2 nodes (node A trains TP4 x CP2, node B serves 8 engines)
-bash examples/harbor_slime_grpo/slurm_launch.sh \
-    --config examples/harbor_slime_grpo/configs/swegym-lite-qwen35-9b-2node.yaml --partition <p> --account <a> --time 04:00:00
+# 3. Run. First run also builds the venv, the harness and converts the checkpoint.
+bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/smoke-1node.yaml --dry-run     # resolve + render only
+bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/smoke-1node.yaml               # single node, no slurm
+bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/swegym-lite-9b-2node.yaml \
+    --slurm --partition <p> --account <a> --time 04:00:00                                                    # sbatch, node count from the config
 ```
 
-Useful variants:
-
-- `launch.sh <cfg> --dry-run` resolves the config, builds the prompt list and
-  renders the Polar templates without touching GPUs. Run it first on any new config.
-- `RUN_TRAINING=0 bash launch.sh <cfg>` does the setup only (venv, images, harness,
-  checkpoint conversion) and exits before training. Use it on a login node when
-  compute nodes have no network.
-- Resuming: submit the same config again. The run is keyed by `name`; it reloads
-  the latest checkpoint from `$WORKROOT/ckpt/harbor_slime_grpo/<name>`. Do not
-  change `rollout.num_steps` on resume (the LR schedule is sized from it).
+`launch.sh <cfg> --setup-only` does everything but training (use it on a login
+node when compute nodes have no network). Resuming: submit the same config
+again; the run is keyed by `name` and reloads its latest checkpoint. Do not
+change `rollout.num_steps` on resume (the LR schedule is sized from it).
 
 Where things end up:
 
 | Path | Contents |
 |---|---|
-| `$WORKROOT/harbor_slime_grpo/<name>/` | per-run dir: `env.sh`, `assets/train.jsonl` (prompts), rendered Polar configs, `sessions/` |
+| `$WORKROOT/harbor_slime_grpo/<name>/` | per run: `env.sh`, `train.jsonl` (prompts), rendered `polar_config.yaml`, `topology.yaml`, `train_args.sh`, `sessions/`, `rollout_results/` |
 | `$WORKROOT/ckpt/harbor_slime_grpo/<name>/` | Megatron checkpoints, `latest_checkpointed_iteration.txt` |
 | `$WORKROOT/joblogs/` | sbatch stdout (setup and Ray driver log; step metrics go to wandb) |
 | `$WORKROOT/tasks/`, `harbor_sif_images/`, `harbor_harness/`, `checkpoints/` | shared assets, built once |
 
-## Run Config Explanation
+## The run config
 
-A run is one YAML file. `name` and `tasks.dir` are required, every other key has
-a default (see `internal/config_to_env.py`, the single source of truth), and
-unknown keys are rejected. `${WORKROOT}` and other env vars expand in values;
-relative paths resolve against the config file.
+One YAML file. `name` and `tasks.dir` are required, every other key has a
+default, unknown keys are rejected. `internal/render.py` holds the schema and
+every default; `${WORKROOT}` and other env vars expand in values; relative
+paths resolve against the config file.
 
 ```yaml
 name: my-run                          # run id: per-run dir and checkpoint dir are named after it
 
 tasks:                                # WHAT to train on
-  dir: ${WORKROOT}/tasks/swegym-lite  # directory of Harbor tasks (see "Adding a New Dataset")
-  dataset: swegym_lite                # optional: datasets/<name>.py creates dir if it is missing
-  dataset_args: "--dataset full"      # extra flags for that script
-  n: 32                               # random subset of tasks (omit = all); seed: 0
+  dir: ${WORKROOT}/tasks/swegym-lite  # directory of Harbor tasks (see "The task contract")
+  n: 32                               # random subset (omit = all); seed: 0
   task_ids_file: ref8.txt             # or an explicit list (one dir name / source_id per line); exclude_ids_file likewise
+  mount_root: ${WORKROOT}/tasks       # mount this instead of dir (tasks referencing shared data outside dir)
 
 harness:                              # WHICH agent solves the tasks
-  name: codex                         # codex | opencode | claude_code | qwen_code | pi | hermes | mini_swe_agent
+  name: codex                         # codex | opencode | mini_swe_agent
   cli_version: ""                     # pin the CLI version installed into the shared harness dir
   model_name: openai/gpt-5.4          # name the CLI asks for; the gateway always serves the trained model
   settings: {}                        # harness-specific settings passed to the Polar preset
-  thinking: true                      # Qwen3-family models only: sets the chat template's enable_thinking for every request (unset = off)
+  thinking: true                      # Qwen3 models: chat-template thinking for every request (unset = template default, off)
   session_timeout: 1500               # per-attempt budget: agent + verifier + margin (seconds)
   request_timeout: 1500               # per-LLM-request timeout at the gateway
-  max_run_workers: 16                 # concurrent sandboxes per sandbox node; sets generation throughput
-  max_async_level: 1                  # rollout steps the sampler may run ahead of the trainer (>1 needs training.sync: false)
-  path_prepend: ""                    # put first on the agent PATH inside every sandbox (e.g. an image's conda env)
+  max_run_workers: 16                 # concurrent sandboxes per sandbox node
+  max_async_level: 1                  # rollout steps the sampler may run ahead (>1 needs training.sync: false)
+  path_prepend: ""                    # first on the agent PATH inside every sandbox (e.g. an image's conda env)
   ld_library_path: ""                 # LD_LIBRARY_PATH inside the sandbox
   keep_sessions: false                # keep per-session dirs (agent logs, verifier output); millions of inodes on long runs
 
 model:
   hf_checkpoint: Qwen/Qwen3.5-9B
-  model_args_file: qwen3_5_9b.sh      # Megatron architecture args: a file in internal/model_args/ (qwen3_5_4b.sh, qwen3_8b.sh) or an absolute path
-  sglang_tool_call_parser: qwen3_coder  # SGLang --tool-call-parser; must match the model's tool-call format (qwen3_coder: Qwen3.5, qwen: Qwen3 dense). A mismatch returns tool calls as plain text
+  model_args_file: qwen3_5_9b.sh      # Megatron architecture args: internal/model_args/{qwen3_5_9b,qwen3_5_4b}.sh or an absolute path
+  sglang_tool_call_parser: qwen3_coder  # must match the model's tool-call format; a mismatch returns tool calls as plain text
   load_dir: ""                        # start from another run's checkpoint dir instead of the base model
+  torch_dist_dir: ""                  # converted reference checkpoint (default ${WORKROOT}/checkpoints/<model>_torch_dist)
 
 cluster:                              # GPU layout. Trainer takes actor_num_gpus, every other GPU serves an SGLang engine.
   num_nodes: 2
   actor_num_gpus: 8                   # whole nodes when num_nodes > 1
   tp_size: 4                          # TP x CP must divide actor_num_gpus
   context_parallel_size: 2
-  sandbox_nodes: all                  # head | all: which nodes' CPUs run agent sandboxes and verifiers
+  sandbox_nodes: all                  # head | all: nodes whose CPUs run sandboxes and verifiers (one Polar gateway each)
 
 rollout:                              # HOW MUCH is sampled per step
-  batch_size: 8                       # prompts (tasks) per step
+  batch_size: 8                       # tasks per step
   n_samples_per_prompt: 16            # attempts per task -> 128 sessions per step
   num_steps: 100                      # training steps; 0 = eval only (needs eval.prompt_data)
-  # num_epoch: 4                      # alternative to num_steps: passes over the task set (steps = num_epoch x tasks / batch_size)
-  sglang_context_length: 32768        # longest trace the agent can build (engine context); keep equal to the trainer's trace cap (below)
+  # num_epoch: 4                      # alternative: passes over the task set
+  sglang_context_length: 32768        # longest trace the agent can build; keep equal to the trainer's trace cap
   max_prompt_len: 8000                # initial task prompts longer than this are skipped
-  max_response_len: 24000             # only feeds slime's response-length metrics; Polar does not use it to clip generation
+  max_response_len: 24000             # feeds slime's response-length metrics only
 
 training:
-  sync: true                          # true: on-policy train.py; false: train_async.py, generation overlaps training
+  sync: true                          # true: train.py (on-policy); false: train_async.py, generation overlaps training (TIS-corrected)
   max_tokens_per_gpu: 16384           # trace cap = this x context_parallel_size (32k here); 16384 fits H100-80GB for 9B TP4
   optimizer_cpu_offload: false        # Adam states on host; needed for 32768 tok/GPU (128k traces at CP4)
   lr: 1e-6
   use_kl_loss: false                  # kl_loss_coef: 0.001
   grpo_std_normalization: false       # false = mean-only advantages
   loss_denominator: trainable_units   # trainable_units | global_batch
-  group_id_scope: trajectory          # loss-aggregation unit: trajectory = token-mean over each attempt's traces, every attempt weighs the same; prompt = token-mean over all n_samples attempts of a task (SkyRL prompt_mean), long attempts weigh more
-  drop_zero_variance_groups: true     # skip tasks whose attempts all got the same reward; set false for overfit runs
+  group_id_scope: trajectory          # trajectory: every attempt weighs the same; prompt: token-mean over a task's attempts
+  drop_zero_variance_groups: true     # skip tasks whose attempts all got the same reward; false for overfit runs
   timeout_reward_zero: true           # sessions that hit session_timeout get reward 0
-  overlong_policy: zero_reward_train  # attempts that ran out of context: train on the truncated trace with reward 0, or drop
-  save_interval: 5                    # checkpoint every N steps
-  checkpoint_keep_every: 0            # >0: prune checkpoints that are not multiples of N (latest always kept)
-  extra_train_args: ""                # appended verbatim to the slime command line
+  overlong_policy: zero_reward_train  # zero_reward_train | drop: attempts that ran out of context
+  save_interval: 5
+  checkpoint_keep_every: 0            # >0: delete saved iterations that are not multiples of this (latest kept)
+  extra_train_args: ""                # appended to the slime command line verbatim
 
-eval:                                 # optional eval every `interval` steps; read the *_all_sessions metrics (over requested attempts, missing = 0)
-  prompt_data: "ref8 ${RUN_DIR}/assets/train.jsonl"   # "<name> <jsonl>"; the run's own train.jsonl = eval on the training tasks
-  interval: 5
-  n_samples_per_prompt: 4
+eval:
+  prompt_data: "held ${RUN_DIR}/train.jsonl"   # "<name> <jsonl>" enables a held-out eval; ${RUN_DIR} = this run's dir
+  interval: 10
+  n_samples_per_prompt: 1
 
-judge:                                # LLM judge for rubric-graded tasks; empty = none
-  model: openai/nvidia/zai-org/glm-5.2
-  api_base: https://inference-api.nvidia.com/v1
-  api_key_env: NVINF_API_KEY          # host env var; injected into sandbox and verifier
+judge:                                # LLM judge for rubric-graded tasks (empty = none)
+  model: openai/<judge-model>
+  api_base: https://<endpoint>/v1
+  api_key_env: JUDGE_API_KEY          # host env var; injected into the sandbox and the verifier
 
 wandb:
   project: harbor-slime-grpo
-  group: ""
+  group: <name>
 ```
 
-Two numbers have to agree: the trainer's trace cap
-`max_tokens_per_gpu x context_parallel_size` and `sglang_context_length`. If
-generation can run longer than the trainer accepts, the extra traces are handled
-by `overlong_policy`. Longer traces need more CP (more trainer GPUs) or more tokens
-per GPU (with `optimizer_cpu_offload`). Tested layouts on H100-80GB with Qwen3.5-9B:
-
-| nodes | trainer | engines | trace cap | notes |
-|---|---|---|---|---|
-| 1 | 4 GPUs, TP4 x CP1 | 4 | 16k | smoke |
-| 2 | 8 GPUs, TP4 x CP2 | 8 | 32k | SWE-Gym-Lite reference |
-| 4 | 16 GPUs, TP4 x CP4 | 16 | 128k | 32768 tok/GPU + optimizer offload |
-
-Generation, not training, usually bounds the step time: a step ends when the
-slowest of `batch_size x n_samples_per_prompt` sessions finishes, and
-`max_run_workers x sandbox nodes` sessions run at once.
-
-## Adding a New Dataset
-
-The trainer consumes a directory of Harbor tasks. Any directory in this layout
-works; nothing in the pipeline is dataset-specific.
-
-```
-<tasks>/manifest.json              optional: {"tasks": [{"directory": "harbor/<task>", "source_id": ...}]}
-<tasks>/harbor/<task>/             (or <tasks>/<task>/ without a manifest)
-    instruction.md                 the prompt the agent receives
-    task.toml                      [environment] docker_image, workdir, optional agent_path_prepend
-                                   [agent] timeout_sec, [verifier] timeout_sec
-    tests/test.sh                  verifier: writes a reward in [0, 1] to /logs/verifier/reward.txt
-    environment/files/setup.sh     optional staging run before the agent starts (WORKDIR, HARBOR_STAGING set)
-```
-
-Three ways to produce one:
-
-1. **Export an existing Harbor dataset**: `harbor datasets download <name> --export -o <dir>`.
-2. **Write a `datasets/<name>.py`** that downloads a source dataset and writes the
-   layout above (`swegym_lite.py` and `tmax15k.py` are the templates, ~200 lines
-   each). Then `tasks.dataset: <name>` in the config creates the directory on first use.
-   `bbh_max_v2.py` is the download-only variant: the HF dataset already stores this layout
-   (300 bio-synth tasks, one shared runtime image), so it snapshots and validates it.
-3. **Copy task directories** produced by another pipeline (e.g. an eval harness)
-   and add a `manifest.json`, or omit it and let each subdirectory be a task.
-
-Requirements on the tasks:
-
-- **Images must be pullable.** `docker_image` is fetched with `apptainer pull docker://...`
-  into `$WORKROOT/harbor_sif_images`, one SIF per distinct image, once. Datasets that
-  only ship a `Dockerfile` need their images built and pushed to a registry first.
-  Set `APPTAINER_DOCKER_USERNAME/PASSWORD` for private registries or Docker Hub
-  rate limits, and `HARBOR_SIF_SEED_DIR` to reuse SIFs from an existing Harbor cache.
-  Pulls happen in the setup phase and need network; big datasets are best pulled
-  once with `RUN_TRAINING=0`.
-- **The verifier is the reward.** `test.sh` runs inside the task image after the
-  agent finishes; the agent never sees `tests/`. It must write the reward file
-  itself. Rubric-graded tasks can call the `judge` model from `test.sh`.
-- **Nothing preinstalled in the image.** The harness (agent CLI, node, its own
-  python) is bind-mounted read-only from `$WORKROOT/harbor_harness`. If the agent
-  needs the image's toolchain on PATH, set `agent_path_prepend` per task or
-  `harness.path_prepend` for the whole dataset.
-
-Then point a config at it:
-
-```yaml
-tasks:
-  dir: ${WORKROOT}/tasks/my-dataset
-  n: 64                                # or task_ids_file for a fixed set
-harness:
-  session_timeout: <agent timeout + verifier timeout + margin>
-```
-
-Check it with `launch.sh <cfg> --dry-run`: it prints the resolved task count and
-writes `assets/train.jsonl` and the image list under the run dir. Then run a
-1-node smoke with `rollout.batch_size: 2`, `n_samples_per_prompt: 4`,
-`num_steps: 2` before committing GPUs to a full run. For long-trace tasks, an
-eval-only run (`rollout.num_steps: 0` with `eval.prompt_data`) at a generous
-`sglang_context_length` shows the trace-length distribution and picks the trace cap.
-
-----------
-
-Train a coding agent with GRPO on **any directory of Harbor tasks**, multi-node,
-with Apptainer sandboxes: a harness (mini-SWE-agent by default) solves each task
-inside the task's own container, **Polar** records the token-level trajectory and
-grades it with the task's `tests/test.sh`, and **Slime** (Megatron + SGLang) does
-the policy update. One YAML run config describes the whole run. Ships with
-[TMax-15k](https://arxiv.org/abs/2606.23321) (14.6k terminal tasks with prebuilt
-images) as the reference dataset; swapping in your own tasks means pointing the
-config at a different directory.
-
-Tested layout: two 8-GPU H100 nodes, Qwen3.5-9B, trainer TP4 x CP2 on one node
-and 8 SGLang engines on the other. One node (4 train / 4 serve) works for smokes.
+`launch.sh <cfg> --dry-run` prints the resolved summary, writes `train.jsonl`
+and shows the rendered Polar config and slime arguments, so nothing is hidden.
 
 ## The task contract
 
@@ -264,224 +167,95 @@ A task directory is a [Harbor task](https://www.harborframework.com/docs/tasks):
 
 ```
 <tasks>/manifest.json            optional: {"tasks": [{"directory": ..., "source_id": ...}]}
-<tasks>/harbor/<task>/           (or <tasks>/<task>/ without a manifest)
+<tasks>/harbor/<task>/           (or <tasks>/<task>/ without a manifest, as `harbor datasets download` writes)
     instruction.md               the prompt the agent receives
     task.toml                    [environment] docker_image (pullable ref) + workdir,
                                  optional agent_path_prepend (first on the agent's PATH, e.g. a conda env)
                                  [agent] timeout_sec, [verifier] timeout_sec
-    tests/test.sh                verifier; writes 0..1 to /logs/verifier/reward.txt
+    tests/test.sh                verifier; writes a reward in [0, 1] to /logs/verifier/reward.txt
     environment/files/setup.sh   optional staging run before the agent starts, with
                                  WORKDIR and HARBOR_STAGING (=environment/files) set
 ```
 
-`docker_image` must be pullable (`apptainer pull docker://...`): this example does
-not build images. `prepare_tasks.py` turns the directory into Slime's prompt JSONL
-and the image list; `prepare_images.sh` pulls the SIFs; Polar mounts the task
-directory read-only at `/harbor_data`, runs `setup.sh` if present, runs the agent,
-then uploads `tests/` and runs `test.sh` (the agent never sees the tests).
+- **Images must be pullable.** `docker_image` is fetched with `apptainer pull`
+  by `prepare_images.sh`, one SIF per distinct image named the way Harbor's own
+  singularity cache names them, so an existing Harbor cache works as
+  `APPTAINER_IMAGE_DIR`. Datasets that ship only a `Dockerfile` need their
+  images built, pushed, and named in `task.toml` first; this example never
+  builds. Private registries: `APPTAINER_DOCKER_USERNAME/PASSWORD`.
+- **The verifier is the reward.** `test.sh` runs inside the task image after the
+  agent finishes; the agent never sees `tests/`. Rubric-graded tasks can call
+  the `judge` model from `test.sh` (its address and key arrive as `RUBRIC_MODEL*`).
+- **Nothing preinstalled in the image.** The harness (agent CLI, node or its own
+  python) is built once into `$WORKROOT/harbor_harness` and bind-mounted
+  read-only at the same path in every sandbox. If the agent needs the image's
+  toolchain on PATH, set `agent_path_prepend` per task or `harness.path_prepend`.
 
-## Quick start
+`datasets/swegym_lite.py` is the one converter shipped here: SWE-Gym is not in
+the Harbor registry and its Harbor form ships Dockerfiles, so it writes the
+layout above from the HF dataset with the prebuilt SWE-Gym images and the
+Harbor adapter's verifier.
 
-Two datasets ship with the example. **SWE-Gym-Lite** (230 Python bug-fix tasks
-from 11 repositories, prebuilt images, the Harbor SWE-Gym adapter's format) is
-the smaller starting point; **TMax-15k** (14.6k terminal tasks) is the larger
-reference set.
-
-```bash
-export WORKROOT=/shared/fs/harbor-grpo            # shared by all nodes
-export WANDB_API_KEY=<key>                        # optional
-
-# 1. Materialize a task directory (needs the venv: run launch.sh once with RUN_TRAINING=0, or any python with `datasets`)
-.venv/bin/python examples/harbor_slime_grpo/datasets/swegym_lite.py --output $WORKROOT/tasks/swegym-lite
-.venv/bin/python examples/harbor_slime_grpo/datasets/tmax15k.py --output $WORKROOT/tasks/tmax15k
-
-# 2. Check what a config resolves to (prompts, rendered Polar config) without touching GPUs
-bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/swegym-lite-smoke-1node.yaml --dry-run
-
-# 3a. Single-node smoke (environment setup, images, harness, checkpoint conversion, 2 steps)
-bash examples/harbor_slime_grpo/launch.sh examples/harbor_slime_grpo/configs/swegym-lite-smoke-1node.yaml
-
-# 3b. Two nodes under slurm (node count comes from the config)
-bash examples/harbor_slime_grpo/slurm_launch.sh \
-    --config examples/harbor_slime_grpo/configs/swegym-lite-qwen35-9b-2node.yaml --partition <p> --account <a>
-```
-
-Shipped configs: `swegym-lite-smoke-1node`, `swegym-lite-qwen35-9b-2node`,
-`tmax15k-smoke-1node`, `tmax15k-qwen35-9b-2node`.
-
-`launch.sh` is idempotent: environment setup, checkouts, image pulls and the
-checkpoint conversion are skipped when already present. Image pulls and the
-harness install need network; on clusters whose compute nodes have no egress,
-run the launcher once on a login node with `RUN_TRAINING=0` to prepare assets.
-
-## The run config
-
-A run is one YAML file in `configs/`. Every key has a default; `name` and
-`tasks.dir` are required; unknown keys are rejected. The sections mirror the
-swegym example (`model`, `cluster`, `rollout`, `training`, `eval`, `wandb`) plus
-the two Harbor-specific ones, `tasks` and `harness`.
-
-```yaml
-name: tmax15k-qwen35-9b-2node
-tasks:
-  dir: ${WORKROOT}/tasks/tmax15k    # the task directory (env vars expand; relative to this file)
-  dataset: tmax15k                  # optional: datasets/<name>.py creates dir when it is missing
-  dataset_args: ""                  # extra flags for that script (e.g. --limit 10)
-  n: 32                             # random sample of tasks (omit for all)
-  seed: 0
-  # task_ids_file / exclude_ids_file: one directory name or source_id per line
-harness:
-  name: mini_swe_agent              # codex | opencode | claude_code | qwen_code | pi | hermes | mini_swe_agent
-  model_name: openai/gpt-5.4        # cosmetic; the gateway serves the trained model
-  settings: {step_limit: 64, cost_limit: 0}   # passed to the Polar harness preset
-  session_timeout: 3000             # per-session budget: agent + verifier + margin
-  request_timeout: 3600
-  max_run_workers: 16               # concurrent sandboxes per sandbox host
-  thinking: true                    # Qwen3.5 chat-template thinking (null = gateway default: off)
-  keep_sessions: false              # keep per-session dirs (agent logs, verifier output) under <run>/sessions
-  cli_version: ""                   # pin the harness CLI version (e.g. opencode-ai 1.18.18)
-  path_prepend: ""                  # first on the agent PATH for every task (SWE-Gym tasks set their own per task)
-  ld_library_path: ""               # LD_LIBRARY_PATH inside the sandbox
-  max_async_level: 1
-model:
-  hf_checkpoint: Qwen/Qwen3.5-9B
-  model_args_file: qwen3_5_9b.sh    # Megatron args in internal/model_args/
-cluster:
-  num_nodes: 2
-  actor_num_gpus: 8                 # whole nodes when multi-node; every other GPU serves an engine
-  tp_size: 4                        # TP x CP must divide actor_num_gpus
-  context_parallel_size: 2
-  sandbox_nodes: all                # head | all: hosts whose CPUs run agent sandboxes + verifiers
-rollout:
-  batch_size: 8                     # prompts per step
-  n_samples_per_prompt: 16
-  num_epoch: 30
-  max_prompt_len: 24000
-  max_response_len: 8000
-  sglang_context_length: 32768      # keep equal to the trace cap
-training:
-  sync: true                        # train.py (on-policy) or train_async.py (1 step off-policy + TIS)
-  max_tokens_per_gpu: 16384         # longest trainable trace = this x context_parallel_size
-  lr: 1e-6
-  use_kl_loss: false
-  grpo_std_normalization: false     # false = mean-only advantages
-  group_id_scope: trajectory
-  timeout_reward_zero: true
-  drop_zero_variance_groups: true
-  save_interval: 5
-  extra_train_args: ""              # appended to the slime train script verbatim
-eval:
-  prompt_data: ""                   # "<name> <path.jsonl>" enables a held-out eval
-  interval: 10
-  n_samples_per_prompt: 1
-judge:                              # rubric judge for judge-graded tasks (BixBench-Hypothesis); empty = none
-  model: openai/nvidia/zai-org/glm-5.2
-  api_base: https://inference-api.nvidia.com/v1
-  api_key_env: NVINF_API_KEY        # host env var; injected into the sandbox and the verifier
-wandb:
-  project: harbor-slime-grpo
-  group: <name>
-```
-
-`launch.sh --dry-run` prints every variable the pipeline receives, builds the
-prompt list and renders the Polar config, so the mapping is never hidden.
-
-### Bring your own tasks
-
-1. Put them in the layout above. Existing Harbor datasets export into it directly
-   (`harbor datasets download <name> --export -o <dir>`) as long as `task.toml`
-   names a pullable `docker_image`; datasets that ship only a `Dockerfile` need
-   the images built and pushed first (see `examples/tmax-15k/build_images.py`).
-2. Point `tasks.dir` at the directory. Nothing else changes.
-3. If the tasks need staging (data copied into the workdir, services started),
-   add `environment/files/setup.sh`; it runs in the container before the agent.
-
-Rewards are whatever `test.sh` writes. Slime sees a scalar in [0, 1]; the bridge
-drops groups whose rewards are all equal (`drop_zero_variance_groups`) and scores
-timeouts as 0 (`timeout_reward_zero`), both configurable.
+Check a new dataset with `launch.sh <cfg> --dry-run`, then a 1-node smoke
+(`rollout.batch_size: 2`, `n_samples_per_prompt: 4`, `num_steps: 2`) before
+committing GPUs. For long-trace tasks, an eval-only run (`num_steps: 0` with
+`eval.prompt_data`) at a generous `sglang_context_length` shows the
+trace-length distribution and picks the trace cap.
 
 ## Multi-node
 
 The trainer takes `actor_num_gpus` GPUs and every other GPU in the Ray cluster
-serves an SGLang engine. On more than one node the trainer must take whole nodes
-(slime v0.3.0 assigns engine addresses per node), so 2 nodes = 8 train / 8 serve,
-3 nodes = 8 train / 16 serve. `internal/head_entry.sh <config>` runs on the first
-node: it starts `internal/ray_worker_join.sh` on the others with `srun`, exports
-the head IP and bind hosts, then runs `launch.sh`. `run.sh` waits for all Ray
-nodes before submitting the job.
+serves an SGLang engine. On more than one node the trainer must take whole
+nodes (slime assigns engine addresses per node): 2 nodes = 8 train / 8 serve,
+3 nodes = 8 train / 16 serve. `internal/head_entry.sh <config>` runs on the
+first node of the allocation: it starts `internal/ray_worker_join.sh` on the
+others with `srun`, exports the head IP and bind hosts, then runs `launch.sh`.
+`run.sh` waits for all Ray nodes before submitting the job.
 
-Sandboxes are CPU work (the agent CLI, the task container, the verifier) and
-run wherever a Polar gateway node runs. `cluster.sandbox_nodes: head` keeps one
-gateway on the head; `all` puts one on every node (`node-01` head, `node-02`..
-workers), each with `harness.max_run_workers` slots, and the rollout server
-dispatches to the least-loaded healthy one. Under slurm `run.sh` starts the
-worker gateways itself with `srun`; without slurm it uses `ssh <host>`, or start
-them by hand: `polar serve_gateway -c $WORKROOT/harbor_slime_grpo/<run>/topology.yaml
---node-id node-0N` on each worker, and export `WORKER_HOSTS`/`WORKER_IPS`
-(comma lists) before `launch.sh`. Without slurm, run `ray_worker_join.sh <head-ip>`
-on each worker and `RAY_HEAD_IP=<ip> POLAR_BIND_HOST=0.0.0.0
-POLAR_PUBLIC_HOST=<ip> bash launch.sh <config>` on the head.
+Sandboxes are CPU work (agent CLI, task container, verifier) and run wherever a
+Polar gateway runs. `cluster.sandbox_nodes: all` puts one gateway on every node
+(`node-01` head, `node-02`.. workers, started with `srun`), each with
+`harness.max_run_workers` slots; `head` keeps one on the head. Multi-node
+without slurm is untested.
 
-Ports (`POLAR_ROLLOUT_PORT` 8080, `POLAR_GATEWAY_PORT` 8100, `SGLANG_ROUTER_PORT`
-9000, Ray 8265/6379) are environment knobs; preflight refuses ports already in use.
+Ports (`POLAR_ROLLOUT_PORT` 8080, `POLAR_GATEWAY_PORT` 8100,
+`SGLANG_ROUTER_PORT` 9000, Ray 8265/6379) are environment knobs; preflight
+refuses ports already in use.
 
-## Sandboxes: Apptainer, harness, environment
+## Trace length
 
-- **Images.** One SIF per distinct `docker_image`, pulled once into
-  `APPTAINER_IMAGE_DIR` (`$WORKROOT/harbor_sif_images`). `HARBOR_SIF_SEED_DIR`
-  reuses SIFs from an existing Harbor cache. Docker Hub rate limits apply; set
-  `APPTAINER_DOCKER_USERNAME/PASSWORD` for large pulls.
-- **Harness.** Built once by `internal/prepare_harness.sh` into `$WORKROOT/harbor_harness`
-  and bind-mounted read-only at the same path in every container, so task images
-  need nothing preinstalled: Node CLIs under `node/`, mini-swe-agent as a uv tool
-  with its own Python 3.12. No per-trial install, no egress from the sandbox.
-- **Container environment.** `internal/polar_config.yaml` sets `HOME=/polar/session/home`,
-  prepends the harness to `PATH`, mounts `/harbor_data`, uses host networking, and
-  writes to a host-backed overlay (Polar's Apptainer runtime). Edit the template
-  for image-specific needs (extra `PATH` entries, `LD_LIBRARY_PATH`, GPUs).
-- **Length.** The trainer drops any trace longer than
-  `max_tokens_per_gpu x context_parallel_size` (a fully masked placeholder takes its
-  place). Keep `sglang_context_length` equal to that cap so the agent cannot produce
-  a trace the trainer will censor; raise the cap with more CP (more trainer GPUs) or
-  more tokens per GPU (memory permitting; 16384 fits H100-80GB for 9B at TP4).
+The trainer drops any trace longer than `max_tokens_per_gpu x
+context_parallel_size` (a fully masked placeholder takes its place; see
+`overlong_policy`). Keep `sglang_context_length` equal to that cap so the agent
+cannot produce a trace the trainer will censor; raise the cap with more CP (more
+trainer GPUs) or more tokens per GPU (memory permitting).
 
 ## Watching a run
 
-Per-session agent logs and artifacts are under
-`$WORKROOT/harbor_slime_grpo/<run>/sessions/session-<id>/logs/agent/` on every
-sandbox host. Slime's step metrics go to wandb and the Ray job log, not to your shell. Watch
-`$SAVE_ROOT/<run>/latest_checkpointed_iteration.txt`, wandb, or the Polar
-dashboard (`polar dashboard -c $WORKROOT/harbor_slime_grpo/<run>/topology.yaml`).
-Useful metrics: `polar/reward_mean`, `polar/dropped_*` (should be 0 except
-zero-variance), `polar/rollout_success_rate`, and the TIS statistics (`tis`,
-`tis_abs`, `tis_clipfrac`): with `sync: true` and weight sync every step, `tis`
-should sit at 1.000 and `tis_clipfrac` at 0. Anything else points at a
-sampling/trainer mismatch or a tokenization mismatch in prefix merging.
-
-## Differences from the TMax paper's training run
-
-This is a reusable base, not a reproduction. Compared with the recipe in the TMax
-paper (Table 13 and section 4.1):
-
-| | TMax paper | this example |
-|---|---|---|
-| harness | their mini-SWE-agent-derived Vanillux agent | Polar's `mini_swe_agent` preset (or any listed harness) |
-| algorithm | DPPO (binary TV mask, threshold 0.1), token-level loss | GRPO with TIS, per-trajectory aggregation, clip 0.2/0.28 |
-| async | 4 async steps, active sampling | synchronous by default (`sync: false` gives 1-step async) |
-| batch | 8 prompts x 32 samples | 8 x 16 (config) |
-| length | 2k prompt + 65k response, 16k per turn, 64 steps | trace cap `max_tokens_per_gpu x CP`; 64 steps |
-| LM head | FP32 (they report it as important for Qwen3.5 mismatch) | bf16; watch `tis_*` |
-| infra | open-instruct + vLLM, 2 train + 6 inference nodes | Polar + Slime (Megatron + SGLang), 1 train + 1 inference node |
-| data | all 14.6k tasks | `tasks.n` random sample (32 in the config) |
+Per-session agent logs and artifacts (with `harness.keep_sessions`) are under
+`$WORKROOT/harbor_slime_grpo/<run>/sessions/` on every sandbox host. Slime's
+step metrics go to wandb and the Ray driver log (in the job log), not to your
+shell. Watch `$WORKROOT/ckpt/harbor_slime_grpo/<run>/latest_checkpointed_iteration.txt`,
+wandb, or the Polar dashboard (`polar dashboard -c $WORKROOT/harbor_slime_grpo/<run>/topology.yaml`).
+Useful metrics: `polar/reward_mean`, `polar/dropped_*` (0 except zero-variance),
+`polar/rollout_success_rate`, and the TIS statistics (`tis`, `tis_abs`,
+`tis_clipfrac`): with `sync: true` and weight sync every step, `tis` should sit
+at 1.000 and `tis_clipfrac` at 0. Anything else points at a sampler/trainer
+mismatch or a tokenization mismatch in prefix merging.
 
 ## Files
 
 | Path | Purpose |
 |---|---|
-| `launch.sh` | Entry point: `launch.sh configs/<run>.yaml [--dry-run]` |
-| `slurm_launch.sh` | Submit a config as a multi-node sbatch job (node count from the config) |
-| `configs/` | Run configs: 2-node reference and 1-node smoke per dataset |
-| `datasets/swegym_lite.py`, `datasets/swegym_test.sh.tmpl` | SWE-Gym / SWE-Gym-Lite HF dataset -> task directory, with the Harbor adapter's verifier |
-| `datasets/tmax15k.py` | TMax-15k HF dataset -> task directory |
-| `internal/` | Everything the launcher runs for you: `pipeline.sh`, `run.sh`, `convert_weights.sh`, `head_entry.sh`, `ray_worker_join.sh`, `prepare_tasks.py`, `prepare_images.sh`, `prepare_harness.sh`, Polar templates, Megatron model args |
-| `internal/setup/` | Preflight and environment scripts; `stack/` holds the locked python environment (shared recipe with the swegym example) |
+| `launch.sh` | Entry point: setup (idempotent), prompts, render, run; `--dry-run`, `--setup-only`, `--slurm` |
+| `prepare_images.sh` | Pull task images as SIFs for a task directory or a run config |
+| `configs/` | `smoke-1node.yaml`, `swegym-lite-9b-2node.yaml` |
+| `datasets/swegym_lite.py` (+ `swegym_test.sh.tmpl`) | SWE-Gym / SWE-Gym-Lite HF dataset -> task directory |
+| `internal/render.py` | Config schema and defaults; renders `polar_config.yaml`, `topology.yaml` and the slime argument list per run |
+| `internal/run.sh` | Processes: Polar rollout server + gateways, Ray, `ray job submit` |
+| `internal/prepare_tasks.py` | Task directory -> prompt JSONL, image list, SIF presence check |
+| `internal/prepare_harness.sh`, `internal/convert_weights.sh` | Shared harness dir; HF -> torch_dist conversion |
+| `internal/head_entry.sh`, `internal/ray_worker_join.sh` | Slurm multi-node entry and worker loop |
+| `internal/polar_config.yaml`, `internal/topology.yaml` | Polar templates (the task template is where sandbox env, mounts and the verifier are defined) |
+| `internal/model_args/` | Megatron architecture args per model |
+| `internal/setup/` | Preflight and environment scripts; `stack/` holds the locked python environment |

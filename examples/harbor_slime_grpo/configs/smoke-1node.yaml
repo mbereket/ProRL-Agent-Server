@@ -1,10 +1,9 @@
-# Single-node smoke: 2 tasks x 4 samples x 2 steps. Validates images, harness,
-# Polar prefix merging, the Harbor verifier and one Slime update before a real run.
-#   bash launch.sh configs/tmax15k-smoke-1node.yaml
-name: tmax15k-smoke-1node
+# Single-node smoke on SWE-Gym-Lite: 2 tasks x 4 samples x 2 steps (4 GPUs train, 4 serve).
+#   bash launch.sh configs/smoke-1node.yaml
+name: swegym-lite-smoke-1node
 
 tasks:
-  dir: ${WORKROOT}/tasks/tmax15k
+  dir: ${WORKROOT}/tasks/swegym-lite   # python datasets/swegym_lite.py --output <dir>; then prepare_images.sh <dir>
   n: 2
   seed: 0
 
@@ -25,10 +24,10 @@ model:
 
 cluster:
   num_nodes: 1
-  actor_num_gpus: 4                      # 4 trainer GPUs + 4 engine GPUs on one node
+  actor_num_gpus: 4
   tp_size: 4
   context_parallel_size: 1
-  sandbox_nodes: head
+  sandbox_nodes: all
 
 rollout:
   batch_size: 2

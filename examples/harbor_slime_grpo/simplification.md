@@ -1,5 +1,8 @@
 # Simplification plan
 
+STATUS 09-06: sections 1-3 implemented on branch simplify-harbor-example (see
+`git log`); pending cluster smoke on dfw. This file is deleted once the smoke passes.
+
 Working notes for cutting harbor_slime_grpo down. Nothing here is applied yet;
 each section records the current state, the target, and the edits.
 

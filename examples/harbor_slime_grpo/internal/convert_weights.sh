@@ -1,56 +1,20 @@
 #!/usr/bin/env bash
-# Convert Qwen3.5 HF weights to Megatron torch_dist format for Slime training.
-# Qwen3.5-4B is a VLM checkpoint (Qwen3_5ForConditionalGeneration) with hybrid
-# attention (1 full + 3 GatedDeltaNet linear per 4 layers).  Weight loading goes
-# through slime_plugins.mbridge.qwen3_5 (text_config-aware).
+# Convert an HF checkpoint to Megatron torch_dist format for Slime.
+# Environment (from launch.sh): HF_CHECKPOINT, TORCH_DIST_DIR, MODEL_ARGS_FILE,
+# SLIME_DIR, MEGATRON_DIR, PYTHON_BIN, PROJECT_ROOT. Qwen3.5 checkpoints are VLMs;
+# weight loading goes through slime_plugins.mbridge.qwen3_5 (text_config-aware).
 set -euo pipefail
-
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
-
-SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
-MEGATRON_DIR="${MEGATRON_DIR:-${PROJECT_ROOT}/Megatron-LM}"
-# Environment written by pipeline.sh (CUDA compat libs, toolkit, venv).
-ENV_FILE="${ENV_FILE:-${WORKROOT:-${PROJECT_ROOT}/tmp}/env.sh}"
-# shellcheck disable=SC1090
-[ -f "${ENV_FILE}" ] && source "${ENV_FILE}"
-PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python3}"
-if [ ! -x "${PYTHON_BIN}" ]; then
-    PYTHON_BIN="$(command -v python3 || command -v python)"
-fi
-PYTHON_BIN_DIR="$(cd -- "$(dirname -- "${PYTHON_BIN}")" &>/dev/null && pwd)"
-export PATH="${PYTHON_BIN_DIR}:${PATH}"
-
-if [ ! -f "${SLIME_DIR}/tools/convert_hf_to_torch_dist.py" ]; then
-    echo "ERROR: Slime not found at ${SLIME_DIR}. Clone it first:"
-    echo "  git clone git@github.com:THUDM/slime.git ${SLIME_DIR}"
-    exit 1
-fi
-
-HF_CHECKPOINT="${HF_CHECKPOINT:-Qwen/Qwen3.5-4B}"
-OUTPUT_DIR="${TORCH_DIST_DIR:-${PROJECT_ROOT}/tmp/checkpoints/${HF_CHECKPOINT##*/}_torch_dist}"
-mkdir -p "$OUTPUT_DIR"
-
-# MODEL_ARGS_FILE: a file in model_args/ (qwen3_5_9b.sh default, qwen3_5_4b.sh, qwen3_8b.sh) or an absolute path.
-MODEL_ARGS_FILE="${MODEL_ARGS_FILE:-qwen3_5_9b.sh}"
-case "${MODEL_ARGS_FILE}" in /*) ;; *) MODEL_ARGS_FILE="${SCRIPT_DIR}/model_args/${MODEL_ARGS_FILE}" ;; esac
+: "${HF_CHECKPOINT:?}" "${TORCH_DIST_DIR:?}" "${MODEL_ARGS_FILE:?}" "${SLIME_DIR:?}" "${MEGATRON_DIR:?}" "${PYTHON_BIN:?}" "${PROJECT_ROOT:?}"
 # shellcheck disable=SC1090
 source "${MODEL_ARGS_FILE}"
-
-echo "Converting ${HF_CHECKPOINT} -> ${OUTPUT_DIR}"
-
-CUDA_DEVICE_MAX_CONNECTIONS=1 \
-PYTHONPATH="${MEGATRON_DIR}:${SLIME_DIR}:${PROJECT_ROOT}/src" \
-torchrun --nproc_per_node 1 \
-    "${SLIME_DIR}/tools/convert_hf_to_torch_dist.py" \
+mkdir -p "${TORCH_DIST_DIR}"
+echo "converting ${HF_CHECKPOINT} -> ${TORCH_DIST_DIR}"
+CUDA_DEVICE_MAX_CONNECTIONS=1 PYTHONPATH="${MEGATRON_DIR}:${SLIME_DIR}:${PROJECT_ROOT}/src" \
+"$(dirname "${PYTHON_BIN}")/torchrun" --nproc_per_node 1 "${SLIME_DIR}/tools/convert_hf_to_torch_dist.py" \
     "${MODEL_ARGS[@]}" \
-    --hf-checkpoint "$HF_CHECKPOINT" \
-    --save "$OUTPUT_DIR" \
-    --tensor-model-parallel-size 1 \
-    --pipeline-model-parallel-size 1 \
-    --context-parallel-size 1 \
-    --expert-model-parallel-size 1 \
-    --expert-tensor-parallel-size 1 \
+    --hf-checkpoint "${HF_CHECKPOINT}" \
+    --save "${TORCH_DIST_DIR}" \
+    --tensor-model-parallel-size 1 --pipeline-model-parallel-size 1 --context-parallel-size 1 \
+    --expert-model-parallel-size 1 --expert-tensor-parallel-size 1 \
     --no-gradient-accumulation-fusion
-
-echo "Done: ${OUTPUT_DIR}"
+echo "done: ${TORCH_DIST_DIR}"

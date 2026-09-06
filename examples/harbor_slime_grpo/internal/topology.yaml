@@ -1,31 +1,30 @@
-# Polar topology template. pipeline.sh fills @TOKENS@; run.sh expands ${VARS},
-# then duplicates the gateway node once per sandbox host (expand_gateway_nodes.py:
-# node-01 = head, node-02.. = workers when cluster.sandbox_nodes is `all`).
-# Single node: bind/public host 127.0.0.1. Multi-node: POLAR_BIND_HOST=0.0.0.0
-# and POLAR_PUBLIC_HOST=<head IP> so Ray actors on other nodes can reach it.
-# save_dir is absolute on the shared filesystem: gateways on every host write
-# session files there and the head's rollout server reads them back.
+# Polar topology. render.py fills the placeholders and duplicates the gateway
+# node once per sandbox host (node-01 = head, node-02.. = workers when
+# cluster.sandbox_nodes is all). Single node: bind host 127.0.0.1. Multi-node:
+# 0.0.0.0 with public URLs on the head IP so Ray actors on other nodes reach it.
+# save_dir is on the shared filesystem: gateways on every host write session
+# files there and the head's rollout server reads them back.
 rollout:
-  host: ${POLAR_BIND_HOST}
-  port: ${POLAR_ROLLOUT_PORT}
-  public_url: ${POLAR_ROLLOUT_URL}
+  host: ${BIND_HOST}
+  port: ${ROLLOUT_PORT}
+  public_url: ${ROLLOUT_URL}
   save_dir: ${RUN_DIR}/rollout_results
 
 gateway:
   heartbeat_interval_seconds: 30
   nodes:
     - id: node-01
-      host: ${POLAR_BIND_HOST}
-      port: ${POLAR_GATEWAY_PORT}
-      public_url: ${POLAR_GATEWAY_URL}
-      max_init_workers: "@MAX_RUN_WORKERS@"   # per sandbox host
-      max_run_workers: "@MAX_RUN_WORKERS@"
-      max_postrun_workers: "@MAX_RUN_WORKERS@"
+      host: ${BIND_HOST}
+      port: ${GATEWAY_PORT}
+      public_url: ${GATEWAY_URL}
+      max_init_workers: ${MAX_RUN_WORKERS}   # per sandbox host
+      max_run_workers: ${MAX_RUN_WORKERS}
+      max_postrun_workers: ${MAX_RUN_WORKERS}
       model_served: ${MODEL_SERVED}
       inference:
         engine: sglang
-        base_url: ${SGLANG_ROUTER_BASE_URL}
+        base_url: ${ROUTER_URL}
         # Sample from the distribution the trainer optimizes (T=1, top_p=1, top_k=-1),
         # whatever the harness asks for.
         training_sampling: true
-        enable_thinking: "@ENABLE_THINKING@"   # dropped when the config leaves harness.thinking unset
+        enable_thinking: null   # set from harness.thinking; removed when unset

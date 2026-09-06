@@ -2,12 +2,11 @@
 # SWE-Gym images), two 8-GPU nodes (node A: TP4 x CP2 trainer, node B: 8
 # SGLang engines). Synchronous.
 #
-#   bash slurm_launch.sh --config configs/swegym-lite-qwen35-9b-2node.yaml --partition <p> --account <a>
+#   bash launch.sh configs/swegym-lite-9b-2node.yaml --slurm --partition <p> --account <a>
 name: swegym-lite-qwen35-9b-2node
 
 tasks:
-  dir: ${WORKROOT}/tasks/swegym-lite
-  dataset: swegym_lite                   # created by datasets/swegym_lite.py if missing
+  dir: ${WORKROOT}/tasks/swegym-lite   # python datasets/swegym_lite.py --output <dir>; then prepare_images.sh <dir>
   # all 230 tasks; set n/seed for a subset
 
 harness:
