@@ -29,8 +29,9 @@ else
 fi
 SIF_DIR="${2:-${APPTAINER_IMAGE_DIR:-${WORKROOT:?set WORKROOT or pass sif_dir}/harbor_sif_images}}"
 JOBS="${APPTAINER_JOBS:-4}"
-APPTAINER="${POLAR_APPTAINER_BIN:-$(command -v apptainer || command -v singularity || true)}"
-[ -x "${APPTAINER}" ] || die "apptainer/singularity not found (set POLAR_APPTAINER_BIN)"
+# POLAR_APPTAINER_BIN, else PATH, else the unprivileged install setup puts under WORKROOT.
+APPTAINER="${POLAR_APPTAINER_BIN:-$(command -v apptainer || command -v singularity || ls "${WORKROOT:-/nonexistent}"/apptainer/*/bin/apptainer 2>/dev/null | tail -1 || true)}"
+[ -x "${APPTAINER}" ] || die "apptainer/singularity not found (set POLAR_APPTAINER_BIN, or run launch.sh <cfg> --setup-only which installs and pulls)"
 
 mkdir -p "${SIF_DIR}"
 LIST="$(mktemp)"; trap 'rm -f "${LIST}"' EXIT

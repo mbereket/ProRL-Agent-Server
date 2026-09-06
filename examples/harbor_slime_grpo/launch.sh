@@ -3,13 +3,14 @@
 #
 #   bash launch.sh configs/<run>.yaml                  # run here (single node, or the head of a bare multi-node setup)
 #   bash launch.sh configs/<run>.yaml --dry-run        # resolve config, build prompts, render Polar configs; no GPUs
-#   bash launch.sh configs/<run>.yaml --setup-only     # environment, images check, harness, checkpoint; no training
+#   bash launch.sh configs/<run>.yaml --setup-only     # environment, task images, harness, checkpoint; no training
 #   bash launch.sh configs/<run>.yaml --slurm --partition <p> --account <a> [--time 04:00:00] [--gpus-per-node 8] [-- <sbatch args>]
 #
 # Setup is idempotent: every step skips itself when its output exists. Machine
 # settings (WORKROOT, ports, WANDB_API_KEY, APPTAINER_*) are environment
-# variables; see README.md. Before the first run: stage the task directory and
-# `bash prepare_images.sh <task_dir>` (needs the registry; do it on a login node).
+# variables; see README.md. Before the first run: stage the task directory, then
+# either `launch.sh <cfg> --setup-only` or `prepare_images.sh <task_dir>` pulls the
+# task images (needs the registry; do it where it is reachable).
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 export PROJECT_ROOT="$(cd -- "${HERE}/../.." && pwd)"
@@ -83,7 +84,11 @@ else
     export PYTHON_BIN
 fi
 
-# ── Tasks -> prompts (images must already be pulled: prepare_images.sh) ────
+# ── Tasks -> prompts. Images: --setup-only pulls them, a run only checks them ──
+if [ "${SETUP_ONLY}" = 1 ]; then
+    log "task images"
+    bash "${HERE}/prepare_images.sh" "${CONFIG}"
+fi
 log "tasks"
 select=(--mount-root "${TASKS_MOUNT_ROOT}" --seed "${TASKS_SEED}")
 [ -n "${TASKS_N}" ] && select+=(--n "${TASKS_N}")
