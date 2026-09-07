@@ -15,7 +15,9 @@ Slime calls one entry point, `generate_rollout_polar_async`, wired in via
   listener with a polling safety net;
 - tracks rollout ids and policy versions, stamps Polar scheduler metadata
   (`group_id`, `policy_version`, `rollout_step`) onto every task, and keeps
-  async admission bounded to the current Slime rollout request;
+  async admission keeps `rollout_batch_size x polar_max_async_level` groups in
+  flight while Slime has a rollout outstanding (a warm pool across steps;
+  Slime's train_async loop itself only requests one rollout ahead);
 - converts each Polar `Trajectory` back into Slime `Sample`s (one per trace,
   grouped with Slime 0.3.0 `group_id` so all traces from a trajectory count
   once), dropping empty or oversized traces;

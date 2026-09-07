@@ -104,14 +104,19 @@ def test_complete_accept_fraction_requires_trainable_completed_sessions() -> Non
     )
 
 
-def test_async_worker_only_admits_requested_groups() -> None:
+def test_async_worker_keeps_a_pool_of_batch_times_async_level_groups() -> None:
+    """Admission is gated by an outstanding Slime request but sized to the pool depth
+    (rollout_batch_size x max_async_level = 4 x 2 here), not to the request: Slime only
+    asks one rollout ahead, and the groups beyond its request feed the next rollouts."""
     worker = AsyncPolarRolloutWorker(_worker_args(), data_source=SimpleNamespace())
 
-    assert worker._can_admit_group({}, 0) is False
+    assert worker._can_admit_group({}, 0) is False  # nothing requested: pool idle
 
     worker.request_groups(1)
     assert worker._can_admit_group({}, 0) is True
-    assert worker._can_admit_group({object(): SimpleNamespace()}, 1) is False
+    assert worker._can_admit_group({object(): SimpleNamespace()}, 1) is True  # beyond the request, within the pool
+    full = {object(): SimpleNamespace() for _ in range(8)}
+    assert worker._can_admit_group(full, 8) is False  # pool depth reached
 
     worker._mark_delivered(1)
     assert worker._can_admit_group({}, 0) is False

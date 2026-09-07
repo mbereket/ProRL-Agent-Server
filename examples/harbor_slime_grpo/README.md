@@ -98,7 +98,7 @@ harness:                              # WHICH agent solves the tasks
   session_timeout: 1500               # per-attempt budget: agent + verifier + margin (seconds)
   request_timeout: 1500               # per-LLM-request timeout at the gateway
   max_run_workers: 16                 # concurrent sandboxes per sandbox node
-  max_async_level: 1                  # rollout steps the sampler may run ahead (>1 needs training.sync: false)
+  max_async_level: 1                  # groups in flight = batch_size x this (a warm pool across steps; >1 needs training.sync: false). Accepted staleness up to this + 1 steps
   path_prepend: ""                    # first on the agent PATH inside every sandbox (e.g. an image's conda env)
   ld_library_path: ""                 # LD_LIBRARY_PATH inside the sandbox
   keep_sessions: false                # keep per-session dirs (agent logs, verifier output); millions of inodes on long runs

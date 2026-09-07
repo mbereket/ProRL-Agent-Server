@@ -60,7 +60,7 @@ SCHEMA = {
         "session_timeout": 3000,     # agent + verifier + margin (s)
         "request_timeout": 3600,     # per LLM request at the gateway (s)
         "max_run_workers": 16,       # concurrent sandboxes per sandbox node
-        "max_async_level": 1,        # rollout steps the sampler may run ahead (>1 needs training.sync false)
+        "max_async_level": 1,        # sessions in flight = batch_size x n_samples x this; >1 keeps generating across steps (needs training.sync false); accepted staleness < this + 1
         "thinking": None,            # Qwen3: force chat-template thinking on/off; None = template default (off)
         "keep_sessions": False,      # keep per-session dirs (agent logs, verifier output)
         "path_prepend": "",          # first on the agent PATH in every sandbox, after per-task agent_path_prepend

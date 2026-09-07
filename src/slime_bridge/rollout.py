@@ -999,10 +999,13 @@ class AsyncPolarRolloutWorker:
             + self._shared_completed_buffer_size()
             + self.deferred_queue.qsize()
         )
-        admission_window = min(
-            requested_groups,
-            self._batch_size * self.config.max_async_level,
-        )
+        # Pool depth: rollout_batch_size x max_async_level groups (running or finished
+        # and not yet consumed), as long as Slime has an outstanding rollout request.
+        # Slime's train_async loop only ever requests one rollout ahead, so bounding
+        # admission to the request would idle the pool for the tail of every step;
+        # groups admitted beyond the request are consumed by the following rollouts
+        # (staleness accounted per group, capped by max_off_policy_steps).
+        admission_window = self._batch_size * self.config.max_async_level
         return owned_groups < admission_window
 
     def _task_rejection_reason(self, task_result: TaskResult, group: list[Any]) -> str | None:
