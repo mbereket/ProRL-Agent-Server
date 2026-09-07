@@ -79,7 +79,7 @@ SCHEMA = {
         "tp_size": 4,
         "context_parallel_size": 1,  # trace cap = max_tokens_per_gpu x CP
         "sandbox_nodes": "all",      # head | all: nodes whose CPUs run sandboxes (one Polar gateway each)
-        "gpus_per_engine": 1,        # SGLang engine TP: 1 = one engine per GPU; 2 halves per-token latency when generation is latency-bound
+        "gpus_per_engine": 1,        # SGLang engine TP. Higher = fewer engines, each faster per token; pays off while concurrent sessions per engine GPU stay well under ~16
     },
     "rollout": {
         "batch_size": 8,             # tasks per step
