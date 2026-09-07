@@ -14,6 +14,9 @@ RAY_GCS_PORT="${2:-${RAY_GCS_PORT:-6379}}"
 : "${ENV_FILE:?}"
 NUM_GPUS="${RAY_WORKER_NUM_GPUS:-$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')}"
 export HF_HOME="${HF_HOME:-${WORKROOT:?}/hf_home}"
+# Same heartbeat tolerance as the head (run.sh): a raylet on a busy trainer node must not be declared dead after 60 s.
+export RAY_health_check_failure_threshold="${RAY_health_check_failure_threshold:-30}"
+export RAY_health_check_timeout_ms="${RAY_health_check_timeout_ms:-30000}"
 
 echo "[worker $(hostname)] waiting for ray head at ${HEAD_IP}:${RAY_GCS_PORT} (${NUM_GPUS} GPUs)"
 while :; do

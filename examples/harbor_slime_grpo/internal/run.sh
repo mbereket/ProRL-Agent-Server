@@ -106,6 +106,13 @@ for ((i = 0; i < ${#SANDBOX_IPS[@]}; i++)); do
 done
 
 # ── Ray ────────────────────────────────────────────────────────────────────
+# Node health: Ray's default marks a node dead after ~60 s of missed raylet
+# heartbeats. Trainer nodes here run 8 ranks with a CPU-offloaded optimizer plus
+# 32 sandboxes; a busy raylet lagging its heartbeats killed a run (hel 1026921,
+# "missing too many heartbeats"). Tolerate ~5 min before declaring a node dead.
+# ray_worker_join.sh sets the same for the worker nodes.
+export RAY_health_check_failure_threshold="${RAY_health_check_failure_threshold:-30}"
+export RAY_health_check_timeout_ms="${RAY_health_check_timeout_ms:-30000}"
 echo "=== Ray head on ${RAY_HEAD_IP} (${GPUS_PER_NODE} local GPUs, gcs :${RAY_GCS_PORT}) ==="
 ray stop --force 2>/dev/null || true
 ray start --head --node-ip-address "${RAY_HEAD_IP}" --port "${RAY_GCS_PORT}" --dashboard-port "${RAY_DASHBOARD_PORT}" \
