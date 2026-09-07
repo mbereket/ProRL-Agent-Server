@@ -6,8 +6,9 @@
 
 Reads rollout_results/task_*/ses_*.json and train.jsonl, writes <run_dir>/analysis/:
   sessions.csv        one row per session: task, status, reward, turns, traces, tokens, timing, node
-  summary.txt         what is printed: outcomes, reward histogram, per-task table, trace lengths
-                      against caps, wallclock distribution, throughput and step-time estimate
+  summary.txt         what is printed: outcomes, reward histogram, per-step and per-task tables,
+                      chain breaks (sessions split into several traces, with the cause), trace
+                      lengths against caps, wallclock distribution, throughput and step-time estimate
   transcripts/<task>/<session>.md   readable trajectories (prompt, every turn, tool calls and
                       results truncated to --max-chars, verifier output tail)
 
@@ -51,7 +52,9 @@ def load_sessions(run_dir: Path) -> list[dict]:
         lengths = [len(t.get("prompt_ids", [])) + len(t.get("response_ids", [])) for t in traces]
         timing = d.get("timing") or {}
         gi = (d.get("metadata") or {}).get("group_id", md.get("group_id"))
+        step = (d.get("metadata") or {}).get("rollout_step", md.get("rollout_step"))
         rows.append({
+            "step": step,
             "task": prompts[gi] if isinstance(gi, int) and gi < len(prompts) else f"group{gi}",
             "group": gi,
             "session_id": d["session_id"],
@@ -70,11 +73,37 @@ def load_sessions(run_dir: Path) -> list[dict]:
             "run_s": timing.get("run_ms", 0) / 1000,
             "postrun_s": timing.get("postrun_ms", 0) / 1000,
             "node": d.get("node_id", ""),
+            "chain_break": first_chain_break(traces),
             "_path": p,
             "_traces": traces,
             "_verifier_tail": ev.get("verifier_output_tail", ""),
         })
     return rows
+
+
+def first_chain_break(traces: list[dict]) -> str:
+    """Why a session became more than one trace: the first replayed message that is not
+    what the model generated (role and a snippet), or the first message the next prompt
+    added beyond the previous trace's history."""
+    if len(traces) < 2:
+        return ""
+    a, b = traces[0], traces[1]
+    expected = a.get("prompt_messages", []) + a.get("response_messages", [])
+    got = b.get("prompt_messages", [])
+
+    def brief(m: dict) -> str:
+        c = m.get("content")
+        text = c if isinstance(c, str) else json.dumps(c) if c else ""
+        calls = ",".join(t["function"]["name"] for t in m.get("tool_calls") or [])
+        return f"{m.get('role')}{'(' + calls + ')' if calls else ''}: {text[:60]!r}"
+
+    for x, y in zip(expected, got):
+        if brief(x) != brief(y):
+            return f"replayed {brief(y)} where generated {brief(x)}"
+    added = got[len(expected):]
+    if added:
+        return f"next prompt added {brief(added[0])}"
+    return "token divergence inside an identical message list (template rendering)"
 
 
 def simulate(durations: list[float], workers: int) -> float:
@@ -127,6 +156,23 @@ def summarize(rows: list[dict], caps: list[int], workers: int, step_sessions: in
         sim = simulate(total, workers)
         out.append(f"estimate on {workers} slots: this batch {sim / 60:.1f} min; a step of {step_sessions} sessions "
                    f"{simulate((total * (step_sessions // max(1, n) + 1))[:step_sessions], workers) / 60:.1f} min")
+    steps = sorted({r["step"] for r in rows if r["step"] is not None})
+    if len(steps) > 1:
+        out.append("")
+        out.append(f"{'step':>4} {'sess':>4} {'succ':>5} {'mean_r':>6} {'traces/s':>8} {'p50_tok':>8} {'over_cap':>8} {'p50_run_s':>9} {'max_run_s':>9}")
+        for st in steps:
+            rs = [r for r in rows if r["step"] == st]
+            L_ = [r["longest_trace_tokens"] for r in rs]
+            out.append(f"{st:>4} {len(rs):>4} {sum(1 for r in rs if r['reward'] > 0) / len(rs):>5.2f} "
+                       f"{statistics.fmean(r['reward'] for r in rs):>6.2f} {statistics.fmean(r['traces'] for r in rs):>8.2f} "
+                       f"{pct(L_, .5):>8.0f} {sum(1 for x in L_ if x > caps[-1]) / len(rs):>8.2f} "
+                       f"{pct([r['run_s'] for r in rs], .5):>9.0f} {max(r['run_s'] for r in rs):>9.0f}")
+    breaks = [r for r in rows if r["traces"] > 1]
+    if breaks:
+        out.append("")
+        out.append(f"chain breaks: {len(breaks)} session(s) with >1 trace (should be 0 for codex)")
+        for r in sorted(breaks, key=lambda r: -r["traces"])[:10]:
+            out.append(f"  {r['task'][:24]} step {r['step']} {r['traces']} traces: {r['chain_break']}")
     # per task
     tasks = sorted({r["task"] for r in rows})
     out.append("")
