@@ -11,6 +11,7 @@ polar_request_timeout: ${REQUEST_TIMEOUT}
 polar_apptainer_image_dir: "${IMAGE_DIR}"
 polar_harness_dir: "${HARNESS_DIR}"
 polar_harbor_dataset_dir: "${DATASET_DIR}"
+polar_run_dir: "${RUN_DIR}"                 # bridge-written files: eval/<dataset>/step_<k>.csv, occupancy.csv
 
 # Training-signal knobs (src/slime_bridge/README.md).
 polar_timeout_reward_zero: ${TIMEOUT_REWARD_ZERO}

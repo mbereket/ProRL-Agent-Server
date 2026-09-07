@@ -229,6 +229,17 @@ context_parallel_size` (a fully masked placeholder takes its place; see
 cannot produce a trace the trainer will censor; raise the cap with more CP (more
 trainer GPUs) or more tokens per GPU (memory permitting).
 
+## Assessing a run
+
+`analyze.py <run_dir>` reads `rollout_results/` and `train.jsonl` (on the cluster, or a
+copy pulled with rsync) and writes `<run_dir>/analysis/`: `sessions.csv` (one row per
+session: task, status, reward, turns, traces, longest-trace tokens, timing, node),
+`summary.txt` (reward histogram and per-task table, trace lengths against caps,
+agent wallclock distribution, sessions/hour and a step-time estimate for the
+configured sandbox slots) and `transcripts/<task>/<session>.md`, readable
+trajectories with every tool call and result. Run it after an eval-only run to
+check that trajectories look right and to pick the trace cap before training.
+
 ## Watching a run
 
 Per-session agent logs and artifacts (with `harness.keep_sessions`) are under
@@ -248,6 +259,7 @@ mismatch or a tokenization mismatch in prefix merging.
 |---|---|
 | `launch.sh` | Entry point: setup (idempotent), prompts, render, run; `--dry-run`, `--setup-only`, `--slurm` |
 | `prepare_images.sh` | Pull task images as SIFs for a task directory or a run config |
+| `analyze.py` | Sessions table, trace-length and wallclock distributions, transcripts from a run dir |
 | `configs/` | `smoke-1node.yaml`, `swegym-lite-9b-2node.yaml` |
 | `datasets/swegym_lite.py` (+ `swegym_test.sh.tmpl`) | SWE-Gym / SWE-Gym-Lite HF dataset -> task directory |
 | `internal/render.py` | Config schema and defaults; renders `polar_config.yaml`, `topology.yaml` and the slime argument list per run |
