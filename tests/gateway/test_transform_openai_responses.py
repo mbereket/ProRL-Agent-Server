@@ -876,3 +876,42 @@ def test_responses_request_folds_assistant_text_into_the_turns_tool_calls() -> N
         {"role": "tool", "tool_call_id": "call-b", "content": "ok"},
         {"role": "assistant", "content": "done"},
     ]
+
+
+def test_responses_request_folds_harness_notices_into_tool_results() -> None:
+    """Codex injects user-role notices inside the tool loop (unified-exec process-limit
+    warning, sub-agent notifications). As user messages they make Qwen's template drop
+    every earlier <think> block and break prefix merging on each turn; they must ride
+    inside the tool result instead, leaving the task as the only user query."""
+    transformer = OpenAIResponsesTransformer()
+    warning = "Warning: The maximum number of unified exec processes you can keep open is 60."
+    notice = '<subagent_notification>\n{"agent_path":"01a0"}\n</subagent_notification>'
+
+    transformed = transformer.transform_request(
+        {
+            "input": [
+                {"type": "message", "role": "user", "content": "analyze the files"},
+                {"type": "function_call", "call_id": "call-a", "name": "exec_command", "arguments": '{"cmd": "sleep 600"}'},
+                # notice BEFORE the tool output (codex's order for the process-limit warning)
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": warning}]},
+                {"type": "function_call_output", "call_id": "call-a", "output": "Process running with session ID 6311"},
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Still running."}]},
+                {"type": "function_call", "call_id": "call-b", "name": "exec_command", "arguments": '{"cmd": "sleep 600"}'},
+                {"type": "function_call_output", "call_id": "call-b", "output": "done"},
+                # notice AFTER the tool output
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": notice}]},
+                {"type": "function_call", "call_id": "call-c", "name": "exec_command", "arguments": '{"cmd": "cat r.json"}'},
+                {"type": "function_call_output", "call_id": "call-c", "output": "{}"},
+            ]
+        }
+    )
+
+    messages = transformed["messages"]
+    assert [m["role"] for m in messages].count("user") == 1
+    assert messages[0] == {"role": "user", "content": "analyze the files"}
+    tool_a = next(m for m in messages if m.get("tool_call_id") == "call-a")
+    assert tool_a["content"] == f"{warning}\n\nProcess running with session ID 6311"
+    tool_b = next(m for m in messages if m.get("tool_call_id") == "call-b")
+    assert tool_b["content"] == f"{notice}\n\ndone"
+    assert next(m for m in messages if m.get("tool_call_id") == "call-c")["content"] == "{}"
+    assert next(m for m in messages if m.get("tool_calls") and m["tool_calls"][0]["id"] == "call-b")["reasoning_content"] == "Still running."

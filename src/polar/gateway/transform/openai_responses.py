@@ -675,9 +675,12 @@ class OpenAIResponsesTransformer(BaseTransformer):
         pending_reasoning: str = ""
         pending_text: Any = None  # visible text of the turn whose tool calls are pending
         open_assistant_idx: int | None = None  # index in `messages` of an assistant text message that may still get tool calls
+        pending_interjections: list[str] = []  # harness-injected user text inside a tool loop, folded into the tool result
 
         def flush_tool_block() -> None:
-            nonlocal pending_tool_calls, pending_tool_outputs, pending_reasoning, pending_text
+            nonlocal pending_tool_calls, pending_tool_outputs, pending_reasoning, pending_text, pending_interjections
+            if pending_interjections and pending_tool_outputs:
+                fold_interjections_into(pending_tool_outputs[-1])
             messages.extend(
                 self._flush_tool_block(pending_tool_calls, pending_tool_outputs, pending_reasoning, pending_text)
             )
@@ -685,6 +688,31 @@ class OpenAIResponsesTransformer(BaseTransformer):
             pending_tool_outputs = []
             pending_reasoning = ""
             pending_text = None
+            pending_interjections = []
+
+        def fold_interjections_into(tool_message: dict[str, Any]) -> None:
+            """Prepend harness-injected notices to a tool result.
+
+            Codex inserts user-role items into the tool loop (the unified-exec
+            process-limit warning, sub-agent notifications). A user message there
+            makes Qwen's chat template drop the <think> blocks of every earlier
+            assistant turn, so the replayed prompt stops being a token-prefix
+            extension of the previous completion and prefix merging starts a new
+            trace on every turn. Carried inside the tool result the model still
+            sees the notice and the template's last user query stays the task.
+            """
+            nonlocal pending_interjections
+            if not pending_interjections:
+                return
+            notice = "\n\n".join(pending_interjections)
+            content = tool_message.get("content")
+            if isinstance(content, str):
+                tool_message["content"] = f"{notice}\n\n{content}" if content else notice
+            elif isinstance(content, list):
+                tool_message["content"] = [{"type": "text", "text": notice}, *content]
+            else:
+                tool_message["content"] = notice
+            pending_interjections = []
 
         def flush_input_content() -> None:
             nonlocal pending_input_content
@@ -729,11 +757,16 @@ class OpenAIResponsesTransformer(BaseTransformer):
                 continue
 
             if item_type == "message":
+                role = item.get("role", "user")
+                content = openai_responses_input_content_to_chat(item.get("content", ""))
+                if role == "user" and pending_tool_calls and isinstance(content, str):
+                    # Inside a tool loop (calls pending, with or without their outputs): a
+                    # harness notice, not a new user query. Folded into the tool result.
+                    pending_interjections.append(content)
+                    continue
                 flush_input_content()
                 if pending_tool_calls or pending_tool_outputs:
                     flush_tool_block()
-                role = item.get("role", "user")
-                content = openai_responses_input_content_to_chat(item.get("content", ""))
                 msg: dict[str, Any] = {"role": role, "content": content}
                 if role == "assistant" and pending_reasoning:
                     msg["reasoning_content"] = pending_reasoning
@@ -767,7 +800,10 @@ class OpenAIResponsesTransformer(BaseTransformer):
             elif item_type == "function_call_output":
                 flush_input_content()
                 open_assistant_idx = None
-                pending_tool_outputs.extend(self._function_call_output_messages(item))
+                outputs = self._function_call_output_messages(item)
+                if pending_interjections and outputs:
+                    fold_interjections_into(outputs[0])
+                pending_tool_outputs.extend(outputs)
 
             elif item_type in {"local_shell_call_output", "shell_call_output"}:
                 flush_input_content()
