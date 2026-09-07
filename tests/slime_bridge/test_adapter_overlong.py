@@ -1,4 +1,4 @@
-"""overlong_policy: context-exhausted attempts train with reward 0 (or are dropped)."""
+"""overlong_policy: context-exhausted attempts train with reward 0, with the evaluator reward, or are dropped."""
 
 from __future__ import annotations
 
@@ -147,3 +147,39 @@ def test_metrics_count_overlong_sessions_over_requested(monkeypatch) -> None:
     assert metrics["polar/overlong_fraction"] == 0.25
     assert metrics["polar/success_rate_all_sessions"] == 0.25
     assert metrics["polar/status/completed_fraction"] == 0.5
+
+
+def test_evaluator_reward_policy_truncates_but_keeps_the_verifier_reward(monkeypatch) -> None:
+    """Partial-credit tasks: an attempt that ran out of context still trains on the truncated
+    trace (aligned tokens, mask, logprobs) but with the reward the verifier gave the final
+    workdir, not a forced 0."""
+    monkeypatch.setattr(adapter, "_load_sample_type", lambda: FakeSample)
+    trace = _long_trace()  # reward 1.0, total 9 tokens
+    trace = trace.model_copy(update={"reward": 0.45})
+
+    over = session_result_to_samples(
+        _session_result(trace=trace), group_index=1, trajectory_index=2, max_tokens=7, overlong_policy="evaluator_reward",
+    )[0]
+    assert over.tokens == [1, 2, 3, 100, 101, 102, 103]
+    assert over.loss_mask == [1, 0, 1, 1]
+    assert over.rollout_log_probs == pytest.approx([-0.1, -0.2, -0.3, -0.4])
+    assert over.status == FakeSample.Status.COMPLETED
+    assert over.reward == {"score": 0.45}
+    assert over.metadata["polar"]["overlong"] is True
+    assert over.metadata["polar"]["overlong_reason"] == "max_tokens"
+
+    length = trace.model_copy(update={"finish_reason": "length"})
+    s = session_result_to_samples(
+        _session_result(trace=length), group_index=1, trajectory_index=2, overlong_policy="evaluator_reward",
+    )[0]
+    assert s.status == FakeSample.Status.TRUNCATED
+    assert s.reward == {"score": 0.45}
+    assert s.metadata["polar"]["overlong_reason"] == "length_stop"
+
+    overflow = session_result_to_samples(
+        _overflow_result(trace, error="The input (131158 tokens) is longer than the model's context length"),
+        group_index=1, trajectory_index=2, overlong_policy="evaluator_reward",
+    )[0]
+    assert overflow.status == FakeSample.Status.COMPLETED
+    assert overflow.reward == {"score": 0.45}
+    assert overflow.metadata["polar"]["overlong_reason"] == "context_overflow"

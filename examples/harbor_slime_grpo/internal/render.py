@@ -102,7 +102,7 @@ SCHEMA = {
         "optimizer_cpu_offload": False,   # Adam states on host (needed for 32768 tok/GPU)
         "group_id_scope": "trajectory",   # trajectory | prompt
         "timeout_reward_zero": True,
-        "overlong_policy": "zero_reward_train",  # zero_reward_train | drop
+        "overlong_policy": "zero_reward_train",  # zero_reward_train | evaluator_reward | drop: attempts that ran out of context
         "drop_zero_variance_groups": True,
         "save_interval": 5,
         "checkpoint_keep_every": 0,  # >0: delete saved iterations that are not multiples of this (latest kept)

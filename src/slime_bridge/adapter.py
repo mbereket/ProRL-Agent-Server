@@ -29,7 +29,7 @@ class RolloutLogprobError(ValueError):
     """Raised when a trainable Polar trace lacks aligned rollout logprobs."""
 
 
-OVERLONG_POLICIES = ("zero_reward_train", "drop")
+OVERLONG_POLICIES = ("zero_reward_train", "evaluator_reward", "drop")
 
 # Error text a harness or inference engine emits when the conversation no
 # longer fits the model's context window.
@@ -68,9 +68,13 @@ def session_result_to_samples(
     aligned; the prompt is kept whole), a session whose error text reports a
     context overflow keeps its traces trainable, and a trace whose final
     completion stopped on ``finish_reason == "length"`` keeps its TRUNCATED
-    status but gets reward 0. Under ``drop`` over-long traces are dropped,
-    overflowed sessions stay masked, and length-stopped traces keep the
-    evaluator reward. Affected samples carry ``polar.overlong`` metadata.
+    status but gets reward 0. ``evaluator_reward`` handles the traces the
+    same way but keeps the evaluator's reward: the verifier graded the final
+    workdir, so partial credit for an unfinished attempt is real signal on
+    tasks with graded intermediate outputs. Under ``drop`` over-long traces
+    are dropped, overflowed sessions stay masked, and length-stopped traces
+    keep the evaluator reward. Affected samples carry ``polar.overlong``
+    metadata under every policy.
 
     Every usable trace becomes an independent Sample sharing the same
     ``group_id`` key. Slime's loss reducer then averages all trace
@@ -146,24 +150,24 @@ def _build_sample(
         )
         return None
 
-    zero_reward_train = overlong_policy == "zero_reward_train"
+    train_overlong = overlong_policy in ("zero_reward_train", "evaluator_reward")
     original_total_len = len(prompt_ids) + len(response_ids)
     original_response_len = len(response_ids)
     overlong_reason: str | None = None
     if max_tokens is not None and original_total_len > max_tokens:
         keep = max_tokens - len(prompt_ids)
-        if not zero_reward_train or keep <= 0:
+        if not train_overlong or keep <= 0:
             logger.warning(
                 "Dropping trace %d from session %s: total_len=%d > max_tokens=%d%s",
                 trace_index, result.session_id, original_total_len, max_tokens,
-                "" if not zero_reward_train else " (prompt alone does not fit)",
+                "" if not train_overlong else " (prompt alone does not fit)",
             )
             return None
         response_ids = response_ids[:keep]
         overlong_reason = "max_tokens"
-    elif zero_reward_train and _is_context_overflow(result):
+    elif train_overlong and _is_context_overflow(result):
         overlong_reason = "context_overflow"
-    elif zero_reward_train and trace.finish_reason == "length":
+    elif train_overlong and trace.finish_reason == "length":
         overlong_reason = "length_stop"
 
     prompt_messages = deepcopy(trace.prompt_messages)
@@ -176,9 +180,11 @@ def _build_sample(
         status = Sample.Status.COMPLETED
         reward_value = 0.0
     if overlong_reason is not None:
-        # The attempt did not finish inside the context budget: it trains as a
-        # failed attempt regardless of what the evaluator saw.
-        reward_value = 0.0
+        # The attempt did not finish inside the context budget. zero_reward_train
+        # trains it as a failed attempt regardless of what the evaluator saw;
+        # evaluator_reward keeps the verifier's grade of the final workdir.
+        if overlong_policy == "zero_reward_train":
+            reward_value = 0.0
         if overlong_reason != "length_stop":
             status = Sample.Status.COMPLETED
 

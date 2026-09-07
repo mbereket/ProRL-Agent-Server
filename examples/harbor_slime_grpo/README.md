@@ -138,7 +138,7 @@ training:
   group_id_scope: trajectory          # trajectory: every attempt weighs the same; prompt: token-mean over a task's attempts
   drop_zero_variance_groups: true     # skip tasks whose attempts all got the same reward; false for overfit runs
   timeout_reward_zero: true           # sessions that hit session_timeout get reward 0
-  overlong_policy: zero_reward_train  # zero_reward_train | drop: attempts that ran out of context
+  overlong_policy: zero_reward_train  # attempts that ran out of context: zero_reward_train (train, reward 0) | evaluator_reward (train on the truncated trace with the verifier reward) | drop
   save_interval: 5
   checkpoint_keep_every: 0            # >0: delete saved iterations that are not multiples of this (latest kept)
   extra_train_args: ""                # appended to the slime command line verbatim
