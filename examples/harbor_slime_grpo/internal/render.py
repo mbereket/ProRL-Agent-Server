@@ -26,6 +26,7 @@ Config schema (defaults in SCHEMA below):
   eval:     prompt_data ("<name> <path>", ${RUN_DIR} allowed), interval, n_samples_per_prompt
   judge:    model, api_base, api_key_env  (LLM judge for rubric-graded tasks)
   wandb:    project, group
+  submit:   reaper_exempt_mins, reaper_reason, reaper_desc  (for the submitting layer; ignored here)
 """
 from __future__ import annotations
 
@@ -120,6 +121,11 @@ SCHEMA = {
     "wandb": {
         "project": "harbor-slime-grpo",
         "group": "",                 # default: run name
+    },
+    "submit": {                      # read by the submitting layer (slurm job comment etc.), not by the example
+        "reaper_exempt_mins": 0,     # idle-GPU job-reaper exemption (NVIDIA clusters); 0 = none
+        "reaper_reason": "other",    # model_loading | data_loading | interactive | benchmarking | disproportionate_resource_requirement | inference_server | other
+        "reaper_desc": "",
     },
 }
 HARNESSES = ("codex", "opencode", "mini_swe_agent")

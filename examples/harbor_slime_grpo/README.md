@@ -156,6 +156,11 @@ judge:                                # LLM judge for rubric-graded tasks (empty
 wandb:
   project: harbor-slime-grpo
   group: <name>
+
+submit:                               # for whatever submits the job (slurm comment); the example ignores it
+  reaper_exempt_mins: 75              # NVIDIA idle-GPU job reaper: longest expected idle stretch + buffer
+  reaper_reason: other
+  reaper_desc: "asynchronous RL: trainer GPUs idle during rollout-only phases"
 ```
 
 `launch.sh <cfg> --dry-run` prints the resolved summary, writes `train.jsonl`
