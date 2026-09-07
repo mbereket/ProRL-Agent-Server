@@ -116,6 +116,7 @@ cluster:                              # GPU layout. Trainer takes actor_num_gpus
   tp_size: 4                          # TP x CP must divide actor_num_gpus
   context_parallel_size: 2
   sandbox_nodes: all                  # head | all: nodes whose CPUs run sandboxes and verifiers (one Polar gateway each)
+  gpus_per_engine: 1                  # SGLang engine TP; 2 = half as many engines, each ~1.5x faster per token (generation is usually latency-bound)
 
 rollout:                              # HOW MUCH is sampled per step
   batch_size: 8                       # tasks per step

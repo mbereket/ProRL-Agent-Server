@@ -16,7 +16,7 @@ Config schema (defaults in SCHEMA below):
   harness:  name, model_name, dir, settings, session_timeout, request_timeout, max_run_workers,
             max_async_level, thinking, keep_sessions, path_prepend, ld_library_path, cli_version
   model:    hf_checkpoint, model_args_file, torch_dist_dir, load_dir, sglang_tool_call_parser
-  cluster:  num_nodes, actor_num_gpus, tp_size, context_parallel_size, sandbox_nodes (head|all)
+  cluster:  num_nodes, actor_num_gpus, tp_size, context_parallel_size, sandbox_nodes (head|all), gpus_per_engine
   rollout:  batch_size, n_samples_per_prompt, num_steps | num_epoch, max_prompt_len,
             max_response_len, sglang_context_length
   training: sync, max_tokens_per_gpu, lr, use_kl_loss, kl_loss_coef, grpo_std_normalization,
@@ -79,6 +79,7 @@ SCHEMA = {
         "tp_size": 4,
         "context_parallel_size": 1,  # trace cap = max_tokens_per_gpu x CP
         "sandbox_nodes": "all",      # head | all: nodes whose CPUs run sandboxes (one Polar gateway each)
+        "gpus_per_engine": 1,        # SGLang engine TP: 1 = one engine per GPU; 2 halves per-token latency when generation is latency-bound
     },
     "rollout": {
         "batch_size": 8,             # tasks per step
@@ -350,6 +351,8 @@ def mode_run(cfg: dict) -> None:
         die(f"no GPUs left for rollout ({nodes} x {gpn} total, {actor} train)")
     if actor % (c["tp_size"] * c["context_parallel_size"]):
         die(f"tp_size x context_parallel_size must divide actor_num_gpus ({actor})")
+    if rollout_gpus % c["gpus_per_engine"] or gpn % c["gpus_per_engine"]:
+        die(f"cluster.gpus_per_engine={c['gpus_per_engine']} must divide the engine GPUs ({rollout_gpus}) and the GPUs per node ({gpn})")
 
     # ── Checkpoint to load ─────────────────────────────────────────────────
     latest = "latest_checkpointed_iteration.txt"
@@ -384,7 +387,7 @@ def mode_run(cfg: dict) -> None:
     wandb_mode = os.environ.get("WANDB_MODE") or ("online" if os.environ.get("WANDB_API_KEY") else "offline")
     args = [
         "--actor-num-nodes", actor_nodes, "--actor-num-gpus-per-node", actor_gpus_per_node,
-        "--rollout-num-gpus", rollout_gpus, "--rollout-num-gpus-per-engine", 1,
+        "--rollout-num-gpus", rollout_gpus, "--rollout-num-gpus-per-engine", c["gpus_per_engine"],
         *model_args(d["MODEL_ARGS_FILE"]),
         "--hf-checkpoint", m["hf_checkpoint"], "--ref-load", ref, "--load", load, *start,
         "--save", d["SAVE_DIR"], "--save-interval", tr["save_interval"], "--update-weights-interval", 1,
@@ -435,7 +438,7 @@ def mode_run(cfg: dict) -> None:
         fh.write("TRAIN_ARGS=(\n" + "".join(f"    {shlex.quote(str(a))}\n" for a in args) + ")\n")
         fh.write("SANDBOX_IPS=(" + " ".join(shlex.quote(ip) for ip in hosts) + ")\n")
     print(f"rendered {run_dir}/{{polar_config.yaml,topology.yaml,train_args.sh}}: "
-          f"train {actor_nodes}x{actor_gpus_per_node} GPUs, {rollout_gpus} engine GPUs, "
+          f"train {actor_nodes}x{actor_gpus_per_node} GPUs, {rollout_gpus} engine GPUs ({rollout_gpus // c['gpus_per_engine']} engines x TP{c['gpus_per_engine']}), "
           f"{len(hosts)} sandbox host(s), load {load}", file=sys.stderr)
 
 
