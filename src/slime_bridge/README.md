@@ -48,6 +48,7 @@ All default to the plain behavior; each is a one-line A/B.
 | `polar_group_id_scope` | `trajectory` | Slime's loss-aggregation unit. `trajectory`: every trajectory weighs the same. `prompt`: token-mean within the prompt's `n_samples_per_prompt` trajectories, then mean over prompts (SkyRL `prompt_mean`). |
 | `polar_drop_zero_variance_groups` | `false` | Drop a group whose trainable trajectories all have the same reward (within `polar_zero_variance_tol`, 1e-6) or has fewer than two; a replacement prompt is pulled. Counted in `polar/dropped_zero_variance_groups`. |
 | `polar_min_complete_accept_fraction` | `0` | Drop a group with fewer than this fraction of completed, trainable sessions. |
+| `polar_overlong_policy` | `zero_reward_train` | Attempts that ran out of context (trace over the trainer cap, context-overflow error, or `finish_reason == "length"`). `zero_reward_train`: truncate the trace to the cap and train it with reward 0. `evaluator_reward`: same truncation, but keep the verifier's reward (partial credit on graded intermediate outputs). `drop`: discard over-long traces, keep length-stopped ones with their reward. Counted in `polar/overlong_sessions`. |
 
 GRPO std scaling (slime's `--disable-grpo-std-normalization` opt-out) uses the
 std over *all* valid trajectories in the group; the mean baseline is
