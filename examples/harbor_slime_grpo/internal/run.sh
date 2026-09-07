@@ -125,7 +125,7 @@ fi
 # 5 min, so a small save_interval (periodic eval) does not accumulate ~180 GB/step.
 if [ "${CHECKPOINT_KEEP_EVERY:-0}" -gt 0 ]; then
     ( while :; do
-        latest="$(tr -dc '0-9' < "${SAVE_DIR}/latest_checkpointed_iteration.txt" 2>/dev/null || true)"
+        latest=""; [ -f "${SAVE_DIR}/latest_checkpointed_iteration.txt" ] && latest="$(tr -dc '0-9' < "${SAVE_DIR}/latest_checkpointed_iteration.txt")"
         for d in "${SAVE_DIR}"/iter_*/; do
             [ -d "${d}" ] && [ -n "${latest}" ] || continue
             it="$(basename "${d}" | sed 's/iter_0*//')"; it="${it:-0}"
