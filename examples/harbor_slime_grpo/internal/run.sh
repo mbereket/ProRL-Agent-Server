@@ -81,6 +81,9 @@ trap cleanup EXIT
 # ── Polar: rollout server on the head, one gateway per sandbox host ────────
 echo "=== Polar rollout server :${POLAR_ROLLOUT_PORT}, gateway node-01 on $(hostname) :${POLAR_GATEWAY_PORT} ==="
 polar serve_rollout -c "${TOPOLOGY}" & PIDS+=($!)
+# Gateways register with the rollout server at startup: wait for it first.
+for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:${POLAR_ROLLOUT_PORT}/health" >/dev/null 2>&1 && break; sleep 1; done
+curl -sf "http://127.0.0.1:${POLAR_ROLLOUT_PORT}/health" >/dev/null || { echo "ERROR: rollout server not healthy on :${POLAR_ROLLOUT_PORT}"; exit 1; }
 # Session dirs (agent logs, verifier output) under the run dir via POLAR_SESSION_DIR,
 # not TMPDIR: apptainer forwards TMPDIR into the sandbox and breaks mktemp there.
 export POLAR_KEEP_SESSION_DIRS="${POLAR_KEEP_SESSION_DIRS:-}"
@@ -95,8 +98,6 @@ for ((i = 1; i < ${#SANDBOX_IPS[@]}; i++)); do
                POLAR_KEEP_SESSION_DIRS='${POLAR_KEEP_SESSION_DIRS}' POLAR_SESSION_DIR='${SESSION_ROOT}'; \
         cd '${PROJECT_ROOT}' && exec polar serve_gateway -c '${TOPOLOGY}' --node-id '${node_id}'" & PIDS+=($!)
 done
-sleep 3
-curl -sf "http://127.0.0.1:${POLAR_ROLLOUT_PORT}/health" >/dev/null || { echo "ERROR: rollout server not healthy on :${POLAR_ROLLOUT_PORT}"; exit 1; }
 for ((i = 0; i < ${#SANDBOX_IPS[@]}; i++)); do
     url="http://${SANDBOX_IPS[$i]}:${POLAR_GATEWAY_PORT}/health"; [ "$i" -eq 0 ] && url="http://127.0.0.1:${POLAR_GATEWAY_PORT}/health"
     for _ in $(seq 1 60); do curl -sf "${url}" >/dev/null 2>&1 && break; sleep 2; done
