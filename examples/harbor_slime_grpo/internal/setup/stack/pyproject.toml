@@ -19,6 +19,7 @@ version = "0.0.0"
 requires-python = "==3.12.*"
 dependencies = [
     "polar[swebench]",
+    "websockets",                       # uvicorn websocket support: codex probes for an upgrade on every request
     "sglang==0.5.13",
     "flash-attn-4>=4.0.0b9",           # sglang requirement; only pre-releases exist, so it must be named here for uv to allow them
     "slime",

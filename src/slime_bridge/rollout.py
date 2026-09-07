@@ -1495,6 +1495,10 @@ def _maybe_dump_longest_trace_artifact(
         return
     if getattr(wandb, "run", None) is None:
         return
+    # Shared-mode runs (several processes writing one run) cannot log artifacts
+    # from a non-primary writer; the rollout manager is one.
+    if getattr(getattr(wandb.run, "settings", None), "mode", "") == "shared":
+        return
 
     by_session: dict[str, list[Any]] = {}
     for group in data:
