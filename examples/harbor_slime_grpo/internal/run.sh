@@ -20,6 +20,9 @@ source "${ENV_FILE}"
 # shellcheck disable=SC1091
 source "${RUN_DIR}/train_args.sh"   # TRAIN_SCRIPT, TRAIN_ARGS, SANDBOX_IPS
 cd "${PROJECT_ROOT}"
+# The HF snapshot is complete after setup: read the cache, never ask the hub
+# (otherwise every tokenizer load in the gateway and engines does a HEAD request).
+export HF_HUB_OFFLINE=1
 
 NUM_NODES="${NUM_NODES:-1}"
 RAY_HEAD_IP="${RAY_HEAD_IP:-127.0.0.1}"
@@ -46,7 +49,7 @@ RUNTIME_ENV_JSON="$("${PYTHON_BIN}" -c 'import json, sys; print(json.dumps({"env
     "PYTHONPATH=${MEGATRON_DIR}:${PROJECT_ROOT}/src" \
     "PATH=$(dirname "${PYTHON_BIN}"):${PATH}" \
     "VIRTUAL_ENV=${VIRTUAL_ENV:-${PROJECT_ROOT}/.venv}" \
-    "HF_HOME=${HF_HOME}" \
+    "HF_HOME=${HF_HOME}" "HF_HUB_OFFLINE=1" \
     "CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}" \
     "LD_LIBRARY_PATH=${CUDNN_LIB}:${LD_LIBRARY_PATH:-}" \
     "CUDA_DEVICE_MAX_CONNECTIONS=1" \
@@ -88,7 +91,7 @@ for ((i = 1; i < ${#SANDBOX_IPS[@]}; i++)); do
     echo "=== Polar gateway ${node_id} on ${host} ==="
     [ -n "${SLURM_JOB_ID:-}" ] || { echo "ERROR: gateways on other hosts need a slurm allocation (srun)"; exit 1; }
     srun --overlap --nodes=1 --ntasks=1 -w "${host}" bash -c "source '${ENV_FILE}'; \
-        export APPTAINER_CACHEDIR='${APPTAINER_CACHEDIR:-}' APPTAINER_TMPDIR='${APPTAINER_TMPDIR:-}' HF_HOME='${HF_HOME}' \
+        export APPTAINER_CACHEDIR='${APPTAINER_CACHEDIR:-}' APPTAINER_TMPDIR='${APPTAINER_TMPDIR:-}' HF_HOME='${HF_HOME}' HF_HUB_OFFLINE=1 \
                POLAR_KEEP_SESSION_DIRS='${POLAR_KEEP_SESSION_DIRS}' POLAR_SESSION_DIR='${SESSION_ROOT}'; \
         cd '${PROJECT_ROOT}' && exec polar serve_gateway -c '${TOPOLOGY}' --node-id '${node_id}'" & PIDS+=($!)
 done
