@@ -657,69 +657,81 @@ class OpenAIResponsesTransformer(BaseTransformer):
         self,
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        """Responses input items -> chat messages.
+
+        One model turn arrives from the harness as several items: an optional
+        ``reasoning`` item, an optional assistant ``message`` with the visible
+        text, then the ``function_call`` items. All of them fold into ONE
+        assistant chat message (reasoning_content, content, tool_calls), the
+        shape the model generated, so the chat template re-renders the turn
+        token-for-token and prefix merging can chain the next request onto it.
+        A turn block ends at a tool output, a user/system item, or any other
+        item type.
+        """
         messages: list[dict[str, Any]] = []
         pending_tool_calls: list[dict[str, Any]] = []
         pending_tool_outputs: list[dict[str, Any]] = []
         pending_input_content: list[dict[str, Any]] = []
         pending_reasoning: str = ""
+        pending_text: Any = None  # visible text of the turn whose tool calls are pending
+        open_assistant_idx: int | None = None  # index in `messages` of an assistant text message that may still get tool calls
+
+        def flush_tool_block() -> None:
+            nonlocal pending_tool_calls, pending_tool_outputs, pending_reasoning, pending_text
+            messages.extend(
+                self._flush_tool_block(pending_tool_calls, pending_tool_outputs, pending_reasoning, pending_text)
+            )
+            pending_tool_calls = []
+            pending_tool_outputs = []
+            pending_reasoning = ""
+            pending_text = None
+
+        def flush_input_content() -> None:
+            nonlocal pending_input_content
+            if pending_input_content:
+                messages.extend(self._flush_input_content(pending_input_content))
+                pending_input_content = []
+
+        def adopt_open_assistant() -> None:
+            """A function_call follows this turn's assistant text: move that text into the tool block."""
+            nonlocal open_assistant_idx, pending_text, pending_reasoning
+            if open_assistant_idx is None or pending_tool_calls or pending_tool_outputs:
+                open_assistant_idx = None
+                return
+            msg = messages.pop(open_assistant_idx)
+            open_assistant_idx = None
+            pending_text = msg.get("content")
+            if msg.get("reasoning_content") and not pending_reasoning:
+                pending_reasoning = msg["reasoning_content"]
 
         for item in items:
             item_type = item.get("type")
 
             if item_type == "reasoning":
-                # A new reasoning item starts a new turn block. If the prior
-                # block already has its function_call_output, flush it now so
-                # this reasoning attaches to the NEXT function_call, not the
-                # previous one. (Otherwise codex's per-fc reasoning gets
-                # accumulated and dumped onto the wrong assistant message,
-                # breaking the prefix_merging chain.)
+                # A reasoning item starts a new turn block. If the prior block
+                # already has its function_call_output, flush it now so this
+                # reasoning attaches to the NEXT function_call, not the previous one.
                 if pending_tool_outputs:
-                    messages.extend(
-                        self._flush_tool_block(
-                            pending_tool_calls,
-                            pending_tool_outputs,
-                            pending_reasoning,
-                        )
-                    )
-                    pending_tool_calls = []
-                    pending_tool_outputs = []
-                    pending_reasoning = ""
+                    flush_tool_block()
+                open_assistant_idx = None
                 reasoning_text = extract_reasoning_from_responses_item(item)
                 if reasoning_text:
                     pending_reasoning = (
-                        f"{pending_reasoning}\n{reasoning_text}"
-                        if pending_reasoning
-                        else reasoning_text
+                        f"{pending_reasoning}\n{reasoning_text}" if pending_reasoning else reasoning_text
                     )
                 continue
 
             if item_type in {"input_text", "input_image"}:
                 if pending_tool_calls or pending_tool_outputs:
-                    messages.extend(
-                        self._flush_tool_block(
-                            pending_tool_calls, pending_tool_outputs, pending_reasoning
-                        )
-                    )
-                    pending_tool_calls = []
-                    pending_tool_outputs = []
-                    pending_reasoning = ""
+                    flush_tool_block()
+                open_assistant_idx = None
                 pending_input_content.append(item)
                 continue
 
             if item_type == "message":
-                if pending_input_content:
-                    messages.extend(self._flush_input_content(pending_input_content))
-                    pending_input_content = []
+                flush_input_content()
                 if pending_tool_calls or pending_tool_outputs:
-                    messages.extend(
-                        self._flush_tool_block(
-                            pending_tool_calls, pending_tool_outputs, pending_reasoning
-                        )
-                    )
-                    pending_tool_calls = []
-                    pending_tool_outputs = []
-                    pending_reasoning = ""
-
+                    flush_tool_block()
                 role = item.get("role", "user")
                 content = openai_responses_input_content_to_chat(item.get("content", ""))
                 msg: dict[str, Any] = {"role": role, "content": content}
@@ -727,22 +739,13 @@ class OpenAIResponsesTransformer(BaseTransformer):
                     msg["reasoning_content"] = pending_reasoning
                     pending_reasoning = ""
                 messages.append(msg)
+                open_assistant_idx = len(messages) - 1 if role == "assistant" else None
 
             elif item_type == "function_call":
-                if pending_input_content:
-                    messages.extend(self._flush_input_content(pending_input_content))
-                    pending_input_content = []
+                flush_input_content()
                 if pending_tool_outputs:
-                    messages.extend(
-                        self._flush_tool_block(
-                            pending_tool_calls,
-                            pending_tool_outputs,
-                            pending_reasoning,
-                        )
-                    )
-                    pending_tool_calls = []
-                    pending_tool_outputs = []
-                    pending_reasoning = ""
+                    flush_tool_block()
+                adopt_open_assistant()
                 pending_tool_calls.append(
                     {
                         "id": item.get("call_id", f"call_{uuid.uuid4().hex[:24]}"),
@@ -755,65 +758,36 @@ class OpenAIResponsesTransformer(BaseTransformer):
                 )
 
             elif item_type in {"local_shell_call", "shell_call"}:
-                if pending_input_content:
-                    messages.extend(self._flush_input_content(pending_input_content))
-                    pending_input_content = []
+                flush_input_content()
                 if pending_tool_outputs:
-                    messages.extend(
-                        self._flush_tool_block(
-                            pending_tool_calls,
-                            pending_tool_outputs,
-                            pending_reasoning,
-                        )
-                    )
-                    pending_tool_calls = []
-                    pending_tool_outputs = []
-                    pending_reasoning = ""
+                    flush_tool_block()
+                adopt_open_assistant()
                 pending_tool_calls.append(self._local_shell_call_to_tool_call(item))
 
             elif item_type == "function_call_output":
-                if pending_input_content:
-                    messages.extend(self._flush_input_content(pending_input_content))
-                    pending_input_content = []
+                flush_input_content()
+                open_assistant_idx = None
                 pending_tool_outputs.extend(self._function_call_output_messages(item))
 
             elif item_type in {"local_shell_call_output", "shell_call_output"}:
-                if pending_input_content:
-                    messages.extend(self._flush_input_content(pending_input_content))
-                    pending_input_content = []
+                flush_input_content()
+                open_assistant_idx = None
                 pending_tool_outputs.extend(self._local_shell_output_messages(item))
 
             else:
-                if pending_input_content:
-                    messages.extend(self._flush_input_content(pending_input_content))
-                    pending_input_content = []
+                flush_input_content()
                 if pending_tool_calls or pending_tool_outputs:
-                    messages.extend(
-                        self._flush_tool_block(
-                            pending_tool_calls,
-                            pending_tool_outputs,
-                            pending_reasoning,
-                        )
-                    )
-                    pending_tool_calls = []
-                    pending_tool_outputs = []
-                    pending_reasoning = ""
+                    flush_tool_block()
+                open_assistant_idx = None
                 converted = self._convert_response_item_to_message(item)
                 if isinstance(converted, list):
                     messages.extend(converted)
                 elif converted:
                     messages.append(converted)
 
-        if pending_input_content:
-            messages.extend(self._flush_input_content(pending_input_content))
-
+        flush_input_content()
         if pending_tool_calls or pending_tool_outputs:
-            messages.extend(
-                self._flush_tool_block(
-                    pending_tool_calls, pending_tool_outputs, pending_reasoning
-                )
-            )
-            pending_reasoning = ""
+            flush_tool_block()
 
         # Trailing reasoning with no following assistant message: synthesize one.
         if pending_reasoning:
@@ -983,12 +957,13 @@ class OpenAIResponsesTransformer(BaseTransformer):
         tool_calls: list[dict[str, Any]],
         tool_outputs: list[dict[str, Any]],
         reasoning: str = "",
+        content: Any = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         if tool_calls:
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
-                "content": None,
+                "content": content,
                 "tool_calls": list(tool_calls),
             }
             if reasoning:

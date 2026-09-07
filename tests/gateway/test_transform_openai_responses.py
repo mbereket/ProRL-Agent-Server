@@ -834,3 +834,45 @@ def test_responses_stream_state_orders_reasoning_before_tool_without_text() -> N
     assert done[:2] == [(0, "reasoning"), (1, "function_call")]
     assert events[-1]["response"]["output"][0]["type"] == "reasoning"
     assert events[-1]["response"]["output"][1]["type"] == "function_call"
+
+
+def test_responses_request_folds_assistant_text_into_the_turns_tool_calls() -> None:
+    """Codex echoes a model turn as reasoning + message + function_call items; they must
+    become ONE assistant message, as generated, or the next prompt is not a token-prefix
+    extension of the previous completion and prefix merging starts a new trace."""
+    transformer = OpenAIResponsesTransformer()
+
+    transformed = transformer.transform_request(
+        {
+            "input": [
+                {"type": "message", "role": "user", "content": "analyze the files"},
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Look first."}]},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Let me inspect the inputs."}]},
+                {"type": "function_call", "call_id": "call-a", "name": "exec_command", "arguments": '{"cmd": "head f"}'},
+                {"type": "function_call_output", "call_id": "call-a", "output": "col1\tcol2"},
+                # empty think block: the visible text codex echoes is just the closing tag
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "</think>\n\n"}]},
+                {"type": "function_call", "call_id": "call-b", "name": "exec_command", "arguments": '{"cmd": "Rscript a.R"}'},
+                {"type": "function_call_output", "call_id": "call-b", "output": "ok"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]},
+            ]
+        }
+    )
+
+    assert transformed["messages"] == [
+        {"role": "user", "content": "analyze the files"},
+        {
+            "role": "assistant",
+            "content": "Let me inspect the inputs.",
+            "tool_calls": [{"id": "call-a", "type": "function", "function": {"name": "exec_command", "arguments": '{"cmd": "head f"}'}}],
+            "reasoning_content": "Look first.",
+        },
+        {"role": "tool", "tool_call_id": "call-a", "content": "col1\tcol2"},
+        {
+            "role": "assistant",
+            "content": "</think>\n\n",
+            "tool_calls": [{"id": "call-b", "type": "function", "function": {"name": "exec_command", "arguments": '{"cmd": "Rscript a.R"}'}}],
+        },
+        {"role": "tool", "tool_call_id": "call-b", "content": "ok"},
+        {"role": "assistant", "content": "done"},
+    ]
