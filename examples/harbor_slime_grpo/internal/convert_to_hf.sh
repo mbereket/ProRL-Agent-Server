@@ -31,7 +31,7 @@ export HF_HOME="${HF_HOME:-${WORKROOT}/hf_home}" HF_HUB_OFFLINE=1
 # The base model the run trained from: the --hf-checkpoint value in the run's rendered train_args.sh.
 TRAIN_ARGS="${WORKROOT}/harbor_slime_grpo/${RUN_NAME}/train_args.sh"
 [ -f "${TRAIN_ARGS}" ] || { echo "ERROR: rendered train args not found at ${TRAIN_ARGS}" >&2; exit 1; }
-HF_CHECKPOINT="$(bash -c "source '${TRAIN_ARGS}'; for ((i=0; i<\${#TRAIN_ARGS[@]}; i++)); do [ \"\${TRAIN_ARGS[i]}\" = --hf-checkpoint ] && printf %s \"\${TRAIN_ARGS[i+1]}\"; done")"
+HF_CHECKPOINT="$(bash -c "source '${TRAIN_ARGS}'; for ((i=0; i<\${#TRAIN_ARGS[@]}; i++)); do if [ \"\${TRAIN_ARGS[i]}\" = --hf-checkpoint ]; then printf %s \"\${TRAIN_ARGS[i+1]}\"; fi; done")"
 [ -n "${HF_CHECKPOINT}" ] || { echo "ERROR: --hf-checkpoint not found in ${TRAIN_ARGS}" >&2; exit 1; }
 ORIGIN_HF="$("${PYTHON_BIN}" -c "from huggingface_hub import snapshot_download; print(snapshot_download('${HF_CHECKPOINT}'))")"
 echo "converting ${ITER_DIR} -> ${OUT_DIR} (base ${HF_CHECKPOINT} at ${ORIGIN_HF})"
