@@ -7,8 +7,8 @@
 # Reads ${WORKROOT}/ckpt/harbor_slime_grpo/<run-name>/iter_<iteration padded to 7> and
 # writes <output-dir> (config, tokenizer and any weights the trainer does not hold,
 # e.g. the vision tower of a Qwen3.5 checkpoint, are copied from the base HF snapshot).
-# Needs the environment launch.sh built: the venv, the slime + Megatron checkouts and
-# the HF snapshot under ${WORKROOT}. One GPU, a few minutes.
+# Needs the environment launch.sh built for that run: its env.sh, the venv, the slime +
+# Megatron checkouts and the HF snapshot under ${WORKROOT}. One GPU, a few minutes.
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 export PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "${HERE}/../../.." && pwd)}"
@@ -20,8 +20,13 @@ OUT_DIR="${3:?usage: convert_to_hf.sh <run-name> <iteration> <output-dir>}"
 SAVE_DIR="${WORKROOT}/ckpt/harbor_slime_grpo/${RUN_NAME}"
 ITER_DIR="$(printf '%s/iter_%07d' "${SAVE_DIR}" "${ITER}")"
 [ -d "${ITER_DIR}" ] || { echo "ERROR: no checkpoint at ${ITER_DIR} (have: $(ls "${SAVE_DIR}" 2>/dev/null | tr '\n' ' '))" >&2; exit 1; }
-PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
-[ -x "${PYTHON_BIN}" ] || { echo "ERROR: venv not found at ${PYTHON_BIN}; run launch.sh --setup-only first" >&2; exit 1; }
+# The run's toolchain environment (venv python, CUDA toolkit on PATH/CUDA_HOME, compat libs),
+# written by launch.sh; the converter imports sglang/deep_gemm, which need CUDA_HOME.
+RUN_ENV="${WORKROOT}/harbor_slime_grpo/${RUN_NAME}/env.sh"
+[ -f "${RUN_ENV}" ] || { echo "ERROR: run environment not found at ${RUN_ENV}" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "${RUN_ENV}"
+[ -x "${PYTHON_BIN:-}" ] || { echo "ERROR: PYTHON_BIN from ${RUN_ENV} is not executable: ${PYTHON_BIN:-unset}" >&2; exit 1; }
 SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
 SLIME_REF="$(sed -n 's/^slime = { git = "[^"]*", rev = "\([0-9a-f]*\)".*/\1/p' "${HERE}/setup/stack/pyproject.toml")"
 MEGATRON_DIR="${MEGATRON_DIR:-${WORKROOT}/Megatron-LM-slime-${SLIME_REF:0:12}}"
