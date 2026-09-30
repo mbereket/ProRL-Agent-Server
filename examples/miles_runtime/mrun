@@ -144,6 +144,7 @@ env_args=(
     --env "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${cache_root}/inductor}"
     --env "XDG_CACHE_HOME=${MRUN_XDG_CACHE_HOME:-${cache_root}/xdg}"
     --env "CUDA_CACHE_PATH=${CUDA_CACHE_PATH:-${cache_root}/nv-compute-cache}"
+    --env "APPTAINER_CONFIGDIR=${APPTAINER_CONFIGDIR:-${cache_root}/apptainer-config}"
     --env "CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
     --env "PYTHONUNBUFFERED=1"
 )

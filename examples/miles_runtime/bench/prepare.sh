@@ -28,6 +28,9 @@ stage_dataset() {  # name hf_dataset_id
     python3 -c "from huggingface_hub import snapshot_download as d; d('$2', repo_type='dataset', local_dir='${dst}')"
 }
 
+# Concurrent jobs share the stack root: serialize staging.
+exec 9>"${MILES_STACK_ROOT}/cache/prepare.lock"; flock -w 3600 9
+
 QWEN35_9B_SRC="${QWEN35_9B_SRC:-}"
 if [ -z "${QWEN35_9B_SRC}" ]; then
     for c in "${MILES_STACK_ROOT}"/../../prorl-harbor/hf_home/hub/models--Qwen--Qwen3.5-9B/snapshots/*; do

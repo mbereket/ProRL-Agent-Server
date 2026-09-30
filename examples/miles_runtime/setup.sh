@@ -87,7 +87,7 @@ step_manifest() {
     local out="${MILES_SIF%.sif}.versions"
     [ -s "${out}" ] && { mr_log "manifest: ${out}"; cat "${out}"; return; }
     "${APPTAINER}" exec "${MILES_SIF}" bash -c '
-        echo "image=${MILES_IMAGE_REPO:-}"; python3 --version
+        python3 --version
         for r in /root/miles /sgl-workspace/sglang /root/Megatron-LM; do
             echo "$r $(git -C $r rev-parse HEAD 2>/dev/null) $(git -C $r log -1 --format=%cd --date=short 2>/dev/null) $(git -C $r rev-parse --abbrev-ref HEAD 2>/dev/null)"
         done
@@ -107,9 +107,11 @@ import time, torch
 t = time.time()
 import sglang, miles, megatron.core, transformer_engine, megatron.bridge  # noqa: F401
 print("imports ok in %.1fs; torch %s cuda %s devices %d" % (time.time() - t, torch.__version__, torch.version.cuda, torch.cuda.device_count()))
-x = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16); torch.cuda.synchronize()
-t = time.time(); [x @ x for _ in range(50)]; torch.cuda.synchronize(); dt = time.time() - t
-print("bf16 matmul %.0f TFLOP/s" % (50 * 2 * 4096**3 / dt / 1e12))
+x = torch.randn(8192, 8192, device="cuda", dtype=torch.bfloat16)
+for _ in range(5): x @ x
+torch.cuda.synchronize()
+t = time.time(); [x @ x for _ in range(100)]; torch.cuda.synchronize(); dt = time.time() - t
+print("bf16 matmul %.0f TFLOP/s (H100 dense peak ~990)" % (100 * 2 * 8192**3 / dt / 1e12))
 PY
         ls /dev/infiniband 2>/dev/null | head -3 || echo "no /dev/infiniband"
         (command -v ibv_devinfo >/dev/null && ibv_devinfo -l) || ls /usr/lib/x86_64-linux-gnu/libibverbs* /usr/lib/x86_64-linux-gnu/libibverbs 2>/dev/null | head -5 || echo "no libibverbs"
