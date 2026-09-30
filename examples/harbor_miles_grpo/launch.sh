@@ -99,8 +99,14 @@ fi
 config_python "${SHARED}/internal/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" --output-jsonl "${RUN_DIR}/train.jsonl" "${select[@]}"
 
 if [ "${DRY_RUN}" = 0 ]; then
-    log "harness ${HARNESS}${HARNESS_CLI_VERSION:+ @ ${HARNESS_CLI_VERSION}}"
-    bash "${SHARED}/internal/prepare_harness.sh" "${HARNESS_DIR}" "${HARNESS}" "${HARNESS_CLI_VERSION}"
+    log "harness ${HARNESS}${HARNESS_CLI_VERSION:+ @ ${HARNESS_CLI_VERSION}} in ${HARNESS_DIR}"
+    case "${HARNESS_DIR}" in
+        "${WORKROOT}"/*) bash "${SHARED}/internal/prepare_harness.sh" "${HARNESS_DIR}" "${HARNESS}" "${HARNESS_CLI_VERSION}" ;;
+        *)  # Another work root's harness dir: use it read-only, never reinstall into it.
+            bin="${HARNESS}"; [ "${bin}" = mini_swe_agent ] && bin=mini-swe-agent
+            [ -x "${HARNESS_DIR}/bin/${bin}" ] || die "harness.dir ${HARNESS_DIR} has no bin/${bin} (point harness.dir inside WORKROOT to install one)"
+            info "read-only: $(PATH="${HARNESS_DIR}/node/bin:${PATH}" "${HARNESS_DIR}/bin/${bin}" --version 2>&1 | tail -1)" ;;
+    esac
     case "${HF_CHECKPOINT}" in
         /*) [ -f "${HF_CHECKPOINT}/config.json" ] || die "model.hf_checkpoint ${HF_CHECKPOINT} has no config.json" ;;
         *)  log "HF snapshot ${HF_CHECKPOINT}"
