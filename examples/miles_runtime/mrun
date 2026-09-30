@@ -12,6 +12,7 @@
 #   Patches apply in (DIR order, then file-name order). The patched trees are built once per
 #   content hash under $MILES_STACK_ROOT/overlays/<hash>/ and bind-mounted over the image's
 #   editable installs, so a new patch set costs ~1 min, not a SIF rebuild.
+#   patches/base/ (this directory) is always applied first: fixes to the pinned image itself.
 # --bind       extra apptainer binds (the lustre root and $MILES_STACK_ROOT are always bound).
 # --pythonpath prepend to PYTHONPATH inside the container (e.g. a checkout of your own package).
 #
@@ -24,6 +25,8 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)/lib.sh"
 
 patch_dirs=(); binds=(); pypaths=(); nv=(--nv)
+# Runtime-level fixes to the pinned image (patches/base/) always come first; MILES_NO_BASE_PATCHES=1 skips them.
+if [ "${MILES_NO_BASE_PATCHES:-0}" != 1 ] && [ -d "${MR_DIR}/patches/base" ]; then patch_dirs+=("${MR_DIR}/patches/base"); fi
 IFS=: read -r -a _env_patches <<< "${MILES_PATCHES:-}"
 for d in "${_env_patches[@]}"; do if [ -n "${d}" ]; then patch_dirs+=("${d}"); fi; done
 while [ $# -gt 0 ]; do
