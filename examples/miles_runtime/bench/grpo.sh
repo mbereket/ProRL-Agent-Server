@@ -5,6 +5,7 @@
 #   ARM         full | lora
 #   LAYOUT      colocate | disagg            (disagg: TRAIN_GPUS for Megatron, the rest for SGLang)
 #   MODE        e2e | train_only             (train_only replays REPLAY=<dir>/{rollout_id}.pt, no SGLang)
+#   LORA_ROLLOUT 1 | 0                       (0: --lora-train-only, rollouts on the frozen base = negative control)
 set -euo pipefail
 : "${MILES_STACK_ROOT:?}" "${OUT:?}"
 ARM="${ARM:-lora}"; LAYOUT="${LAYOUT:-colocate}"; MODE="${MODE:-e2e}"
@@ -59,7 +60,9 @@ fi
 if [ "${ARM}" = lora ]; then
     args+=(--lora-rank "${LORA_RANK}" --lora-alpha "${LORA_ALPHA}" --lora-dropout 0.0
            --target-modules "${LORA_TARGETS}" --no-gradient-accumulation-fusion)
-    if [ "${MODE}" = e2e ]; then
+    if [ "${LORA_ROLLOUT:-1}" = 0 ]; then
+        args+=(--lora-train-only)   # negative control: SGLang stays on the frozen base
+    elif [ "${MODE}" = e2e ]; then
         args+=(--sglang-max-lora-rank "${LORA_RANK}")
         # Colocated LoRA must keep the SGLang base weights in host RAM, or rollouts after the first
         # offload run on a stale/garbled base (the 35B-A3B recipe measured KL ~1.0 without it).

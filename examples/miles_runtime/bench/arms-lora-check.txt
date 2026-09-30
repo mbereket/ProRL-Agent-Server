@@ -1,0 +1,6 @@
+# Does the rollout actually use the trained adapter? Aggressive LR so the adapter moves fast;
+# the negative control keeps SGLang on the frozen base (--lora-train-only): its train/rollout
+# logprob mismatch must grow with steps, while the real arm's must stay at the step-0 level.
+lora-hot         ARM=lora LAYOUT=colocate LR=1e-4 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096
+lora-hot-ctrl    ARM=lora LAYOUT=colocate LR=1e-4 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096 LORA_ROLLOUT=0
+lora-hot-disagg  ARM=lora LAYOUT=disagg TRAIN_GPUS=4 LR=1e-4 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096

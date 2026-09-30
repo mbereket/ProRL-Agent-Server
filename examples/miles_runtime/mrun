@@ -25,7 +25,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)/lib.sh"
 
 patch_dirs=(); binds=(); pypaths=(); nv=(--nv)
 IFS=: read -r -a _env_patches <<< "${MILES_PATCHES:-}"
-for d in "${_env_patches[@]}"; do [ -n "${d}" ] && patch_dirs+=("${d}"); done
+for d in "${_env_patches[@]}"; do if [ -n "${d}" ]; then patch_dirs+=("${d}"); fi; done
 while [ $# -gt 0 ]; do
     case "$1" in
         --patches) patch_dirs+=("$2"); shift 2 ;;
@@ -43,6 +43,11 @@ APPTAINER="$(mr_apptainer_bin)"
 [ -x "${APPTAINER}" ] || mr_die "no apptainer at ${APPTAINER}; run setup.sh first"
 [ -s "${MILES_SIF}" ] || mr_die "no image at ${MILES_SIF}; run setup.sh first"
 
+default_binds=(--bind "${MILES_STACK_ROOT}")
+if [ -d /lustre ]; then default_binds=(--bind /lustre); fi
+# tools (tar, patch, pip) come from the image, not the host
+in_sif() { "${APPTAINER}" exec "${default_binds[@]}" "${MILES_SIF}" "$@"; }
+
 # ------------------------------------------------------------------ overlay
 COMPONENTS=(miles sglang megatron)
 declare -A SRC_ROOT=([miles]=/root/miles [sglang]=/sgl-workspace/sglang [megatron]=/root/Megatron-LM)
@@ -54,10 +59,13 @@ overlay_key() {
         local d c f
         for d in "${patch_dirs[@]}"; do
             for c in "${COMPONENTS[@]}"; do
-                for f in "${d}/${c}"/*.patch; do [ -f "${f}" ] && echo "${c} $(basename "${f}") $(mr_sha256 < "${f}")"; done
+                for f in "${d}/${c}"/*.patch; do
+                    if [ -f "${f}" ]; then echo "${c} $(basename "${f}") $(mr_sha256 < "${f}")"; fi
+                done
             done
-            [ -f "${d}/pip-requirements.txt" ] && echo "pip $(mr_sha256 < "${d}/pip-requirements.txt")"
+            if [ -f "${d}/pip-requirements.txt" ]; then echo "pip $(mr_sha256 < "${d}/pip-requirements.txt")"; fi
         done
+        true
     } | mr_sha256 | cut -c1-16
 }
 
@@ -66,25 +74,24 @@ build_overlay() {
     rm -rf "${tmp}"; mkdir -p "${tmp}"
     for c in "${COMPONENTS[@]}"; do
         local patches=()
-        for d in "${patch_dirs[@]}"; do for f in "${d}/${c}"/*.patch; do [ -f "${f}" ] && patches+=("${f}"); done; done
+        for d in "${patch_dirs[@]}"; do for f in "${d}/${c}"/*.patch; do if [ -f "${f}" ]; then patches+=("${f}"); fi; done; done
         [ "${#patches[@]}" -eq 0 ] && continue
         mkdir -p "${tmp}/${c}"
-        "${APPTAINER}" exec "${MILES_SIF}" tar -C "${SRC_ROOT[$c]}" --exclude=.git -cf - "${LAYERED[$c]}" | tar -C "${tmp}/${c}" -xf -
+        in_sif tar -C "${SRC_ROOT[$c]}" --exclude=.git -cf - "${LAYERED[$c]}" | tar -C "${tmp}/${c}" -xf -
         for f in "${patches[@]}"; do
             mr_log "overlay: ${c} <- ${f}"
-            patch -p1 --forward --fuzz=0 --no-backup-if-mismatch -d "${tmp}/${c}" < "${f}" \
+            in_sif patch -p1 --forward --fuzz=0 --no-backup-if-mismatch -d "${tmp}/${c}" < "${f}" \
                 || { rm -rf "${tmp}"; mr_die "patch ${f} does not apply to ${c} in ${MILES_SIF_NAME}"; }
             echo "${c} ${f} $(mr_sha256 < "${f}")" >> "${tmp}/MANIFEST"
             applied=$((applied + 1))
         done
     done
     local reqs=()
-    for d in "${patch_dirs[@]}"; do [ -f "${d}/pip-requirements.txt" ] && reqs+=("${d}/pip-requirements.txt"); done
+    for d in "${patch_dirs[@]}"; do if [ -f "${d}/pip-requirements.txt" ]; then reqs+=("${d}/pip-requirements.txt"); fi; done
     if [ "${#reqs[@]}" -gt 0 ]; then
         cat "${reqs[@]}" > "${tmp}/pip-requirements.txt"
         mr_log "overlay: pip --no-deps --target pydeps -r $(tr '\n' ' ' < "${tmp}/pip-requirements.txt")"
-        "${APPTAINER}" exec --bind "${tmp}" "${MILES_SIF}" \
-            python3 -m pip install -q --no-deps --no-compile --target "${tmp}/pydeps" -r "${tmp}/pip-requirements.txt" \
+        in_sif python3 -m pip install -q --no-cache-dir --no-deps --no-compile --target "${tmp}/pydeps" -r "${tmp}/pip-requirements.txt" \
             || { rm -rf "${tmp}"; mr_die "pip install of the overlay extras failed"; }
         n=$(wc -l < "${tmp}/pip-requirements.txt"); applied=$((applied + n))
     fi
@@ -113,14 +120,12 @@ if [ "${#patch_dirs[@]}" -gt 0 ]; then
             overlay_binds+=(--bind "${OVERLAY}/${c}/${LAYERED[$c]}:${SRC_ROOT[$c]}/${LAYERED[$c]}")
         fi
     done
-    [ -d "${OVERLAY}/pydeps" ] && overlay_pypath="${OVERLAY}/pydeps"
+    if [ -d "${OVERLAY}/pydeps" ]; then overlay_pypath="${OVERLAY}/pydeps"; fi
     export MILES_OVERLAY="${OVERLAY}"
 fi
 if [ "${MRUN_PRINT_OVERLAY:-0}" = 1 ]; then echo "${MILES_OVERLAY:-}"; exit 0; fi
 
 # ------------------------------------------------------------------ exec
-default_binds=(--bind "${MILES_STACK_ROOT}")
-[ -d /lustre ] && default_binds=(--bind /lustre)
 
 cache_root="${MRUN_CACHE_ROOT:-/tmp/miles-${USER}-${SLURM_JOB_ID:-local}}"
 mkdir -p "${cache_root}/home-cache"
