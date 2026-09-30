@@ -1,9 +1,10 @@
-"""Convert Polar rollout results into Slime samples.
+"""Convert Polar rollout results into trainer (Miles / Slime) samples.
 
-Every trace in ``Trajectory.traces`` becomes one Slime ``Sample``.  All
-samples produced from the same session share ``Sample.group_id`` so Slime
-0.3.0's loss reducer counts the trajectory once even when it fans out into
-multiple trace samples.  Builders own trace curation and per-token loss masks
+Every trace in ``Trajectory.traces`` becomes one trainer ``Sample``.  All
+samples produced from the same session share the loss-aggregation unit
+(Slime 0.3.0 ``Sample.group_id`` / Miles ``Sample.rollout_id``, see
+``_compat``) so the loss reducer and the step schedule count the trajectory
+once even when it fans out into multiple trace samples.  Builders own trace curation and per-token loss masks
 — the adapter does not infer trainable positions from bridge details. Traces
 that lack training tokens are dropped and represented as fully masked samples
 so callers can keep the rest of the group trainable.
@@ -16,6 +17,7 @@ import logging
 import re
 from typing import Any, TYPE_CHECKING
 
+from slime_bridge import _compat
 from slime_bridge._messages import messages_to_text
 
 if TYPE_CHECKING:
@@ -235,19 +237,20 @@ def _build_sample(
     }
     polar_metadata.update(_scheduler_metadata(result, trace))
 
-    return Sample(
+    return _compat.new_sample(
+        Sample,
+        unit_id=group_id,
+        session_id=result.session_id,
         group_index=group_index,
         index=index,
         prompt=prompt_value,
         tokens=prompt_ids + response_ids,
         response=response_text,
         response_length=len(response_ids),
-        group_id=group_id,
         reward={reward_key: reward_value},
         loss_mask=loss_mask,
         rollout_log_probs=response_log_probs,
         status=status,
-        session_id=result.session_id,
         metadata={"polar": polar_metadata},
     )
 
@@ -282,20 +285,21 @@ def _build_dummy_sample(
         "placeholder": True,
     }
     polar_metadata.update(_scheduler_metadata(result, None))
-    return Sample(
+    return _compat.new_sample(
+        Sample,
+        unit_id=group_id,
+        session_id=result.session_id,
         group_index=group_index,
         index=index,
         prompt="",
         tokens=[0, 0],
         response="",
         response_length=1,
-        group_id=group_id,
         reward={reward_key: 0.0},
         loss_mask=[0],
         rollout_log_probs=[0.0],
         status=Sample.Status.ABORTED,
         remove_sample=True,
-        session_id=result.session_id,
         metadata={"polar": polar_metadata},
     )
 
@@ -409,11 +413,4 @@ def _loss_mask_from_trace(
 
 
 def _load_sample_type() -> Any:
-    try:
-        from slime.utils.types import Sample
-    except ImportError as exc:
-        raise ImportError(
-            "Slime is required to convert Polar rollouts into training samples. "
-            "Ensure the Slime package is installed in the current environment."
-        ) from exc
-    return Sample
+    return _compat.load_sample_type()

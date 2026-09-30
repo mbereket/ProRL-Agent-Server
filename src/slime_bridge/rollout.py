@@ -29,6 +29,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 
 from polar.rollout.models import TaskResult, TaskStatus
+from slime_bridge import _compat
 from slime_bridge._messages import prompt_to_instruction_text
 from slime_bridge.adapter import RolloutLogprobError, session_result_to_samples
 from slime_bridge.config import (
@@ -36,6 +37,7 @@ from slime_bridge.config import (
     render_instruction,
     render_task_payload,
     resolve_polar_slime_config,
+    check_rollout_lora_routing,
 )
 
 logger = logging.getLogger(__name__)
@@ -521,6 +523,7 @@ class AsyncPolarRolloutWorker:
         self.args = args
         self.data_source = data_source
         self.config = resolve_polar_slime_config(args)
+        check_rollout_lora_routing(args)
         batch_size = int(getattr(args, "rollout_batch_size", 1) or 1)
         # Output queue is a handoff channel; the durable overflow buffer is
         # `_completed_buffer`, which is drained in bounded chunks by training.
@@ -1122,6 +1125,7 @@ async def _run_eval_rollout(
     data_source: Any,
 ) -> Any:
     config = resolve_polar_slime_config(args)
+    check_rollout_lora_routing(args)
     eval_datasets = list(getattr(args, "eval_datasets", []) or [])
     if eval_datasets:
         data: dict[str, dict[str, Any]] = {}
@@ -1503,7 +1507,7 @@ def _maybe_dump_longest_trace_artifact(
     by_session: dict[str, list[Any]] = {}
     for group in data:
         for sample in group:
-            sid = getattr(sample, "session_id", None) or "unknown"
+            sid = _compat.sample_session_id(sample) or "unknown"
             by_session.setdefault(sid, []).append(sample)
     if not by_session:
         return
@@ -1832,33 +1836,15 @@ def _is_truncated(sample: Any) -> bool:
 
 
 def _load_rollout_train_output_type() -> Any:
-    try:
-        from slime.rollout.base_types import RolloutFnTrainOutput
-    except ImportError as exc:
-        raise ImportError(
-            "Slime is required to run Polar rollouts from a Slime trainer."
-        ) from exc
-    return RolloutFnTrainOutput
+    return _compat.load_rollout_output_types()[0]
 
 
 def _load_rollout_eval_output_type() -> Any:
-    try:
-        from slime.rollout.base_types import RolloutFnEvalOutput
-    except ImportError as exc:
-        raise ImportError(
-            "Slime is required to run Polar evaluation rollouts from a Slime trainer."
-        ) from exc
-    return RolloutFnEvalOutput
+    return _compat.load_rollout_output_types()[1]
 
 
 def _load_sample_type() -> Any:
-    try:
-        from slime.utils.types import Sample
-    except ImportError as exc:
-        raise ImportError(
-            "Slime is required to build Polar evaluation samples from eval datasets."
-        ) from exc
-    return Sample
+    return _compat.load_sample_type()
 
 
 atexit.register(stop_global_worker)

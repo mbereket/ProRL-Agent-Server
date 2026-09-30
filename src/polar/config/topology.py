@@ -29,6 +29,15 @@ class _InferenceConfig(_StrictModel):
     # Qwen3.5 chat-template thinking. None keeps the built-in rule (off: the
     # model tends to put tool calls inside the thinking block); true/false force it.
     enable_thinking: bool | None = None
+    # Fields merged (overwriting) into every proxied request body, e.g.
+    # ``{"lora_path": "miles_lora"}`` so a LoRA trainer's rollouts sample from the
+    # live adapter instead of the frozen base.
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+    # HTTP header that carries the Polar session id on every proxied request, e.g.
+    # ``X-SMG-Routing-Key`` for the SGLang model gateway's ``manual`` /
+    # ``consistent_hashing`` policies: all turns of one agent session land on one
+    # engine and reuse its prefix cache instead of re-prefilling the whole context.
+    routing_key_header: str | None = None
 
     @field_validator("base_url")
     @classmethod
@@ -90,6 +99,14 @@ class GatewayNodeConfig(_StrictModel):
     @property
     def enable_thinking(self) -> bool | None:
         return self.inference.enable_thinking
+
+    @property
+    def extra_body(self) -> dict[str, Any]:
+        return dict(self.inference.extra_body)
+
+    @property
+    def routing_key_header(self) -> str | None:
+        return self.inference.routing_key_header
 
 
 class _CompletionPersistenceConfig(_StrictModel):

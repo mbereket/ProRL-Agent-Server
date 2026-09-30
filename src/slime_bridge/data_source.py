@@ -1,17 +1,19 @@
-"""Slime data-source wrappers used by Polar examples."""
+"""Trainer (Miles / Slime) data-source wrappers used by Polar examples."""
 
 from __future__ import annotations
 
 import math
 
+from slime_bridge import _compat
+
 try:
-    from slime.rollout.data_source import RolloutDataSourceWithBuffer
-except ImportError as _SLIME_IMPORT_ERROR:
+    RolloutDataSourceWithBuffer = _compat.load_buffered_data_source()
+except ImportError as _TRAINER_IMPORT_ERROR:
     class RolloutDataSourceWithBuffer:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError(
-                "Slime is required to use CeilEpochRolloutDataSourceWithBuffer."
-            ) from _SLIME_IMPORT_ERROR
+                "Miles or Slime is required to use CeilEpochRolloutDataSourceWithBuffer."
+            ) from _TRAINER_IMPORT_ERROR
 
 
 def ceil_to_batch_size(size: int, batch_size: int) -> int:

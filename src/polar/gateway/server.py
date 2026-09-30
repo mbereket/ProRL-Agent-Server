@@ -96,6 +96,8 @@ def _build_state(topology: TopologyConfig, node_id: str | None) -> GatewayState:
     inference = InferenceClient(
         node.inference_base_url,
         get_engine(node.engine, training_sampling=node.training_sampling),
+        extra_body=node.extra_body,
+        routing_key_header=node.routing_key_header,
     )
     persistence_config = topology.gateway.completion_persistence
     save_dir = topology.rollout.save_dir
@@ -715,7 +717,7 @@ async def _handle_non_streaming(
 ) -> JSONResponse:
     state = get_state()
     try:
-        response = await state.inference.completion(openai_request)
+        response = await state.inference.completion(openai_request, routing_key=session_id)
     except UpstreamError as exc:
         logger.warning("Non-streaming upstream error for session %s: %s", session_id, exc)
         return _upstream_error_response(api_type, exc)
@@ -751,7 +753,7 @@ async def _handle_streaming(
     non_stream_request = {k: v for k, v in openai_request.items() if k != "stream_options"}
     non_stream_request["stream"] = False
     try:
-        response = await state.inference.completion(non_stream_request)
+        response = await state.inference.completion(non_stream_request, routing_key=session_id)
     except UpstreamError as exc:
         logger.warning("Upstream error for streaming session %s: %s", session_id, exc)
         return _upstream_error_response(api_type, exc)

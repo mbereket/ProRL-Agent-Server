@@ -9,10 +9,11 @@ std scaling uses the std over *all* valid trajectories in the group (as in
 GRPO); a leave-one-out std is degenerate whenever the other trajectories agree.
 
 Adapter contract:
-    All Slime samples produced from the same Polar ``SessionResult`` share
-    ``Sample.session_id`` (the trajectory key used here) and ``Sample.group_id``
-    (slime's loss-aggregation unit: the trajectory, or the whole prompt group
-    under ``polar_group_id_scope: prompt``).
+    All samples produced from the same Polar ``SessionResult`` share the session
+    id (``metadata["polar"]["session_id"]``, the trajectory key used here) and
+    the trainer's loss-aggregation unit (Slime ``group_id`` / Miles
+    ``rollout_id``: the trajectory, or the whole prompt group under
+    ``polar_group_id_scope: prompt``).
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from __future__ import annotations
 import logging
 import statistics
 from typing import Any
+
+from slime_bridge import _compat
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +96,9 @@ def post_process_rewards(
 
 def _trajectory_key(sample: Any, sample_position: int) -> tuple[Any, tuple[Any, Any]]:
     group_idx = _key_value(getattr(sample, "group_index", None), -1)
-    traj_idx = getattr(sample, "session_id", None)
+    traj_idx = _compat.sample_session_id(sample)
     if traj_idx is None:
-        traj_idx = getattr(sample, "group_id", None)
+        traj_idx = _compat.sample_unit_id(sample)
     if traj_idx is None:
         traj_idx = getattr(sample, "index", None)
     return group_idx, (group_idx, _key_value(traj_idx, sample_position))

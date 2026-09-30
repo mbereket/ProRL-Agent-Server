@@ -67,9 +67,19 @@ class InferenceClient:
 
     _LIVENESS_TIMEOUT_SECONDS = 900.0
 
-    def __init__(self, base_url: str, engine: InferenceEngine):
+    def __init__(
+        self,
+        base_url: str,
+        engine: InferenceEngine,
+        *,
+        extra_body: dict[str, Any] | None = None,
+        routing_key_header: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.engine = engine
+        # Merged last, over the engine's training params and the harness request.
+        self.extra_body = dict(extra_body or {})
+        self.routing_key_header = routing_key_header
         self._client: httpx.AsyncClient | None = None
         self._generation_paused = False
         self._inflight_generations = 0
@@ -111,8 +121,12 @@ class InferenceClient:
             return UpstreamTimeoutError("Upstream request timed out")
         return UpstreamTransportError(f"Upstream request failed: {exc}")
 
-    async def completion(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Non-streaming chat completion. Returns the full JSON response."""
+    async def completion(self, request: dict[str, Any], *, routing_key: str | None = None) -> dict[str, Any]:
+        """Non-streaming chat completion. Returns the full JSON response.
+
+        ``routing_key`` (the Polar session id) is sent in ``routing_key_header``
+        when one is configured, so the router can pin a session to one engine.
+        """
         await self._acquire_generation_slot()
         client = await self._get_client()
         from copy import deepcopy
@@ -121,11 +135,15 @@ class InferenceClient:
         request_copy.pop("stream", None)
         request_copy["stream"] = False
         request_copy = self.engine.prepare_request(request_copy)
+        request_copy.update(deepcopy(self.extra_body))
+        headers = {"Content-Type": "application/json"}
+        if self.routing_key_header and routing_key:
+            headers[self.routing_key_header] = str(routing_key)
         try:
             resp = await client.post(
                 "/v1/chat/completions",
                 json=request_copy,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
         except httpx.RequestError as exc:
             raise self._translate_transport_error(exc) from exc
@@ -168,6 +186,8 @@ class InferenceClient:
             "inflight": self._inflight_generations,
             "base_url": self.base_url,
             "engine": self.engine.name,
+            "extra_body": dict(self.extra_body),
+            "routing_key_header": self.routing_key_header,
         }
 
     async def list_models(self) -> dict[str, Any]:

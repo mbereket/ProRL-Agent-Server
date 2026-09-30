@@ -162,6 +162,68 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     )
 
 
+def expected_rollout_lora_path(args: Any) -> str | None:
+    """Adapter name every rollout request must carry, or None when the trainer
+    serves plain (base / fully fine-tuned) weights.
+
+    Miles publishes a LoRA trainer's adapter to SGLang under a fixed name and
+    only requests that name the adapter are sampled from it; without it the
+    engines silently serve the frozen base while the trainer updates the
+    adapter (off-policy data with no error anywhere).
+    """
+    if int(getattr(args, "lora_rank", 0) or 0) <= 0 and not getattr(args, "lora_adapter_path", None):
+        return None
+    try:
+        from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
+    except ImportError:  # Slime has no LoRA; nothing to route
+        return None
+    return LORA_ADAPTER_NAME if lora_rollout_enabled(args) else None
+
+
+def check_rollout_lora_routing(args: Any, *, live: bool = True, timeout_s: float = 10.0) -> None:
+    """Fail loudly unless every Polar gateway selects the trainer's live adapter.
+
+    Static check: every gateway node in ``polar_topology_path`` carries
+    ``inference.extra_body.lora_path`` equal to :func:`expected_rollout_lora_path`
+    (and none when the trainer has no adapter). Live check (``live``): each
+    gateway's ``/admin/inference/status`` reports the same ``extra_body``, so a
+    gateway started from a stale topology is caught too.
+    """
+    expected = expected_rollout_lora_path(args)
+    topology_path = getattr(args, "polar_topology_path", None)
+    if not topology_path:
+        if expected is not None:
+            raise ValueError(
+                f"LoRA training needs every rollout request to carry lora_path={expected!r}; set "
+                "polar_topology_path in the custom config so the bridge can verify the gateways"
+            )
+        return
+    topology = TopologyConfig.load(topology_path)
+    problems = []
+    for node in topology.gateway.nodes:
+        got = node.extra_body.get("lora_path")
+        if got != expected:
+            problems.append(f"{node.id}: topology lora_path={got!r}")
+    if live and not problems:
+        import httpx
+
+        for node in topology.gateway.nodes:
+            url = f"{node.public_url.rstrip('/')}/admin/inference/status"
+            try:
+                status = httpx.get(url, timeout=timeout_s).json()
+            except Exception as exc:  # gateways are health-checked before the trainer starts
+                problems.append(f"{node.id}: {url} unreachable ({exc})")
+                continue
+            got = (status.get("extra_body") or {}).get("lora_path")
+            if got != expected:
+                problems.append(f"{node.id}: live gateway lora_path={got!r}")
+    if problems:
+        raise ValueError(
+            f"rollout adapter routing mismatch (trainer expects lora_path={expected!r}): "
+            + "; ".join(problems)
+        )
+
+
 def resolve_sglang_router_base_url(args: Any) -> str | None:
     ip = getattr(args, "sglang_router_ip", None)
     port = getattr(args, "sglang_router_port", None)
