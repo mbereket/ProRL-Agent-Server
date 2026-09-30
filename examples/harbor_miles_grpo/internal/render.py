@@ -335,19 +335,47 @@ def gpu_layout(cfg: dict, f: dict) -> tuple[int, int, int]:
     return actor_nodes, actor_gpus_per_node, rollout_gpus
 
 
+def latest_lora_adapter(root: str) -> str | None:
+    """Newest Miles LoRA checkpoint under root: <root>/iter_NNNNNNN/adapter with rank-0 shards.
+
+    Bridge LoRA saves write only the adapter dir (per-rank adapter + optimizer
+    shards), no latest_checkpointed_iteration.txt, so resume points
+    --lora-adapter-path at the newest one; Miles restores the adapter, the
+    optimizer and the iteration (start = iteration + 1) from it.
+    """
+    if not root or not os.path.isdir(root):
+        return None
+    best = None
+    for name in os.listdir(root):
+        if not (name.startswith("iter_") and name[5:].isdigit()):
+            continue
+        adapter = os.path.join(root, name, "adapter")
+        if os.path.isfile(os.path.join(adapter, "adapter_megatron_rank0.pt")) and \
+                os.path.isfile(os.path.join(adapter, "training_state_rank0.pt")):
+            best = max(best or (-1, ""), (int(name[5:]), adapter))
+    return best[1] if best else None
+
+
 def checkpoint_args(cfg: dict, d: dict, f: dict) -> list[str]:
-    """--load/--ref-load/--start-rollout-id. Resume wins, then model.load_dir, then the base."""
+    """Where the policy starts: resume (own save dir) > model.load_dir > the base model."""
     m = cfg["model"]
     latest = "latest_checkpointed_iteration.txt"
+    if lora_enabled(cfg):
+        # The frozen base always comes from --hf-checkpoint (Megatron-Bridge); only the adapter resumes.
+        own = latest_lora_adapter(d["SAVE_DIR"])
+        if own:
+            return ["--lora-adapter-path", own]
+        if m["load_dir"]:
+            warm = latest_lora_adapter(m["load_dir"]) or die(f"model.load_dir has no LoRA adapter checkpoint: {m['load_dir']}")
+            # Warm start: adapter weights of another run, but this run counts its own steps from 0.
+            return ["--lora-adapter-path", warm, "--start-rollout-id", "0", "--no-load-optim"]
+        # The adapter starts at B = 0, i.e. exactly the base policy.
+        return ["--start-rollout-id", "0"]
+    if os.path.isfile(os.path.join(d["SAVE_DIR"], latest)):
+        return ["--load", d["SAVE_DIR"]]  # resume: Miles derives start_rollout_id from the checkpoint
     if m["load_dir"]:
         os.path.isfile(os.path.join(m["load_dir"], latest)) or die(f"model.load_dir has no checkpoint: {m['load_dir']}")
         return ["--load", m["load_dir"]]
-    if os.path.isfile(os.path.join(d["SAVE_DIR"], latest)):
-        return ["--load", d["SAVE_DIR"]]  # resume: Miles derives start_rollout_id from the checkpoint
-    if lora_enabled(cfg):
-        # Bridge mode builds the frozen base straight from the HF checkpoint; the
-        # adapter starts at B = 0, i.e. exactly the base policy.
-        return ["--start-rollout-id", "0"]
     ref = d["TORCH_DIST_DIR"]
     if not f["DRY_RUN"] and not os.path.isfile(os.path.join(ref, latest)):
         die(f"full fine-tune: converted base checkpoint not found at {ref}")
