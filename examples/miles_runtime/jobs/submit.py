@@ -99,7 +99,12 @@ def main() -> int:
         f'partitions.gpu_interactive = {{partition = "{a.partition}", time = "{time}"}}\n')
     pkgs = [RUNTIME_DIR] + [Path(p).resolve() for p in a.pkg]
     env_block = "\n".join(f"          {k}: {yaml_str(v)}" for k, v in env.items())
-    command = " ".join(shlex.quote(x) if not x.startswith("$") and "$" not in x else x for x in cmd)
+    # $VARS (e.g. $SCOMPOSE_PKGS) must expand in the job: double-quote those args, single-quote the rest.
+    def q(x: str) -> str:
+        if "$" not in x:
+            return shlex.quote(x)
+        return '"' + x.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`") + '"'
+    command = " ".join(q(x) for x in cmd)
     gpu_line = f"    gpus_per_node: {a.gpus}\n" if a.gpus else ""
     step_gpu_line = f"        gpus_per_node: {a.gpus}\n" if a.gpus else ""
     yml = work / "job.yml"
