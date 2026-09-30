@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Benchmark job entry (one srun task per node). Runs the arms of ARMS_FILE sequentially,
+# each in a fresh Ray cluster (ray_node.sh), writing to $MILES_STACK_ROOT/bench/<SUITE>/<arm>/.
+#
+#   run.sh SUITE ARMS_FILE [PATCH_DIR]
+#
+# ARMS_FILE: one arm per line, `<name> KEY=VALUE ...` (knobs of bench/grpo.sh; `#` comments).
+# An arm whose summary.json exists is skipped, so a resubmitted job resumes the suite.
+# `REPLAY=@<arm>` points a train_only arm at another arm's rollout dump.
+# `!synth <name> <seq_len> <samples> <rollouts>` writes fixed-length synthetic dumps to <name>/rollout_data.
+set -uo pipefail
+MR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
+source "${MR}/lib.sh"
+SUITE="${1:?suite}"; ARMS_FILE="${2:?arms file}"; PATCH_DIR="${3:-}"
+[ -f "${ARMS_FILE}" ] || ARMS_FILE="${MR}/bench/${ARMS_FILE}"
+ROOT="${MILES_STACK_ROOT}/bench/${SUITE}"
+mkdir -p "${ROOT}"
+patch_opts=(); [ -n "${PATCH_DIR}" ] && { [ -d "${PATCH_DIR}" ] || PATCH_DIR="${MR}/${PATCH_DIR}"; patch_opts=(--patches "${PATCH_DIR}"); }
+
+if [ "${SLURM_NODEID:-0}" = 0 ]; then
+    "${MR}/mrun" --no-nv -- bash "${MR}/bench/prepare.sh" 2>&1 | tail -20
+fi
+
+while read -r name rest; do
+    [ -z "${name}" ] || [ "${name:0:1}" = "#" ] && continue
+    if [ "${name}" = "!synth" ]; then
+        read -r sname slen ssamples srollouts <<< "${rest}"
+        if [ ! -s "${ROOT}/${sname}/rollout_data/$((srollouts - 1)).pt" ]; then
+            "${MR}/mrun" --no-nv -- python3 "${MR}/bench/make_synthetic.py" "${ROOT}/${sname}/rollout_data" \
+                --seq-len "${slen}" --samples "${ssamples}" --rollouts "${srollouts}" 2>&1 | tail -2
+        fi
+        continue
+    fi
+    out="${ROOT}/${name}"
+    if [ -s "${out}/summary.json" ] && grep -q '"steps": [1-9]' "${out}/summary.json"; then
+        mr_log "arm ${name}: done already, skipping"; continue
+    fi
+    mkdir -p "${out}"
+    kv=(); for x in ${rest}; do
+        if [[ "${x}" == REPLAY=@* ]]; then x="REPLAY=${ROOT}/${x#REPLAY=@}/rollout_data"; fi
+        kv+=("${x}")
+    done
+    mr_log "arm ${name}: ${kv[*]}"
+    t0=${SECONDS}
+    env "${kv[@]}" OUT="${out}" RAY_GCS_PORT="${RAY_GCS_PORT:-6379}" \
+        bash "${MR}/ray_node.sh" "${patch_opts[@]}" -- bash "${MR}/bench/grpo.sh" > "${out}/job.log" 2>&1
+    rc=$?
+    mr_log "arm ${name}: rc ${rc} in $((SECONDS - t0)) s ($(tail -c 300 "${out}/job.log" | tr '\n' ' ' | cut -c1-200))"
+    sleep 10
+done < "${ARMS_FILE}"
+mr_log "suite ${SUITE}: all arms attempted"

@@ -1,0 +1,8 @@
+# End-to-end GRPO on dapo-math-17k (NOT length-controlled: response lengths differ per arm/step).
+# Then the full arm's real rollouts are replayed through both trainers (length-controlled, real data).
+full-colo        ARM=full LAYOUT=colocate NUM_ROLLOUT=6
+lora-colo        ARM=lora LAYOUT=colocate NUM_ROLLOUT=6
+replay-full      ARM=full MODE=train_only REPLAY=@full-colo NUM_ROLLOUT=4
+replay-lora      ARM=lora MODE=train_only REPLAY=@full-colo NUM_ROLLOUT=4
+lora-disagg      ARM=lora LAYOUT=disagg TRAIN_GPUS=4 NUM_ROLLOUT=6
+full-disagg      ARM=full LAYOUT=disagg TRAIN_GPUS=4 NUM_ROLLOUT=6
