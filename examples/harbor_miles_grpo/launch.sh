@@ -87,7 +87,11 @@ if [ "${DRY_RUN}" = 0 ]; then
     done < <(config_python "${SHARED}/internal/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" --list-images "${select[@]:2}")
     while IFS=$'\t' read -r ref sif; do
         info "pulling ${ref} -> ${sif}"
-        "${POLAR_APPTAINER_BIN}" pull "${APPTAINER_IMAGE_DIR}/${sif}.part" "docker://${ref}" >/dev/null \
+        # Registry credentials in the environment (the cluster layer maps a GitLab token to
+        # APPTAINER_DOCKER_*) belong to that registry only: public images are pulled anonymously.
+        creds=(env -u APPTAINER_DOCKER_USERNAME -u APPTAINER_DOCKER_PASSWORD -u SINGULARITY_DOCKER_USERNAME -u SINGULARITY_DOCKER_PASSWORD)
+        case "${ref%%/*}" in *.*|*:*|localhost) creds=() ;; esac   # explicit registry host: keep its credentials
+        ${creds[@]+"${creds[@]}"} "${POLAR_APPTAINER_BIN}" pull "${APPTAINER_IMAGE_DIR}/${sif}.part" "docker://${ref}" >/dev/null \
             && mv "${APPTAINER_IMAGE_DIR}/${sif}.part" "${APPTAINER_IMAGE_DIR}/${sif}"
     done < "${to_pull}"
     select+=(--image-dir "${APPTAINER_IMAGE_DIR}")
