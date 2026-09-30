@@ -1,0 +1,11 @@
+# Length-controlled training-side comparison (no SGLang): identical fixed-length synthetic batches.
+# 16k-token samples, 64 per step (1.05M tokens/step); 64k-token samples, 16 per step.
+!synth syn16k 16384 64 4
+!synth syn64k 65536 16 3
+t16k-full        ARM=full MODE=train_only REPLAY=@syn16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 CP=1 MTPG=16384
+t16k-lora        ARM=lora MODE=train_only REPLAY=@syn16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 CP=1 MTPG=16384
+t16k-lora-tp1    ARM=lora MODE=train_only REPLAY=@syn16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=1 CP=1 MTPG=16384
+t64k-full        ARM=full MODE=train_only REPLAY=@syn64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=4 MTPG=16384
+t64k-lora        ARM=lora MODE=train_only REPLAY=@syn64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=4 MTPG=16384
+t64k-full-off    ARM=full MODE=train_only REPLAY=@syn64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=4 MTPG=16384 OFFLOAD=1
+t64k-lora-tp1cp8 ARM=lora MODE=train_only REPLAY=@syn64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=1 CP=8 MTPG=8192

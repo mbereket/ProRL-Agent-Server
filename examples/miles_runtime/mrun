@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Run a command inside the pinned Miles runtime (Apptainer SIF), optionally with
+# setup-time patches layered on top.
+#
+#   mrun [--patches DIR]... [--bind SRC[:DST[:OPTS]]]... [--pythonpath P]... [--no-nv] [--] CMD [ARGS...]
+#
+# --patches DIR (repeatable; also MILES_PATCHES=dir1:dir2) — a patch set:
+#     DIR/miles/*.patch      applied with `patch -p1` at the root of the Miles checkout      (/root/miles)
+#     DIR/sglang/*.patch     ... at the root of the SGLang checkout (only python/ is layered) (/sgl-workspace/sglang)
+#     DIR/megatron/*.patch   ... at the root of Megatron-LM (only megatron/ is layered)       (/root/Megatron-LM)
+#     DIR/pip-requirements.txt  pure-python extras, `pip install --no-deps --target`, prepended to PYTHONPATH
+#   Patches apply in (DIR order, then file-name order). The patched trees are built once per
+#   content hash under $MILES_STACK_ROOT/overlays/<hash>/ and bind-mounted over the image's
+#   editable installs, so a new patch set costs ~1 min, not a SIF rebuild.
+# --bind       extra apptainer binds (the lustre root and $MILES_STACK_ROOT are always bound).
+# --pythonpath prepend to PYTHONPATH inside the container (e.g. a checkout of your own package).
+#
+# Environment knobs: MILES_SIF (override image), MILES_APPTAINER_BIN, MRUN_APPTAINER_ARGS (extra
+# `apptainer exec` flags, e.g. --writable-tmpfs), MRUN_PRINT_OVERLAY=1 (print the overlay dir and exit).
+#
+# Compiler/JIT caches (Triton, Inductor, flashinfer, ...) default to node-local /tmp per job: a cache on
+# lustre shared by concurrent jobs corrupts. Override with MRUN_CACHE_ROOT.
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)/lib.sh"
+
+patch_dirs=(); binds=(); pypaths=(); nv=(--nv)
+IFS=: read -r -a _env_patches <<< "${MILES_PATCHES:-}"
+for d in "${_env_patches[@]}"; do [ -n "${d}" ] && patch_dirs+=("${d}"); done
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --patches) patch_dirs+=("$2"); shift 2 ;;
+        --bind) binds+=(--bind "$2"); shift 2 ;;
+        --pythonpath) pypaths+=("$2"); shift 2 ;;
+        --no-nv) nv=(); shift ;;
+        --) shift; break ;;
+        -*) mr_die "unknown option $1" ;;
+        *) break ;;
+    esac
+done
+[ $# -gt 0 ] || [ "${MRUN_PRINT_OVERLAY:-0}" = 1 ] || mr_die "usage: mrun [options] [--] CMD [ARGS...]"
+
+APPTAINER="$(mr_apptainer_bin)"
+[ -x "${APPTAINER}" ] || mr_die "no apptainer at ${APPTAINER}; run setup.sh first"
+[ -s "${MILES_SIF}" ] || mr_die "no image at ${MILES_SIF}; run setup.sh first"
+
+# ------------------------------------------------------------------ overlay
+COMPONENTS=(miles sglang megatron)
+declare -A SRC_ROOT=([miles]=/root/miles [sglang]=/sgl-workspace/sglang [megatron]=/root/Megatron-LM)
+declare -A LAYERED=([miles]=. [sglang]=python [megatron]=megatron)
+
+overlay_key() {
+    {
+        echo "sif ${MILES_SIF_NAME} v2"
+        local d c f
+        for d in "${patch_dirs[@]}"; do
+            for c in "${COMPONENTS[@]}"; do
+                for f in "${d}/${c}"/*.patch; do [ -f "${f}" ] && echo "${c} $(basename "${f}") $(mr_sha256 < "${f}")"; done
+            done
+            [ -f "${d}/pip-requirements.txt" ] && echo "pip $(mr_sha256 < "${d}/pip-requirements.txt")"
+        done
+    } | mr_sha256 | cut -c1-16
+}
+
+build_overlay() {
+    local dst="$1" tmp="$1.tmp.$$" c d f n applied=0
+    rm -rf "${tmp}"; mkdir -p "${tmp}"
+    for c in "${COMPONENTS[@]}"; do
+        local patches=()
+        for d in "${patch_dirs[@]}"; do for f in "${d}/${c}"/*.patch; do [ -f "${f}" ] && patches+=("${f}"); done; done
+        [ "${#patches[@]}" -eq 0 ] && continue
+        mkdir -p "${tmp}/${c}"
+        "${APPTAINER}" exec "${MILES_SIF}" tar -C "${SRC_ROOT[$c]}" --exclude=.git -cf - "${LAYERED[$c]}" | tar -C "${tmp}/${c}" -xf -
+        for f in "${patches[@]}"; do
+            mr_log "overlay: ${c} <- ${f}"
+            patch -p1 --forward --fuzz=0 --no-backup-if-mismatch -d "${tmp}/${c}" < "${f}" \
+                || { rm -rf "${tmp}"; mr_die "patch ${f} does not apply to ${c} in ${MILES_SIF_NAME}"; }
+            echo "${c} ${f} $(mr_sha256 < "${f}")" >> "${tmp}/MANIFEST"
+            applied=$((applied + 1))
+        done
+    done
+    local reqs=()
+    for d in "${patch_dirs[@]}"; do [ -f "${d}/pip-requirements.txt" ] && reqs+=("${d}/pip-requirements.txt"); done
+    if [ "${#reqs[@]}" -gt 0 ]; then
+        cat "${reqs[@]}" > "${tmp}/pip-requirements.txt"
+        mr_log "overlay: pip --no-deps --target pydeps -r $(tr '\n' ' ' < "${tmp}/pip-requirements.txt")"
+        "${APPTAINER}" exec --bind "${tmp}" "${MILES_SIF}" \
+            python3 -m pip install -q --no-deps --no-compile --target "${tmp}/pydeps" -r "${tmp}/pip-requirements.txt" \
+            || { rm -rf "${tmp}"; mr_die "pip install of the overlay extras failed"; }
+        n=$(wc -l < "${tmp}/pip-requirements.txt"); applied=$((applied + n))
+    fi
+    echo "sif ${MILES_SIF_NAME}" >> "${tmp}/MANIFEST"
+    mv "${tmp}" "${dst}"
+    mr_log "overlay: built ${dst} (${applied} items)"
+}
+
+overlay_binds=(); overlay_pypath=""
+if [ "${#patch_dirs[@]}" -gt 0 ]; then
+    for d in "${patch_dirs[@]}"; do [ -d "${d}" ] || mr_die "--patches ${d}: not a directory"; done
+    key="$(overlay_key)"
+    OVERLAY="${MILES_STACK_ROOT}/overlays/${key}"
+    if [ ! -d "${OVERLAY}" ]; then
+        mkdir -p "${MILES_STACK_ROOT}/overlays"
+        (
+            flock -w 1800 9 || mr_die "timed out waiting for the overlay lock ${key}"
+            [ -d "${OVERLAY}" ] || build_overlay "${OVERLAY}"
+        ) 9>"${OVERLAY}.lock"
+    fi
+    for c in "${COMPONENTS[@]}"; do
+        [ -d "${OVERLAY}/${c}" ] || continue
+        if [ "${LAYERED[$c]}" = . ]; then
+            overlay_binds+=(--bind "${OVERLAY}/${c}:${SRC_ROOT[$c]}")
+        else
+            overlay_binds+=(--bind "${OVERLAY}/${c}/${LAYERED[$c]}:${SRC_ROOT[$c]}/${LAYERED[$c]}")
+        fi
+    done
+    [ -d "${OVERLAY}/pydeps" ] && overlay_pypath="${OVERLAY}/pydeps"
+    export MILES_OVERLAY="${OVERLAY}"
+fi
+if [ "${MRUN_PRINT_OVERLAY:-0}" = 1 ]; then echo "${MILES_OVERLAY:-}"; exit 0; fi
+
+# ------------------------------------------------------------------ exec
+default_binds=(--bind "${MILES_STACK_ROOT}")
+[ -d /lustre ] && default_binds=(--bind /lustre)
+
+cache_root="${MRUN_CACHE_ROOT:-/tmp/miles-${USER}-${SLURM_JOB_ID:-local}}"
+mkdir -p "${cache_root}/home-cache"
+# ~/.cache takes JIT/workspace writes that ignore XDG (flashinfer/sglang write ~/.cache/sglang); $HOME is
+# full on dfw and over quota on aws-iad. Redirect it to node-local scratch; keep the rest of $HOME visible.
+if [ -d "${HOME}/.cache" ]; then
+    home_binds=(--bind "${cache_root}/home-cache:${HOME}/.cache")
+else
+    mkdir -p "${cache_root}/home"
+    home_binds=(--home "${cache_root}/home:${HOME}")
+fi
+pp=""
+for p in "${pypaths[@]}" ${overlay_pypath:+"${overlay_pypath}"}; do pp="${pp:+${pp}:}${p}"; done
+pp="${pp:+${pp}:}/root/Megatron-LM"
+
+# Host LD_LIBRARY_PATH/PYTHONPATH/venv (e.g. a host venv or CUDA toolkit) must not leak into the image.
+unset LD_LIBRARY_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV CONDA_PREFIX
+env_args=(
+    --env "PYTHONPATH=${pp}"
+    --env "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${cache_root}/triton}"
+    --env "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${cache_root}/inductor}"
+    --env "XDG_CACHE_HOME=${MRUN_XDG_CACHE_HOME:-${cache_root}/xdg}"
+    --env "CUDA_CACHE_PATH=${CUDA_CACHE_PATH:-${cache_root}/nv-compute-cache}"
+    --env "CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
+    --env "PYTHONUNBUFFERED=1"
+)
+# Old kernel drivers (dfw 535, aws-iad): put the forward-compat libcuda ahead of the host one that
+# --nv binds (apptainer appends /.singularity.d/libs to LD_LIBRARY_PATH inside the container).
+compat="$(mr_cuda_compat_libdir)"
+if [ -n "${compat}" ]; then
+    set -- bash -c 'export LD_LIBRARY_PATH="$0${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"; exec "$@"' "${compat}" "$@"
+fi
+# shellcheck disable=SC2086
+exec "${APPTAINER}" exec "${nv[@]}" ${MRUN_APPTAINER_ARGS:-} "${default_binds[@]}" "${home_binds[@]}" "${overlay_binds[@]}" "${binds[@]}" \
+    "${env_args[@]}" "${MILES_SIF}" "$@"

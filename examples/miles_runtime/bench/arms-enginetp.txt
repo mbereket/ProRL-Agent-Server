@@ -1,0 +1,5 @@
+# SGLang engine TP>1 correctness for Qwen3.5 (the recipe pins TP1 for sglang#21039):
+# compare train/rollout logprob mismatch + outputs of TP1 vs TP2 engines on the same prompts.
+etp1-lora        ARM=lora LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=1
+etp2-lora        ARM=lora LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=2
+etp4-full        ARM=full LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=4
