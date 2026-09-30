@@ -18,7 +18,7 @@ algorithm/layout knobs. Unknown keys are an error. Schema (defaults in SCHEMA):
             gpus_per_engine, router_policy
   rollout:  batch_size, n_samples_per_prompt, num_steps | num_epoch, max_prompt_len,
             max_response_len, sglang_context_length, sglang_mem_fraction
-  training: sync, max_tokens_per_gpu, qkv_format (auto|thd|bshd), lr, loss_aggregation, normalize_advantages,
+  training: sync, max_tokens_per_gpu, qkv_format (thd|bshd), lr, loss_aggregation, normalize_advantages,
             use_kl_loss, kl_loss_coef, grpo_std_normalization, optimizer_cpu_offload,
             group_id_scope, timeout_reward_zero, overlong_policy, drop_zero_variance_groups,
             save_interval, save_hf_interval, extra_train_args
@@ -127,9 +127,10 @@ SCHEMA = {
     "training": {
         "sync": False,               # false: train_async.py (generation overlaps training, TIS-corrected)
         "max_tokens_per_gpu": 16384, # trace cap = this x context_parallel_size
-        "qkv_format": "auto",        # auto | thd (packed) | bshd (one sample per micro-batch). auto: bshd under
-                                     # LoRA (Megatron-Bridge builds megatron-core GatedDeltaNet, which rejects
-                                     # packed sequences), thd in raw mode (Miles' qwen3_5 spec)
+        "qkv_format": "thd",         # thd (packed, dynamic batch, CP) | bshd (one sample per micro-batch). The pinned
+                                     # megatron-core GatedDeltaNet (ssm/gated_delta_net/gdn.py) handles thd + CP, so the
+                                     # Miles 35B-A3B launcher's "GDN rejects packed sequences" no longer applies; bshd also
+                                     # needs the step's sample count divisible by DP, which multi-trace sessions break.
         "lr": "1e-5",                # LoRA; full fine-tune wants ~1e-6
         "loss_aggregation": "token_mean",  # token_mean | trajectory_mean
         "normalize_advantages": False,
@@ -217,10 +218,8 @@ def load(path: str) -> dict:
         die(f"{path}: harness.max_async_level > 1 needs training.sync: false")
     if tr["loss_aggregation"] not in ("token_mean", "trajectory_mean"):
         die(f"{path}: training.loss_aggregation must be token_mean or trajectory_mean")
-    if tr["qkv_format"] not in ("auto", "thd", "bshd"):
-        die(f"{path}: training.qkv_format must be auto, thd or bshd")
-    if tr["qkv_format"] == "auto":
-        tr["qkv_format"] = "bshd" if int(lo["rank"]) > 0 else "thd"
+    if tr["qkv_format"] not in ("thd", "bshd"):
+        die(f"{path}: training.qkv_format must be thd or bshd")
     if int(lo["rank"]) < 0:
         die(f"{path}: lora.rank must be >= 0")
     return cfg
