@@ -1,0 +1,312 @@
+diff --git a/agent_server/results.py b/agent_server/results.py
+index 0d37ec6..5511151 100644
+--- a/agent_server/results.py
++++ b/agent_server/results.py
+@@ -94,6 +94,16 @@ def _extract_metrics(result) -> dict[str, Any]:
+             if isinstance(agent_meta, dict):
+                 metrics.update(agent_meta)
+ 
++        # Failure attribution for the trainer: which exception ended the trial
++        # (Harbor class name) and where. A trial that never reached the agent
++        # run phase failed in infrastructure (sandbox start, agent setup), not
++        # through the policy.
++        exc = getattr(result, "exception_info", None)
++        if exc is not None:
++            metrics["exception_type"] = getattr(exc, "exception_type", "") or ""
++            metrics["exception_message"] = (getattr(exc, "exception_message", "") or "")[:500]
++        metrics["agent_started"] = getattr(result, "agent_execution", None) is not None
++
+         # Wall-clock duration of each trial phase. ``total_time`` is the whole
+         # trial span (the result object itself carries started_at/finished_at);
+         # the named phases are its constituents. ``env_setup_time`` covers the
+diff --git a/agent_server/state.py b/agent_server/state.py
+index 33fb9bf..0fe6a26 100644
+--- a/agent_server/state.py
++++ b/agent_server/state.py
+@@ -37,6 +37,10 @@ class ServerState:
+     # heartbeat-based ``active_tasks`` only covers Miles-session-server requests).
+     inflight_tasks: set[asyncio.Task] = field(default_factory=set)
+     semaphore: asyncio.Semaphore | None = None
++    # Process-group ids of live per-trial worker processes (singularity: the
++    # container processes are in the same group), so flush_all can kill them.
++    trial_pgids: set[int] = field(default_factory=set)
++    max_concurrent: int = 0
+     # Startup config resolved once in ``main()`` and read while running a trial:
+     # where trial outputs are written, and the agent run/setup timeout overrides
+     # (``None`` = use Harbor's per-task defaults).
+diff --git a/agent_server/teardown.py b/agent_server/teardown.py
+index 5b92059..c061fbd 100644
+--- a/agent_server/teardown.py
++++ b/agent_server/teardown.py
+@@ -26,6 +26,15 @@ def _cancel_all_inflight() -> int:
+ 
+ 
+ async def _kill_trial_containers() -> dict[str, Any]:
++    from agent_server.trial_runner import env_type, kill_all_trial_groups
++
++    if env_type() != "docker":
++        # Singularity sandboxes live in their trial worker's process group.
++        return {"killed_trial_groups": kill_all_trial_groups(), "errors": []}
++    return await _kill_compose_projects()
++
++
++async def _kill_compose_projects() -> dict[str, Any]:
+     """Tear down compose projects this server created (containers + volumes + networks).
+ 
+     Matches each live compose project against this server's registered project
+diff --git a/agent_server/trial_runner.py b/agent_server/trial_runner.py
+index cd7eb6e..63878de 100644
+--- a/agent_server/trial_runner.py
++++ b/agent_server/trial_runner.py
+@@ -12,6 +12,7 @@ import json
+ import logging
+ import os
+ import re
++import signal
+ import sys
+ import traceback
+ from pathlib import Path
+@@ -189,13 +190,40 @@ def _opencode_model_name(model: str) -> str:
+     return f"{provider}/{model_id}"
+ 
+ 
++def env_type() -> str:
++    return os.getenv("HARBOR_ENV_TYPE", "docker").lower()
++
++
++def _singularity_mounts() -> list[dict[str, Any]]:
++    """Extra read-only binds for every sandbox, from HARBOR_SINGULARITY_MOUNTS.
++
++    JSON list of ``{"source": ..., "target": ..., "read_only": true}`` (e.g. a
++    prebuilt agent toolchain on the shared filesystem).
++    """
++    raw = os.getenv("HARBOR_SINGULARITY_MOUNTS")
++    if not raw:
++        return []
++    mounts = []
++    for entry in json.loads(raw):
++        mount: dict[str, Any] = {
++            "type": "bind",
++            "source": entry["source"],
++            "target": entry.get("target", entry["source"]),
++        }
++        if entry.get("read_only", True):
++            mount["read_only"] = True
++        mounts.append(mount)
++    return mounts
++
++
+ def _environment_config() -> Any:
+     """Build the trial environment, including an optional memory override.
+ 
+-    ``HARBOR_ENV_TYPE`` selects the backend (``docker`` by default, or
+-    ``daytona``). ``HARBOR_OVERRIDE_MEMORY_MB`` replaces the task's declared
+-    memory limit for either backend. This is useful for memory-heavy agents,
+-    while leaving it unset preserves each task's normal limit.
++    ``HARBOR_ENV_TYPE`` selects the backend (``docker`` by default,
++    ``daytona`` or ``singularity``). ``HARBOR_OVERRIDE_MEMORY_MB`` replaces the
++    task's declared memory limit for either backend. This is useful for
++    memory-heavy agents, while leaving it unset preserves each task's normal
++    limit.
+     """
+     from harbor.models.trial.config import EnvironmentConfig
+ 
+@@ -208,7 +236,21 @@ def _environment_config() -> Any:
+                 f"got {raw_memory_mb!r}"
+             )
+ 
+-    if os.getenv("HARBOR_ENV_TYPE", "docker").lower() == "daytona":
++    if env_type() == "singularity":
++        kwargs: dict[str, Any] = {}
++        if cache_dir := os.getenv("HARBOR_SINGULARITY_CACHE_DIR"):
++            kwargs["singularity_image_cache_dir"] = cache_dir
++        if (no_mount := os.getenv("HARBOR_SINGULARITY_NO_MOUNT")) is not None:
++            kwargs["singularity_no_mount"] = no_mount
++        return EnvironmentConfig(
++            type="singularity",
++            delete=True,
++            override_memory_mb=override_memory_mb,
++            mounts=_singularity_mounts() or None,
++            kwargs=kwargs,
++        )
++
++    if env_type() == "daytona":
+         disk_gb = int(os.getenv("HARBOR_DAYTONA_DISK_GB", "10"))
+         auto_snap = os.getenv("HARBOR_DAYTONA_AUTO_SNAPSHOT", "1").lower() in ("1", "true", "t")
+         # Orphan backstop: a sandbox whose trial teardown never runs (server
+@@ -350,6 +392,23 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
+ 
+         task_path = Path(task_path)
+         agent_kwargs, agent_env = _agent_connection_config(request)
++        # Optional per-request extensions (RunRequest allows extra fields):
++        #   agent_import_path  custom Harbor agent class ("module:Class"); the
++        #                      connection config still follows agent_name.
++        #   agent_kwargs       merged into the agent kwargs (deep for opencode_config).
++        #   agent_env          merged into the agent env.
++        extra = request.model_extra or {}
++        agent_import_path = extra.get("agent_import_path")
++        for key, value in (extra.get("agent_kwargs") or {}).items():
++            if (
++                key == "opencode_config"
++                and isinstance(value, dict)
++                and isinstance(agent_kwargs.get(key), dict)
++            ):
++                agent_kwargs[key] = _deep_merge(dict(agent_kwargs[key]), value)
++            else:
++                agent_kwargs[key] = value
++        agent_env.update({k: str(v) for k, v in (extra.get("agent_env") or {}).items()})
+ 
+         if "openai" in request.model:
+             agent_kwargs["model_info"] = {
+@@ -383,7 +442,8 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
+         config = TrialConfig(
+             task=TaskConfig(path=task_path),
+             agent=AgentConfig(
+-                name=request.agent_name,
++                name=None if agent_import_path else request.agent_name,
++                import_path=agent_import_path,
+                 model_name=(
+                     _opencode_model_name(request.model)
+                     if request.agent_name == _OPENCODE_AGENT
+@@ -404,7 +464,7 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
+         trial = await Trial.create(config)
+         # compose-project teardown is docker-only; daytona sandboxes are ephemeral
+         compose_project = None
+-        if os.getenv("HARBOR_ENV_TYPE", "docker").lower() != "daytona":
++        if env_type() == "docker":
+             compose_project = _trial_compose_project(trial)
+         result = await trial.run()
+ 
+@@ -454,16 +514,28 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
+         stdin=asyncio.subprocess.PIPE,
+         stdout=asyncio.subprocess.PIPE,
+         stderr=asyncio.subprocess.PIPE,
++        # Own process group: the trial's sandbox processes (singularity exec,
++        # the in-container server, the agent) are its descendants and must die
++        # with it on /flush, not linger until the job ends.
++        start_new_session=True,
+     )
++    _state.trial_pgids.add(proc.pid)
+     try:
+         out, err = await proc.communicate(blob.encode())
+     except asyncio.CancelledError:
+         # On /flush the awaiting task is cancelled; the child is NOT reaped
+         # automatically, so it would keep running the full trial (and holding a
+-        # Daytona sandbox) until it finishes. Kill and reap it before re-raising.
+-        proc.kill()
+-        await proc.wait()
++        # sandbox) until it finishes. Kill its whole group and reap it.
++        await kill_process_group(proc)
+         raise
++    finally:
++        _state.trial_pgids.discard(proc.pid)
++        # Safety net: anything the trial left in its group (a sandbox whose
++        # teardown did not finish) dies with it.
++        try:
++            os.killpg(proc.pid, signal.SIGKILL)
++        except (ProcessLookupError, PermissionError):
++            pass
+     for line in reversed(out.decode(errors="replace").splitlines()):
+         if line.startswith(_WORKER_RESULT_MARKER):
+             result = json.loads(line[len(_WORKER_RESULT_MARKER):])
+@@ -481,6 +553,51 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
+     return _error_response("Error: NoResult")
+ 
+ 
++async def kill_process_group(proc: asyncio.subprocess.Process, grace_sec: float = 5.0) -> None:
++    """SIGTERM the worker's process group, SIGKILL after ``grace_sec``, reap."""
++    for sig in (signal.SIGTERM, signal.SIGKILL):
++        try:
++            os.killpg(proc.pid, sig)
++        except ProcessLookupError:
++            break
++        except PermissionError:
++            proc.kill()
++        if sig == signal.SIGTERM:
++            try:
++                await asyncio.wait_for(proc.wait(), timeout=grace_sec)
++            except asyncio.TimeoutError:
++                continue
++            # The leader exited; the group may still hold sandbox processes.
++            try:
++                os.killpg(proc.pid, signal.SIGKILL)
++            except ProcessLookupError:
++                pass
++            break
++    await proc.wait()
++
++
++def kill_all_trial_groups() -> int:
++    """SIGKILL every live trial process group (flush_all). Returns count."""
++    killed = 0
++    for pgid in list(_state.trial_pgids):
++        try:
++            os.killpg(pgid, signal.SIGKILL)
++            killed += 1
++        except ProcessLookupError:
++            pass
++        _state.trial_pgids.discard(pgid)
++    return killed
++
++
++def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
++    for key, value in override.items():
++        if isinstance(value, dict) and isinstance(base.get(key), dict):
++            base[key] = _deep_merge(dict(base[key]), value)
++        else:
++            base[key] = value
++    return base
++
++
+ def _worker_main() -> None:
+     """Entrypoint for the per-trial worker process."""
+     data = json.loads(sys.stdin.read())
+diff --git a/miles_agent_server.py b/miles_agent_server.py
+index 687526d..604c2ad 100644
+--- a/miles_agent_server.py
++++ b/miles_agent_server.py
+@@ -82,9 +82,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+     _state.semaphore = asyncio.Semaphore(max_concurrent)
+     logger.info(f"Initialized semaphore with max_concurrent={max_concurrent}")
+     checker_task = asyncio.create_task(_health_checker_loop())
+-    # no local docker in daytona mode → skip the docker build-cache prune loop
+-    _daytona = os.getenv("HARBOR_ENV_TYPE", "docker").lower() == "daytona"
+-    prune_task = None if _daytona else asyncio.create_task(_docker_prune_loop())
++    _state.max_concurrent = max_concurrent
++    # only the local docker backend has a build cache to prune
++    _docker = os.getenv("HARBOR_ENV_TYPE", "docker").lower() == "docker"
++    prune_task = asyncio.create_task(_docker_prune_loop()) if _docker else None
+     try:
+         yield
+     finally:
+@@ -258,6 +259,19 @@ async def health():
+     return {"status": "ok"}
+ 
+ 
++@app.get("/stats")
++async def stats():
++    """Load snapshot for client-side placement (no admin secret: read-only)."""
++    import socket
++
++    return {
++        "host": socket.gethostname(),
++        "inflight": len(_state.inflight_tasks),
++        "max_concurrent": _state.max_concurrent,
++        "live_trial_groups": len(_state.trial_pgids),
++    }
++
++
+ def _require_admin_secret(authorization: str | None) -> None:
+     if not _ADMIN_SECRET:
+         return
+@@ -388,8 +402,8 @@ def main():
+     )
+     args = parser.parse_args()
+ 
+-    # daytona runs in the cloud (no local docker) → skip the Docker Hub login guard
+-    if os.getenv("HARBOR_ENV_TYPE", "docker").lower() != "daytona":
++    # only the local docker backend needs the Docker Hub login guard
++    if os.getenv("HARBOR_ENV_TYPE", "docker").lower() == "docker":
+         _check_docker_login()
+ 
+     _state.agent_timeout_sec = args.agent_timeout

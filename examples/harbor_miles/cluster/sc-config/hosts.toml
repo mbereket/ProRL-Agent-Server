@@ -1,0 +1,27 @@
+# slurm-compose hosts for the harbor_miles example (exports under the path-b work root).
+
+[hel]
+type = "ssh"
+hostname = "nb-hel-cs-001-login-02.nvidia.com"
+user = "mbereket"
+home_dir = "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_math/users/mbereket/miles/path-b/.slurm-compose"
+
+[hel.sbatch]
+bin = "/cm/shared/apps/slurm/current/bin/sbatch"
+account = "nemotron_reason_math"
+gpus_per_node = 8
+partitions.gpu = {partition = "interactive", time = "04:00:00"}
+partitions.gpu_interactive = {partition = "interactive", time = "04:00:00"}
+
+[dfw]
+type = "ssh"
+hostname = "cw-dfw-cs-001-login-02.nvidia.com"
+user = "mbereket"
+home_dir = "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/path-b/.slurm-compose"
+
+[dfw.sbatch]
+bin = "/cm/shared/apps/slurm/current/bin/sbatch"
+account = "nemotron_reason_science"
+gpus_per_node = 8
+partitions.gpu = {partition = "interactive", time = "04:00:00"}
+partitions.gpu_interactive = {partition = "interactive", time = "04:00:00"}
