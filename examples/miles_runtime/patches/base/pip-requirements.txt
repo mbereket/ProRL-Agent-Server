@@ -1,0 +1,4 @@
+# The pinned image ships opentelemetry-api 1.45.0 next to opentelemetry-sdk 1.44.0 (which requires
+# api==1.44.0): the Ray dashboard agent dies on `ImportError: _ExtendedAttributes`, the raylet times
+# out waiting for the agent and `ray start` fails. Restore the pair the sdk was built against.
+opentelemetry-api==1.44.0
