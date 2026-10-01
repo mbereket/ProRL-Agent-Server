@@ -492,6 +492,7 @@ heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 include
 | 128k | TP4·CP2 headwise (8) | **REAL** | 94.3 (step 2; step 1: 266) | 0.98 M | 10.4 k | 19.3 % | **79.0** | fits at the edge |
 | 128k | TP4 x DP2 (8) | synthetic | — | | | | | OOM (as on 4 GPUs: CP1 at 128k does not fit) |
 | 96k | TP4·CP2 headwise (8) + expandable segments | **REAL** | 136-225 | 0.62-0.77 M | 3.4-4.6 k | 6-8 % | **56.3** | fits with **~24 GB headroom** (slow: see JIT note) |
+| 128k | TP4·CP2 headwise (8) + expandable segments | **REAL** | 98 (step 2; steps 0-1: 262, 228) | 0.98 M | 9.9 k (step 2) | 18.5 % | **68.3** | fits, ~11 GB headroom |
 | 128k | TP2·CP4 headwise (8) + expandable segments | **REAL** | — | | | | 77.8 | OOM in backward (recompute) |
 | 192k | TP4·CP2 headwise (8) + expandable segments | synthetic | — | | | | 77.2 | OOM (logprob chunk, 0.4 GiB free) |
 | 192k | TP2·CP4 headwise (8) + expandable segments | synthetic | — | | | | 77.7 | OOM (logprob chunk, 0.2 GiB free) |
@@ -507,8 +508,9 @@ replicas above fit, at ~2x the tokens/s.
   `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** in the environment Ray's trainer workers inherit (set it before
   `ray start`) — REAL traces 7.45 k tok/s, 26 % useful MFU, 77.2 GB. Without both it OOMs (or, with only expandable
   segments, runs 45 % slower). Little headroom: watch per-step peak memory in the first steps of a real run.
-- **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise (REAL: 10.4 k
-  tok/s, 79.0 GB without the rescue settings; rerun with them on aws-iad 7598871).
+- **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise **with expandable
+  segments** (REAL: 68.3 GB; 79.0 GB without). TP2·CP4 headwise OOMs on REAL 128k.
+- **Margin, 8 GPUs TP4·CP2 headwise + expandable segments, REAL (same cluster/settings): 96k 56.3 GB vs 128k 68.3 GB.**
 - **192k**: needs ≥ 16 trainer GPUs (all 8-GPU layouts OOM); 16-GPU untested.
 
 **Speed caveat (open):** step times on REAL traces vary 2-3x between steps and between otherwise similar arms (dfw REAL
