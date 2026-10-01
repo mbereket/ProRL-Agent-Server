@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Multi-node Ray cluster inside the Miles runtime, one call per Slurm node
-# (srun --ntasks-per-node=1). The first node of the allocation is the head: it
-# starts Ray, waits for every node, runs DRIVER on the head, then tears Ray
-# down; the other nodes join and block until the head goes away.
+# Multi-node Ray cluster inside the Miles runtime. Call it ONCE, on the first node of the
+# allocation (that is what a slurm-compose step does: its command runs in the batch script,
+# not under srun). The head starts the workers itself (`srun --overlap -w <node>` per other
+# node), starts Ray, waits for every node, runs DRIVER, then tears Ray and the workers down.
+# Also works when launched once per node (srun --ntasks-per-node=1): node 0 = head, others join.
 #
 #   ray_node.sh [mrun options, e.g. --patches DIR --bind X --pythonpath P] -- DRIVER [ARGS...]
 #
@@ -32,7 +33,9 @@ HEAD_IP="$(getent ahostsv4 "${HEAD_HOST}" | awk 'NR==1{print $1}')"
 GPUS="$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')"
 # Job-unique port block: partial-node jobs share nodes with other Ray clusters (ours and other
 # users'); Ray's defaults (6379, 8265, agent ports) collide and the raylet dies at startup.
-PORT_BASE="${RAY_PORT_BASE:-$((20000 + (SLURM_JOB_ID % 1500) * 25))}"
+# Above the ephemeral range (dfw: ip_local_port_range = 9000-65000; outbound sockets grab random ports
+# anywhere in it) and away from Miles' dynamic SGLang ports (20000+): 65010..65498.
+PORT_BASE="${RAY_PORT_BASE:-$((65010 + (SLURM_JOB_ID % 12) * 40))}"
 RAY_GCS_PORT="${RAY_GCS_PORT:-${PORT_BASE}}"; RAY_DASHBOARD_PORT="${RAY_DASHBOARD_PORT:-$((PORT_BASE + 1))}"
 node_ports=(--node-manager-port "$((PORT_BASE + 3))" --object-manager-port "$((PORT_BASE + 4))"
             --dashboard-agent-listen-port "$((PORT_BASE + 5))" --dashboard-agent-grpc-port "$((PORT_BASE + 6))"
@@ -50,7 +53,14 @@ export RAY_ADDRESS="${HEAD_IP}:${RAY_GCS_PORT}" RAY_DASHBOARD_URL="http://${HEAD
 mkdir -p "${RAY_TMPDIR}"
 me="$(hostname -s)"
 
-if [ "${me}" != "${HEAD_HOST%%.*}" ] && [ "${SLURM_NODEID:-0}" != 0 ]; then
+# Role: explicit (MR_RAY_ROLE, set for the workers we spawn) > per-node srun step > head.
+role="${MR_RAY_ROLE:-}"
+if [ -z "${role}" ]; then
+    if [ "${SLURM_STEP_NUM_TASKS:-1}" -gt 1 ] && [ "${SLURM_NODEID:-0}" != 0 ]; then role=worker; else role=head; fi
+fi
+self_args=("${mrun_opts[@]}" -- "$@")
+
+if [ "${role}" = worker ]; then
     mr_log "worker ${me}: waiting for ray head ${HEAD_IP}:${RAY_GCS_PORT}"
     for _ in $(seq 1 600); do (echo > "/dev/tcp/${HEAD_IP}/${RAY_GCS_PORT}") 2>/dev/null && break; sleep 2; done
     exec "${MR}/mrun" "${mrun_opts[@]}" -- ray start --address="${RAY_ADDRESS}" --node-ip-address "$(getent ahostsv4 "${me}" | awk 'NR==1{print $1}')" \
@@ -58,13 +68,32 @@ if [ "${me}" != "${HEAD_HOST%%.*}" ] && [ "${SLURM_NODEID:-0}" != 0 ]; then
 fi
 
 mr_log "head ${me} (${HEAD_IP}): ${NUM_NODES} node(s) x ${GPUS} GPU"
+worker_pids=()
+if [ "${NUM_NODES}" -gt 1 ] && [ "${SLURM_STEP_NUM_TASKS:-1}" -le 1 ]; then
+    wlog_dir="${MILES_OWNER_ROOT:-${MILES_STACK_ROOT}}/joblogs"; mkdir -p "${wlog_dir}"
+    for w in "${nodes[@]:1}"; do
+        MR_RAY_ROLE=worker srun --overlap --nodes=1 --ntasks=1 -w "${w}" --gpus-per-node="${GPUS}" \
+            --cpus-per-task="${SLURM_CPUS_PER_TASK:-16}" --kill-on-bad-exit=0 \
+            bash "${MR}/ray_node.sh" "${self_args[@]}" > "${wlog_dir}/ray-worker-${SLURM_JOB_ID}-${w}.log" 2>&1 &
+        worker_pids+=($!)
+    done
+    mr_log "spawned ${#worker_pids[@]} worker(s); logs ${wlog_dir}/ray-worker-${SLURM_JOB_ID}-*.log"
+fi
+cleanup_workers() {
+    [ "${#worker_pids[@]}" -gt 0 ] || return 0
+    kill -TERM "${worker_pids[@]}" 2>/dev/null || true
+    sleep 5; kill -KILL "${worker_pids[@]}" 2>/dev/null || true
+    wait "${worker_pids[@]}" 2>/dev/null || true
+}
+trap cleanup_workers EXIT
 # One container session holds the Ray head daemons and the driver.
 driver="$(printf '%q ' "$@")"
-exec "${MR}/mrun" "${mrun_opts[@]}" -- bash -c "
+set +e
+"${MR}/mrun" "${mrun_opts[@]}" -- bash -c "
 set -uo pipefail
-# The image's opentelemetry is too old for the Ray 2.58 dashboard (ImportError _ExtendedAttributes):
-# off by default (drivers run on the head directly); RAY_DASHBOARD=1 to try it (needed for ray job submit).
-if [ \"\${RAY_DASHBOARD:-0}\" = 1 ]; then dash=(--dashboard-host 0.0.0.0); else dash=(--include-dashboard=false); fi
+# Dashboard on by default (needs patches/base opentelemetry fix): ray.util.state, ray job submit and
+# Miles --pin-rollout-manager-to-head use it. RAY_DASHBOARD=0 to disable.
+if [ \"\${RAY_DASHBOARD:-1}\" = 1 ]; then dash=(--dashboard-host 0.0.0.0); else dash=(--include-dashboard=false); fi
 ray start --head --node-ip-address '${HEAD_IP}' --port '${RAY_GCS_PORT}' --num-gpus '${GPUS}' \
     --dashboard-port '${RAY_DASHBOARD_PORT}' --ray-client-server-port '$((PORT_BASE + 2))' ${node_ports[*]} \
     \"\${dash[@]}\" --disable-usage-stats >/dev/null || { echo 'ray start failed; raylet/agent logs:' >&2;
@@ -80,3 +109,5 @@ rc=\$?
 ray stop --force >/dev/null 2>&1 || true
 exit \${rc}
 "
+rc=$?
+exit "${rc}"

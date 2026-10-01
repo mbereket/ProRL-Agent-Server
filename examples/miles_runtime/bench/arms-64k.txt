@@ -1,0 +1,6 @@
+# 64k-token samples (16 per step = 1.05M tokens), length-controlled. CP needs the base qwen3_vl patch (52074b8b).
+!synth fix64k 65536 16 3
+c64k-lora-cp4      ARM=lora MODE=train_only REPLAY=@fix64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=4 MTPG=16384 ROLLOUT_LOGPROBS=1
+c64k-full-off-cp4  ARM=full MODE=train_only REPLAY=@fix64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=4 MTPG=16384 OFFLOAD=1 ROLLOUT_LOGPROBS=1
+c64k-lora-tp8      ARM=lora MODE=train_only REPLAY=@fix64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=8 CP=1 MTPG=65536 ROLLOUT_LOGPROBS=1
+c64k-lora-tp2cp2   ARM=lora MODE=train_only REPLAY=@fix64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=2 MTPG=32768 ROLLOUT_LOGPROBS=1

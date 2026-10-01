@@ -39,7 +39,9 @@ def main() -> None:
                 idx = g * a.group + j
                 resp = [rng.randrange(a.vocab_lo, a.vocab_hi) for _ in range(r_len)]
                 samples.append(Sample(
-                    group_index=g, index=idx, rollout_id=rid, prompt="synthetic", tokens=prompt + resp,
+                    # rollout_id is Miles' *trajectory* id (samples sharing it are segments of one
+                    # trajectory and must share one reward) -- leave it unset: one sample per trajectory.
+                    group_index=g, index=idx, prompt="synthetic", tokens=prompt + resp,
                     response="", response_length=r_len, label="", reward=float(j % 2),
                     loss_mask=[1] * r_len, rollout_log_probs=[-2.0] * r_len,
                     status=Sample.Status.COMPLETED,

@@ -1,0 +1,5 @@
+# Full-FT configurations that fit 80 GB at 16k (TP2 without offload OOMs at step 1 once Adam state exists).
+!synth fix16k 16384 64 4
+t16k-full-off    ARM=full MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 CP=1 MTPG=16384 OFFLOAD=1
+t16k-full-tp4    ARM=full MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=4 CP=1 MTPG=16384
+t16k-full-cp2    ARM=full MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 CP=2 MTPG=8192
