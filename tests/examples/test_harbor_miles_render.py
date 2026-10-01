@@ -65,6 +65,9 @@ def test_lora_defaults(render, tmp_path) -> None:
     assert _value(args, "--lora-rank") == "32" and _value(args, "--megatron-to-hf-mode") == "bridge"
     assert _value(args, "--update-weight-transfer-mode") == "broadcast"
     assert "--calculate-per-token-loss" in args and "--normalize-advantages" not in args
+    assert "--use-rollout-logprobs" in args and "--use-tis" not in args
+    assert _value(args, "--sglang-lora-backend") == "triton" and _value(args, "--rollout-num-gpus-per-engine") == "2"
+    assert "--sglang-disable-custom-all-reduce" in args and _value(args, "--log-probs-chunk-size") == "4096"
     assert "--use-dynamic-batch-size" in args and "--qkv-format" not in args
     assert _value(args, "--global-batch-size") == "32"  # one unit per trajectory
     assert _value(args, "--sglang-router-policy") == "manual"
@@ -79,9 +82,10 @@ def test_lora_defaults(render, tmp_path) -> None:
 
 
 def test_full_finetune_has_no_adapter_and_loads_torch_dist(render, tmp_path) -> None:
-    render.mode_run(render.load(_config(tmp_path, lora={"rank": 0}, training={"lr": "1e-6"})))
+    render.mode_run(render.load(_config(tmp_path, lora={"rank": 0}, training={"lr": "1e-6", "old_logprobs": "recompute"})))
     args, topo, _ = _rendered(tmp_path)
-    assert "--lora-rank" not in args
+    assert "--lora-rank" not in args and "--sglang-lora-backend" not in args
+    assert "--use-tis" in args and "--use-rollout-logprobs" not in args
     assert _value(args, "--load").endswith("_miles_torch_dist")
     assert all(n["inference"]["extra_body"] == {} for n in topo["gateway"]["nodes"])
 

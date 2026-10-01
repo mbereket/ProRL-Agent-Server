@@ -17,8 +17,9 @@ algorithm/layout knobs. Unknown keys are an error. Schema (defaults in SCHEMA):
   cluster:  num_nodes, actor_num_gpus, tp_size, context_parallel_size, sandbox_nodes (head|all),
             gpus_per_engine, router_policy
   rollout:  batch_size, n_samples_per_prompt, num_steps | num_epoch, max_prompt_len,
-            max_response_len, sglang_context_length, sglang_mem_fraction
-  training: sync, max_tokens_per_gpu, qkv_format (thd|bshd), lr, loss_aggregation, normalize_advantages,
+            max_response_len, sglang_context_length, sglang_mem_fraction, sglang_lora_backend,
+            disable_custom_all_reduce
+  training: sync, max_tokens_per_gpu, qkv_format (thd|bshd), lr, loss_aggregation, normalize_advantages, old_logprobs,
             use_kl_loss, kl_loss_coef, grpo_std_normalization, optimizer_cpu_offload,
             group_id_scope, timeout_reward_zero, overlong_policy, drop_zero_variance_groups,
             save_interval, save_hf_interval, extra_train_args
@@ -45,7 +46,11 @@ Algorithm defaults, and why (they differ from the Slime example on purpose):
     bridge reward_post_process) without std scaling.
   * Asynchronous by default (training.sync false): agent rollouts are long-tailed
     (up to the session timeout), so a synchronous step waits for its slowest
-    session while every GPU idles. Off-policy drift is corrected by TIS.
+    session while every GPU idles.
+  * old_logprobs rollout: with one optimizer step per rollout the PPO ratio is anchored at
+    the sampler's own logprobs (behaviour-policy clipping covers both staleness and the
+    small train/sampler numerics gap, KL~2.5e-4 measured), which saves the trainer's
+    old-logprob forward pass (-24% train step). recompute = trainer forward + TIS.
   * Session-affine routing (cluster.router_policy manual): the gateway sends the
     session id in X-SMG-Routing-Key; every turn of a session hits the engine that
     holds its prefix in cache.
@@ -111,7 +116,7 @@ SCHEMA = {
         "tp_size": 2,
         "context_parallel_size": 1,
         "sandbox_nodes": "all",
-        "gpus_per_engine": 1,
+        "gpus_per_engine": 2,        # SGLang engine TP; TP2 + triton LoRA kernels: +33% LoRA decode vs TP1 (STACK bench)
         "router_policy": "manual",   # manual | consistent_hashing (session affinity) | round_robin | cache_aware
     },
     "rollout": {
@@ -123,6 +128,8 @@ SCHEMA = {
         "max_response_len": 24000,
         "sglang_context_length": 32768,
         "sglang_mem_fraction": 0.8,
+        "sglang_lora_backend": "triton",  # triton | csgmv (Miles default): triton ~10% faster at TP2 (STACK bench)
+        "disable_custom_all_reduce": True,  # engine TP>1: SGLang custom all-reduce fails at CUDA-graph capture on hel
     },
     "training": {
         "sync": False,               # false: train_async.py (generation overlaps training, TIS-corrected)
@@ -134,6 +141,8 @@ SCHEMA = {
         "lr": "1e-5",                # LoRA; full fine-tune wants ~1e-6
         "loss_aggregation": "token_mean",  # token_mean | trajectory_mean
         "normalize_advantages": False,
+        "old_logprobs": "rollout",   # rollout: PPO ratio anchored at the sampler's logprobs (no extra forward pass,
+                                     # -24% train step); recompute: trainer forward + TIS correction
         "use_kl_loss": False,
         "kl_loss_coef": 0.001,
         "grpo_std_normalization": False,
@@ -218,6 +227,8 @@ def load(path: str) -> dict:
         die(f"{path}: harness.max_async_level > 1 needs training.sync: false")
     if tr["loss_aggregation"] not in ("token_mean", "trajectory_mean"):
         die(f"{path}: training.loss_aggregation must be token_mean or trajectory_mean")
+    if tr["old_logprobs"] not in ("rollout", "recompute"):
+        die(f"{path}: training.old_logprobs must be rollout or recompute")
     if tr["qkv_format"] not in ("thd", "bshd"):
         die(f"{path}: training.qkv_format must be thd or bshd")
     if int(lo["rank"]) < 0:
@@ -403,7 +414,7 @@ def train_args(cfg: dict, d: dict, f: dict) -> list:
     if lora_enabled(cfg):
         adapter = ["--lora-rank", lo["rank"], "--lora-alpha", lo["alpha"], "--lora-dropout", lo["dropout"],
                    "--target-modules", lo["target_modules"], "--megatron-to-hf-mode", "bridge",
-                   "--sglang-max-lora-rank", lo["rank"]]
+                   "--sglang-max-lora-rank", lo["rank"], "--sglang-lora-backend", r["sglang_lora_backend"]]
         if lo["exclude_modules"]:
             adapter += ["--exclude-modules", lo["exclude_modules"]]
     else:
@@ -454,9 +465,13 @@ def train_args(cfg: dict, d: dict, f: dict) -> list:
         "--expert-tensor-parallel-size", 1,
         "--recompute-granularity", "full", "--recompute-method", "uniform", "--recompute-num-layers", 1,
         *batching,
-        "--log-probs-chunk-size", 256, "--distributed-timeout-minutes", 30,
+        # Chunked logprobs: the fp32 [tokens x vocab/TP] cast of the 248k vocab OOMs at >=16k tokens/GPU otherwise.
+        "--log-probs-chunk-size", 4096, "--distributed-timeout-minutes", 30,
         # Algorithm: GRPO-style group baseline (bridge: leave-one-trajectory-out), TIS, clip-higher.
-        "--advantage-estimator", "grpo", "--use-tis",  # TIS also reports train_rollout_logprob_abs_diff
+        "--advantage-estimator", "grpo",
+        # One optimizer step per rollout: anchoring the ratio at the sampler's logprobs is the behaviour-policy
+        # PPO objective (train/ppo_kl then measures train/sampler mismatch); recompute adds a forward + TIS.
+        *(["--use-rollout-logprobs"] if tr["old_logprobs"] == "rollout" else ["--use-tis"]),
         *(["--normalize-advantages"] if tr["normalize_advantages"] else []),
         *loss,
         *(["--use-kl-loss", "--kl-loss-coef", str(tr["kl_loss_coef"]), "--kl-loss-type", "low_var_kl"] if tr["use_kl_loss"] else []),
@@ -473,6 +488,7 @@ def train_args(cfg: dict, d: dict, f: dict) -> list:
         "--sglang-mem-fraction-static", r["sglang_mem_fraction"], "--sglang-context-length", r["sglang_context_length"],
         "--sglang-tool-call-parser", m["sglang_tool_call_parser"], "--sglang-router-policy", c["router_policy"],
         "--sglang-router-port", f["ROUTER_PORT"],
+        *(["--sglang-disable-custom-all-reduce"] if c["gpus_per_engine"] > 1 and r["disable_custom_all_reduce"] else []),
         # Router, rollout executor (the bridge) and its callback listener on the Ray head:
         # the Polar gateways reach the router at the head IP, and the rollout server
         # (head) calls the bridge back on 127.0.0.1.
