@@ -56,12 +56,15 @@ index 0d37ec6..363db83 100644
          # trial span (the result object itself carries started_at/finished_at);
          # the named phases are its constituents. ``env_setup_time`` covers the
 diff --git a/agent_server/state.py b/agent_server/state.py
-index 33fb9bf..0fe6a26 100644
+index 33fb9bf..2030ff8 100644
 --- a/agent_server/state.py
 +++ b/agent_server/state.py
-@@ -37,6 +37,10 @@ class ServerState:
+@@ -36,7 +36,13 @@ class ServerState:
+     # Every in-flight ``/run`` task, so flush can cancel direct calls too (the
      # heartbeat-based ``active_tasks`` only covers Miles-session-server requests).
      inflight_tasks: set[asyncio.Task] = field(default_factory=set)
++    # In-flight /run task -> its request.instance_id (the task id), for the per-trial cancel-file trigger.
++    inflight_instance: dict[asyncio.Task, str] = field(default_factory=dict)
      semaphore: asyncio.Semaphore | None = None
 +    # Process-group ids of live per-trial worker processes (singularity: the
 +    # container processes are in the same group), so flush_all can kill them.
@@ -351,16 +354,60 @@ index cd7eb6e..89f77db 100644
  
  
 diff --git a/miles_agent_server.py b/miles_agent_server.py
-index 687526d..604c2ad 100644
+index 687526d..a69d207 100644
 --- a/miles_agent_server.py
 +++ b/miles_agent_server.py
-@@ -82,9 +82,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+@@ -74,6 +74,41 @@ _ADMIN_SECRET = os.getenv("HARBOR_ADMIN_SECRET")
+ _request_logger: RequestLogger | None = None
+ 
+ 
++async def _cancel_file_loop(cancel_dir: Path, interval: float = 15.0) -> None:
++    """Per-trial cancel by file (HARBOR_CANCEL_DIR). Operators often have file access (SFTP) but no shell on the node.
++
++    A file ``<cancel_dir>/<instance_id>`` cancels THIS server's in-flight /run trials of that task; ``ALL`` cancels every
++    in-flight trial. Cancelling takes the same path as /flush: the trial worker's process group gets SIGTERM, its
++    sandbox is torn down (SIGKILL after the grace period), and the caller gets exit_status "Flushed". Each server acts
++    on a file once and records ``<name>.done.<host>``, so later attempts of the same task are not affected.
++    """
++    import socket
++
++    host = socket.gethostname().split(".")[0]
++    cancel_dir.mkdir(parents=True, exist_ok=True)
++    logger.info("cancel-file trigger: watching %s", cancel_dir)
++    while True:
++        await asyncio.sleep(interval)
++        try:
++            names = [p.name for p in cancel_dir.iterdir() if p.is_file() and ".done." not in p.name]
++        except OSError:
++            continue
++        for name in names:
++            marker = cancel_dir / f"{name}.done.{host}"
++            if marker.exists():
++                continue
++            hits = [t for t, iid in list(_state.inflight_instance.items()) if name == "ALL" or iid == name]
++            for t in hits:
++                t.cancel()
++            logger.warning("cancel file %s: cancelling %d in-flight trial(s) on %s", name, len(hits), host)
++            try:
++                marker.write_text(
++                    f"cancelled {len(hits)} in-flight trial(s) at {datetime.now(timezone.utc).isoformat()}\n"
++                )
++            except OSError:
++                pass
++
++
+ @asynccontextmanager
+ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+     max_concurrent = int(
+@@ -82,13 +117,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
      _state.semaphore = asyncio.Semaphore(max_concurrent)
      logger.info(f"Initialized semaphore with max_concurrent={max_concurrent}")
      checker_task = asyncio.create_task(_health_checker_loop())
 -    # no local docker in daytona mode → skip the docker build-cache prune loop
 -    _daytona = os.getenv("HARBOR_ENV_TYPE", "docker").lower() == "daytona"
 -    prune_task = None if _daytona else asyncio.create_task(_docker_prune_loop())
++    _cancel_dir = os.getenv("HARBOR_CANCEL_DIR")
++    cancel_task = asyncio.create_task(_cancel_file_loop(Path(_cancel_dir))) if _cancel_dir else None
 +    _state.max_concurrent = max_concurrent
 +    # only the local docker backend has a build cache to prune
 +    _docker = os.getenv("HARBOR_ENV_TYPE", "docker").lower() == "docker"
@@ -368,7 +415,29 @@ index 687526d..604c2ad 100644
      try:
          yield
      finally:
-@@ -258,6 +259,19 @@ async def health():
+         checker_task.cancel()
++        if cancel_task is not None:
++            cancel_task.cancel()
+         if prune_task is not None:
+             prune_task.cancel()
+         try:
+@@ -191,6 +231,7 @@ async def run_instance(request: RunRequest, raw_request: Request) -> RunResponse
+     current_task = asyncio.current_task()
+     if current_task is not None:
+         _state.inflight_tasks.add(current_task)
++        _state.inflight_instance[current_task] = request.instance_id
+     if tracking_key and heartbeat_target and current_task:
+         try:
+             _register_active_task(
+@@ -223,6 +264,7 @@ async def run_instance(request: RunRequest, raw_request: Request) -> RunResponse
+     finally:
+         if current_task is not None:
+             _state.inflight_tasks.discard(current_task)
++            _state.inflight_instance.pop(current_task, None)
+         if tracking_key and current_task:
+             _discard_active_task(tracking_key, current_task)
+ 
+@@ -258,6 +300,19 @@ async def health():
      return {"status": "ok"}
  
  
@@ -388,7 +457,7 @@ index 687526d..604c2ad 100644
  def _require_admin_secret(authorization: str | None) -> None:
      if not _ADMIN_SECRET:
          return
-@@ -388,8 +402,8 @@ def main():
+@@ -388,8 +443,8 @@ def main():
      )
      args = parser.parse_args()
  

@@ -48,6 +48,10 @@ for tool in ${HM_AGENT_TOOLS:-mini-swe-agent}; do
 done
 export HARBOR_SINGULARITY_MOUNTS="[${MOUNTS}]"
 export PYTHONPATH="${HM_EXAMPLE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+# Per-trial cancel by file (harbor patch 0002): an (empty) file RUN_DIR/cancel/<task instance_id> -- or ALL -- cancels this
+# server's in-flight trials of that task within ~15 s (graceful sandbox teardown; the trial returns Flushed = infra, excluded
+# from the loss). From the laptop: cluster-tools scput.py <cluster> <empty file> <RUN_DIR>/cancel/<instance_id>.
+export HARBOR_CANCEL_DIR="${HARBOR_CANCEL_DIR:-${RUN_DIR}/cancel}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 
 mkdir -p "${RUN_DIR}/agent_servers" "${RUN_DIR}/trials/${HOST}"
