@@ -41,7 +41,7 @@ def _request(a: argparse.Namespace, task_id: str, agent: str) -> dict:
         req["agent_name"] = "nop"
         req["agent_import_path"] = "harbor_miles_agents.test_agents:SleepAgent"
         req["agent_kwargs"] = {"sleep_sec": 900}
-    elif agent == "opencode" and a.agent_import_path:
+    elif agent == "opencode" and a.agent_import_path and "bbh" in a.agent_import_path.lower():
         req["agent_import_path"] = a.agent_import_path
         req["agent_kwargs"] = {
             "opencode_config": {"compaction": {"auto": False}, "permission": {"task": "deny"},
@@ -68,7 +68,7 @@ async def main_async(a: argparse.Namespace) -> None:
     print("agent servers:", POOL.snapshot(), flush=True)
     ids = _task_ids(a)
     if a.mode == "trials":
-        jobs = [(t, "opencode") for t in ids for _ in range(a.attempts)]
+        jobs = [(t, ag) for ag in a.agents.split(",") for t in ids for _ in range(a.attempts)]
     elif a.mode == "nop":
         jobs = [(ids[i % len(ids)], "nop") for i in range(a.n)]
     elif a.mode == "sleepflush":  # sandboxes that just sleep; flush_all after --after s
@@ -89,6 +89,7 @@ def main() -> None:
     p.add_argument("--tasks-dir", required=True)
     p.add_argument("--task-ids", default="")
     p.add_argument("--attempts", type=int, default=1)
+    p.add_argument("--agents", default="opencode", help="comma list of Harbor agent names (trials mode)")
     p.add_argument("--n", type=int, default=8)
     p.add_argument("--after", type=float, default=120)
     p.add_argument("--base-url", default="http://127.0.0.1:30600/v1")
