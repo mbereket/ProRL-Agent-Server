@@ -1,0 +1,12 @@
+# 27B on 4 trainer GPUs (the 1-node recipe's trainer half) at 96k/128k: rescue attempts after the first OOMs (MTP off = base 0004).
+#  - REAL 96k TP4 OOMed at an 11.25 GiB backward alloc with 10.3 GiB free (fragmentation: real steps pack varied lengths) ->
+#    expandable segments; - 128k TP4 OOMed ~1 GiB short in the logprob chunk -> chunk 1024 (+ expandable segments).
+# REAL = DIAG 9B-generated SWE-Gym traces (stack/traces/diag9b-{96k,128k}); SYNTHETIC = fixed-length worst case.
+!compose diag96k @stack/traces/diag9b-96k 3 --max-samples 16
+!compose diag128k @stack/traces/diag9b-128k 3 --max-samples 16
+!synth fix128k 131072 8 3
+f-r96k-tp4-exp         ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+f-r128k-tp4-exp-ck1k   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=131072 REPLAY=@diag128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=1024
+f-s128k-tp4-exp-ck1k   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=1 NS=8 GPUS=4 TP=4 CP=1 MTPG=131072 REPLAY=@fix128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=1024
+f-r96k-tp2cp2-hw-exp   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=2 CP=2 MTPG=49152 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+f-r128k-tp4cp2-hw-exp  ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=8 TP=4 CP=2 MTPG=65536 REPLAY=@diag128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
