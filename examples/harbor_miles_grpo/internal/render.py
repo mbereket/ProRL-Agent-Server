@@ -152,7 +152,8 @@ SCHEMA = {
         "overlong_policy": "zero_reward_train",
         "drop_zero_variance_groups": True,
         "save_interval": 5,
-        "save_hf_interval": 0,       # >0: also export a merged HF model every N steps (eval-v2 input)
+        "save_hf_interval": 0,
+        "save_rollout_data": True,   # Miles train-data dumps (<run dir>/rollout_data/<step>.pt): replayable for throughput benchmarks       # >0: also export a merged HF model every N steps (eval-v2 input)
         "extra_train_args": "",
     },
     "eval": {
@@ -438,6 +439,8 @@ def train_args(cfg: dict, d: dict, f: dict) -> list:
 
     wandb_mode = os.environ.get("WANDB_MODE") or ("online" if os.environ.get("WANDB_API_KEY") else "offline")
     save_hf = []
+    if tr["save_rollout_data"]:
+        save_hf += ["--save-debug-rollout-data", f"{run_dir}/rollout_data/{{rollout_id}}.pt"]
     if tr["save_hf_interval"]:
         save_hf = ["--save-hf", f"{d['SAVE_DIR']}/hf/iter_{{}}"]
     args = [
