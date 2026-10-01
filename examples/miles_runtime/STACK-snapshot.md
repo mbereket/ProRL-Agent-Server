@@ -2,7 +2,7 @@
 
 Status: **usable on dfw and hel** (dfw: SIF, Ray 1+2 nodes, NCCL over IB validated; hel: SIF, imports, nested apptainer validated). aws-iad: SIF + compat + nested apptainer + Ray validated (job 7587420). **Benchmark results: §9.**
 Code: ProRL-Agent-Server branch **`miles-stack`**, dir `examples/miles_runtime/` (README there).
-Last updated: 2026-09-30 20:25 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
+Last updated: 2026-10-01 00:09 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
 
 ## 1. What the runtime is
 
@@ -249,11 +249,8 @@ arms, so lengths match: 8.07 k vs 8.02 k mean; `--max-tokens-per-gpu 9216`):
   LoRA steps are ~20 % slower than full FT** (best: full TP4 engines 146 s vs LoRA 181–185 s).
 - Long context: chunked logprobs (`--log-probs-chunk-size 4096`) are mandatory at ≥16k tokens/GPU with this 248k
   vocab; with them LoRA trains 128k-token samples on a single node (TP2 CP4), full FT needs CPU Adam from 16k up.
-- **Per-GPU training throughput here is ~10x the current polar-slime runs** (Miles: 28–59 k tok/s per 8-GPU node,
-  285–373 "TFLOPs"/GPU by the same 3x-fwd formula, for both LoRA and full FT; polar-slime bbh 64k on 32 trainer GPUs
-  logged 6–12 k tok/s, 17–35 TFLOPs). Caveat: synthetic uniform-length batches vs real multi-turn traces — path-a
-  should confirm on replayed agentic traces. If it holds, the stack (TileLang GDN kernels, recompute/offload layout),
-  not LoRA, is the big speedup.
+- Training throughput of this stack (synthetic fixed-length batches): 28–59 k tok/s per 8-GPU node for both
+  LoRA and full FT. Real-trace validation (SWE-Gym traces from path-a/path-b runs) is pending.
 
 **E. Recommended layout for Qwen3.5-9B LoRA agentic RL at 64k–128k** (measured pieces above; untested as a whole)
 - Trainer: LoRA r32 `all-linear`, `--megatron-to-hf-mode bridge`, TP2 + CP2 (64k, `--max-tokens-per-gpu 32768`)
@@ -268,3 +265,171 @@ arms, so lengths match: 8.07 k vs 8.02 k mean; `--max-tokens-per-gpu 9216`):
 - `--use-rollout-logprobs` removes the separate old-logprob forward pass: −24 % train step for both arms. With one
   optimizer step per rollout and the measured mismatch (KL≈2.5e-4) this is a safe default.
 - Synchronous disaggregation is a loss on one node (no overlap); it only pays with fully-async rollouts.
+
+**F. SGLang LoRA serving knobs (dfw job 19593033, standalone servers, TP1, r32 all-linear adapter, forced decode)**
+
+| config | 2k prompt + 2k gen, 64 conc | 32k prompt + 1k gen, 16 conc |
+|---|---|---|
+| base (no LoRA) | 4478 tok/s | 581 tok/s |
+| csgmv chunk 16 (default) / 32 / 64 / 128 | 3420 / 3409 / 3401 / 3405 (−24 %) | 456 / 469 / 468 / 471 (−19–22 %) |
+| triton | 3545 (−21 %) | 407 (−30 %) |
+| torch_native | 3263 (−27 %) | 471 (−19 %) |
+
+No serving knob closes the gap (CUDA graphs are already on with LoRA; `max_loras_per_batch` is already 1;
+`max_lora_rank` = actual rank 32). triton is best for decode-heavy, csgmv for prefill-heavy shapes.
+→ prototype `--lora-serve-merged` (patch set `patches/lora-serve-merged/`, validation running: bench arms-merged).
+
+## 10. Train LoRA, serve merged (`--lora-serve-merged`) — VALIDATED, recommended default for LoRA
+
+Patch set `patches/lora-serve-merged/` (miles-stack `90b4b4be`; stack it after the base set:
+`mrun --patches <runtime>/patches/lora-serve-merged ...`, bench: `PATCH_DIR=bench/patches:patches/lora-serve-merged`).
+Each weight sync exports **W + (α/r)·B·A** through Megatron-Bridge (`export_hf_weights(merge_adapter_weights=True)`)
+and pushes full weights via the normal full-model path (CUDA IPC colocated, NCCL broadcast disaggregated). SGLang
+runs a plain model: no LoRA kernels, no `lora_path`. Model-agnostic (any bridge-mode model, incl. Qwen3.8-27B).
+
+| (Qwen3.5-9B, 16 prompts x 8, 4k responses, LR 3e-4, 2 optimizer steps/rollout) | adapter serving | **merged serving** |
+|---|---|---|
+| colocated: rollout s (steady) | 49.4 | **35.9** (−27 %) |
+| colocated: weight sync s | ~2.0 | 2.8 |
+| disaggregated 4 train + 4 rollout GPUs: rollout s | 56–58 | **41.9** (−26 %) |
+| disaggregated: weight sync s | 0.30–0.49 | 0.52–0.55 |
+| KL(served ‖ trainer) at each new rollout, vs one-update policy movement KL≈0.03 | 2.1–2.6e-4 | 2.1–2.8e-4 |
+
+The served-vs-trainer KL stays at the numerical floor after every update (a stale or unmerged engine would
+show ≈0.03), in both layouts. The patch also keys the trainer's colocated sleep/wake memory layout on "LoRA is
+trained" instead of "LoRA is served" (this also fixes the `--lora-train-only` colocated crash).
+
+**Recommended LoRA flags (9B and 27B)**
+```
+--lora-rank 32 --lora-alpha 32|64 --lora-dropout 0 --target-modules all-linear --megatron-to-hf-mode bridge
+--lora-serve-merged                      # NOT --sglang-max-lora-rank / --lora-base-cpu-backup / --sglang-lora-backend
+--use-rollout-logprobs --log-probs-chunk-size 4096 --no-gradient-accumulation-fusion
+# disaggregated: --update-weight-transfer-mode broadcast (pipeline-parallel 1)
+```
+Agent gateways (Polar/Harbor) must **not** send `lora_path` under `--lora-serve-merged` (plain engine).
+End-to-end (dfw 19595394; dapo 32x8, 8k responses, colocated, 4 steps): merged serving == full-model serving.
+
+| arm | engine TP | rollout s | step s | train/rollout abs-diff of log p | KL(rollout‖train) |
+|---|---|---|---|---|---|
+| full FT (etp2-full / etp4-full) | 2 / 4 | 72–74 / 66–72 | 164 / 143–149 | 0.0077–0.0082 | 2.7–2.9e-4 |
+| LoRA, adapter serving (etp2-lora) | 2 | 102 | 199 | 0.0080–0.0081 | ~2.9e-4 |
+| **LoRA, merged serving** (m2-etp2 / m2-etp4) | 2 / 4 | **73–78 / 65–71** | **154 / 146–151** | 0.0078–0.0089 | 2.8–3.2e-4 |
+| LoRA merged + `--sglang-mamba-ssm-dtype bfloat16` | 2 | 68–70 | 148–150 | **0.0187–0.0212** | **1.4–1.6e-3** |
+
+**bf16 mamba SSM state is NOT free for 9B against the trainer**: 7 % faster rollout but 2.4x the train/rollout
+logprob mismatch and 5x the KL (the 27B decode-vs-prefill self-consistency check cannot see this). Not in the
+recommended flags; if used, pair it with importance correction (TIS/ICEPOP) and re-measure for 27B against the
+trainer, not engine self-consistency.
+64k trainer layout default: see §11 (provisional).
+
+## 11. 64k LoRA trainer layout on REAL agentic traces — DECIDED: TP4 / CP1 (4 and 8 trainer GPUs)
+
+Data: path-a's SWE-Gym codex dumps (smoke2, 64k cap), 3 dumps merged into steps of all 24 trajectories =
+**892k tokens/step, lengths 9k–65.5k (median 36k, p90 65k)**; replayed with `--load-debug-rollout-data`
+(`bench/compose_replay.py`), LoRA r32/α64, path-a's loss flags (`--calculate-per-token-loss
+--use-rollout-logprobs --log-probs-chunk-size 4096 --reward-key score`), full recompute, THD packing.
+
+| 8 trainer GPUs (DP = 8/(TP·CP)) | GDN CP mode | max tok/GPU | steady actor_train s/step | tok/s/node | tok/s/GPU | peak GB/GPU* |
+|---|---|---|---|---|---|---|
+| **TP4, no CP** (DP2) | – | 65536 | **22.2** | **40.2 k** | **5.0 k** | 65 |
+| TP2·CP2 | chunkwise | 32768 | 27.2–28.0 in one job, **OOM at step 1** in another (same config) | 32 k | 4.0 k | 77–79 (edge) |
+| TP2·CP2 | headwise | 32768 | 26.0–28.4 | 31–34 k | 4.1 k | 79 (edge) |
+| TP2·CP2 (path-a: chunkwise + `--attention-backend auto`) | chunkwise | 32768 | **OOM** | – | – | 78 |
+| TP2·CP4 | headwise | 16384 | 28.7 | 31.1 k | 3.9 k | 50 |
+| TP8, no CP | – | 65536 | 32.4 | 27.5 k | 3.4 k | 36 |
+| TP4·CP2 | headwise | 32768 | 36.1 | 24.7 k | 3.1 k | 52 |
+| TP1·CP4 | headwise | 16384 | OOM | – | – | 79 |
+
+*nvidia-smi used memory (includes the PyTorch allocator cache).
+
+**Default for 8 trainer GPUs, 64k cap: TP4, no context parallelism, `--max-tokens-per-gpu 65536`**
+(22.2 s per 892k-token real step = 40 k tok/s/node, 65 GB peak). CP adds communication without saving enough
+memory to pay for itself at 64k; TP4+SP already puts only 16k tokens of activations per GPU.
+- headwise vs chunkwise GDN CP: **same speed** at TP2·CP2 on these traces (26–28 s); both sit at the 80 GB edge
+  (chunkwise OOMed in 1 of 2 identical runs). Headwise is not the 64k fix — dropping CP is. Use headwise when CP
+  is unavoidable (128k), since it avoids the naive TP-gather fallback and has the same speed.
+- path-a's exact config (+ `--attention-backend auto`) OOMs: use the default flash backend.
+- **INVALID: every earlier "4-GPU" bench result** (arms-real64k-4gpu `r4-*`, any `GPUS=4` arm before miles-stack
+  `168cd373`) actually trained on 8 GPUs with DP doubled: `ray_node.sh` overwrote the driver's `GPUS` env. Fixed
+  in `168cd373` (same fix as miles-fleet `b53b7fee`). **Pull miles-stack ≥ 168cd373** and check
+  `--actor-num-gpus-per-node` in each arm's args.txt.
+- **4 trainer GPUs (true, hel 1524737)**, same real steps:
+
+| 4 GPUs | warm actor_train s/step | tok/s | useful MFU | peak GB |
+|---|---|---|---|---|
+| **TP4, no CP** (`--max-tokens-per-gpu 65536`) | **44.2** | **20.2 k** | **20.9 %** | 65 |
+| TP2·CP2 headwise | 51.2 (+16 %) | 17.4 k | 18.0 % | 78 (edge) |
+| TP2·CP2 chunkwise | OOM | | | 75 |
+| TP1·CP4 headwise | OOM | | | 79 |
+
+**D3 decision (64k cap, 4 or 8 trainer GPUs): TP4, CP1, `--max-tokens-per-gpu 65536`, full recompute, flash
+attention backend, `--log-probs-chunk-size 4096`.** Throughput is 5.0 k tok/s/GPU on real SWE-Gym traces at both
+4 and 8 GPUs (scales linearly with DP). Use CP (headwise) only past 64k/sample. Warm 1-node runs are
+rollout-bound (path-a: 191 s train vs 515 s rollout), so further trainer tuning has low value; TP2×DP2 at
+64k/GPU is the one remaining check (hel batch 1524978).
+- Chunkwise CP (Megatron's default) with THD packing + sequence parallelism goes through the naive
+  "TP gather → CP all-to-all → TP scatter" layout conversion around every GDN layer: much slower and more
+  memory (OOM here). Headwise keeps attention's zigzag layout and splits GDN heads across CP instead.
+- Headwise needs `(TP·CP)` to divide the GDN key heads (9B: 16; 27B: check `linear_num_key_heads`).
+- Step 0 of every *new shape* pays TileLang/Triton JIT (86–545 s here); runtime `50c1cda3`+ persists the JIT
+  caches across jobs (seed/publish to `$MILES_STACK_ROOT/jitcache/`).
+
+## 12. DRAFT recommended recipe (pending D1 path, D2 learning, D4 session caps, D5 27B footprint)
+
+**Runtime**: ProRL `miles-stack` ≥ `7519dd6e` (includes FLEET's A100/`MR_NODE_GPUS` fixes), SIF
+`radixark/miles@sha256:30bca3fc…`; base patch set auto-applied (otel pin, Qwen3.5 CP MRoPE fix, resident-colocation
+fix, layer-aware MFU metrics); add `--patches <runtime>/patches/lora-serve-merged`. JIT caches persist per
+cluster automatically (`$MILES_STACK_ROOT/jitcache/<image>-sm90/latest.tar`, seeded at `ray_node.sh` start, published
+at its end): 9B TP4 real-trace step 0 **454 s cold → 137 s warm** in a new job (steady 44 s; hel 1524737 vs 1525159).
+Jobs that don't launch through `ray_node.sh` can call `mr_jit_seed` / `mr_jit_publish` from `lib.sh`.
+
+**LoRA + serving (9B and 27B)** — validated (§10):
+```
+--lora-rank 32 --lora-alpha 64 --lora-dropout 0 --target-modules all-linear --megatron-to-hf-mode bridge
+--lora-serve-merged --no-gradient-accumulation-fusion
+--use-rollout-logprobs --log-probs-chunk-size 4096 --calculate-per-token-loss
+--attention-backend flash            # NOT auto (OOM on real 64k traces)
+```
+Not recommended (measured): adapter serving (−21–30 % decode), `--sglang-mamba-ssm-dtype bfloat16` (5x train/rollout
+KL on 9B), chunkwise GDN CP at 64k (OOM/edge), `--lora-train-only`, fp8 weights for rollout (27B: 5x mismatch).
+
+**Trainer @64k (D3, decided)**: `--tensor-model-parallel-size 4 --context-parallel-size 1 --sequence-parallel
+--max-tokens-per-gpu 65536 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1`.
+9B: 5.0 k tok/s/GPU on real SWE-Gym traces (4 GPUs: 20 k tok/s; 8 GPUs: 40 k tok/s), useful MFU ~21 %.
+27B: Megatron TP ≤ 4 (4 query groups) → TP4/CP1 too (qwen27b D5 run on it).
+**128k (P1)**: 9B needs 8 trainer GPUs: TP8 (43 s per 1.05 M tokens) or TP4·CP2 `--linear-cp-mode headwise` (48 s);
+nothing fits 128k on 4 GPUs.
+
+**Rollout (D4)**: plain engines (merged serving); engine TP>1 is correct for the Qwen3.5 line
+(9B TP2/TP4 = same mismatch floor as TP1; 27B TP2/TP4 same). For disaggregated weight sync:
+`--update-weight-transfer-mode broadcast` (9B full-weight broadcast 0.5 s on one node).
+**Engine TP and session caps (D4, measured: aws-iad 7592005, `bench/agent_suite.sh`)** — 9B, 4 engine GPUs (the
+rollout half of a 1-node run), merged/plain engines at mem-fraction 0.85, simulated agentic sessions (6k prompt + 16
+turns of 1.4k tool tokens + 600 generated; context grows to ~38k; prefix-cache reuse like router session affinity):
+
+| engines | in-flight sessions | generated tok/s | turns/s | turn latency p50 / p90 s | prefix-cache hit |
+|---|---|---|---|---|---|
+| 4 x TP1 | 48 | 3.8 k | 6.4 | 7.5 / 8.7 | 0.91 |
+| **2 x TP2** | 48 | **4.7 k** | 7.8 | 6.1 / 7.3 | 0.91 |
+| 4 x TP1 | 96 | 5.9 k | 9.8 | 9.4 / 11.4 | 0.91 |
+| **2 x TP2** | **96** | **6.8 k** | **11.3** | 8.2 / 10.7 | 0.92 |
+| 4 x TP1 | 160 | 3.4 k (collapse) | 5.6 | 13.5 / 65 | 0.33 |
+| 2 x TP2 | 160 | 3.4 k (collapse) | 5.7 | 13.5 / 48 | 0.41 |
+
+- **Use TP2 engines** (+15–22 % vs TP1 at equal GPUs): a TP2 engine holds 1.97 M KV tokens vs 0.85 M per TP1 GPU
+  (+16 % per GPU, weights split) and decodes faster.
+- **Cap in-flight sessions per engine at ≈ 0.9 × KV_tokens / peak session context.** Past it the radix/prefix cache
+  thrashes (hit 0.91 → 0.33–0.41) and throughput halves — same cliff as 27B. 9B TP2 @ mem 0.85: ~45 sessions/engine at
+  ~38k peak context, ~27/engine at 64k peak; TP1: ~20 and ~12. Mamba state slots cap running requests too (TP1: 96,
+  TP2: 225 at these settings), not binding here.
+- Raising in-flight from 48 to 96 on 4 engine GPUs gave +45 % generated tok/s with p50 turn latency 6→8 s; path-a/b
+  run 48 in flight with engines at 11–12 running requests, so raising the cap (to the KV bound) is the cheapest 1-node
+  speedup.
+
+**Layouts (pending D1/D5)**
+| model | 1 node (8 GPU) | multi-node |
+|---|---|---|
+| 9B @64k | 4 trainer GPUs TP4/CP1 + 4 engine GPUs as **2 x TP2**, fully-async, merged serving, in-flight ≈ 2 x 0.9 x 1.97M / peak ctx (≈ 55 at 64k peak) | 2 nodes: trainer 8 GPUs TP4 DP2 + 8 engine GPUs (pending) |
+| 27B @64k | 4 trainer TP4/CP1 + 1 TP4 engine (qwen27b D5 run, dfw 19596666) | pending D5 |
+Warm 1-node 9B runs are rollout-bound (path-a: train 191 s vs rollout 515 s per 64-session step), so engine GPUs and
+in-flight sessions are the throughput levers, not the trainer.
