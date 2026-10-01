@@ -60,9 +60,24 @@ for _v in ${HM_REQUIRE_ENV:-}; do
     hm_log "verifier env ${_v}: set"
 done
 hm_log "agent server on ${NODE_IP}:${PORT} (max ${MAXC} sandboxes), harbor ${HARBOR_DIR}"
+# HM_SANDBOX_RESERVE_CPUS=N (opt-in): pin the agent server, and with it every sandbox process (affinity is inherited), to
+# all of this job's CPUs except N, which stay free for SGLang/Ray/the trainer. Reason: unthrottled sandbox workloads
+# (e.g. torch tests with one thread per CPU) pinned the job cgroup at 96/96 cores and halved engine decode (dfw 19608789).
+PIN=()
+if [ "${HM_SANDBOX_RESERVE_CPUS:-0}" -gt 0 ] 2>/dev/null && command -v taskset >/dev/null; then
+    _cpus="$(python3 -c 'import os, sys
+c = sorted(os.sched_getaffinity(0)); r = int(sys.argv[1])
+print(",".join(map(str, c[r:])) if len(c) > r + 8 else "")' "${HM_SANDBOX_RESERVE_CPUS}" 2>/dev/null || true)"
+    if [ -n "${_cpus}" ]; then
+        PIN=(taskset -c "${_cpus}")
+        hm_log "sandboxes pinned to $(echo "${_cpus}" | tr ',' '\n' | wc -l) CPUs (${HM_SANDBOX_RESERVE_CPUS} reserved)"
+    else
+        hm_log "WARNING: HM_SANDBOX_RESERVE_CPUS=${HM_SANDBOX_RESERVE_CPUS} leaves too few CPUs; not pinning"
+    fi
+fi
 (
     cd "${HARBOR_DIR}"
-    exec "${HARBOR_DIR}/.venv/bin/python" miles_agent_server.py \
+    exec ${PIN[@]+"${PIN[@]}"} "${HARBOR_DIR}/.venv/bin/python" miles_agent_server.py \
         --host 0.0.0.0 --port "${PORT}" --max-concurrent "${MAXC}" \
         --trials-dir "${RUN_DIR}/trials/${HOST}" --dashboard-port 0 \
         ${HM_AGENT_TIMEOUT:+--agent-timeout "${HM_AGENT_TIMEOUT}"} \
