@@ -1,0 +1,33 @@
+--- a/miles/backends/megatron_utils/megatron_config.py
++++ b/miles/backends/megatron_utils/megatron_config.py
+@@ -364,7 +364,10 @@
+         # Mirrors the non-bridge branch below.
+         if not _has_megatron_checkpoint(args.load):
+             args.load = args.ref_load or args.hf_checkpoint
+-            args.start_rollout_id = 0
++            # A LoRA resume (--lora-adapter-path) has no Megatron tracker file but passes its own
++            # --start-rollout-id; only a fresh run starts at 0.
++            if args.start_rollout_id is None or getattr(args, "lora_adapter_path", None) is None:
++                args.start_rollout_id = 0
+     else:
+         if not _has_megatron_checkpoint(args.load):
+             args.no_load_optim = True
+--- a/miles/rollout/data_source.py
++++ b/miles/rollout/data_source.py
+@@ -145,11 +145,14 @@
+             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
+             return
+ 
+-        if self.args.load is None:
++        # Bridge-mode LoRA runs rewrite args.load to the HF checkpoint (no Megatron checkpoint);
++        # the rollout state lives under the directory the user asked to load from.
++        load_dir = getattr(self.args, "requested_load", None) or self.args.load
++        if load_dir is None:
+             logger.warning("no --load: the dataset starts where a fresh run's would")
+             return
+ 
+-        path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
++        path = compute_global_dataset_state_path(load_dir, rollout_id=rollout_id)
+         if not os.path.exists(path):
+             logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
+             return

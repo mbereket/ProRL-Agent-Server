@@ -131,8 +131,19 @@ if [ -n "${EVAL_INTERVAL:-}" ]; then
            --n-samples-per-eval-prompt "${EVAL_N:-2}")
     [ "${EVAL_BEFORE_TRAIN:-0}" = 1 ] || args+=(--skip-eval-before-train)
 fi
-# Resume (chained jobs, same RUN_NAME): Megatron checkpoint incl. the LoRA adapter.
-if [ -f "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt" ]; then
+# Resume (chained jobs, same RUN_NAME).
+#  LoRA (bridge): adapter + optimizer + iteration from the newest complete ckpt/iter_N/adapter via --lora-adapter-path,
+#    rollout/data-source state from ckpt/ via --load, and --start-rollout-id N+1 (miles_patches 0002 keeps both).
+#  Full FT: Megatron checkpoint (latest_checkpointed_iteration.txt) via --load.
+LATEST_ADAPTER=""
+for d in $(ls -d "${RUN_DIR}"/ckpt/iter_*/adapter 2>/dev/null | sort -r); do
+    if [ -s "${d}/adapter_megatron_rank0.pt" ] && [ -s "${d}/training_state_rank0.pt" ]; then LATEST_ADAPTER="${d}"; break; fi
+done
+if [ "${ARM}" = lora ] && [ -n "${LATEST_ADAPTER}" ]; then
+    it="$(basename "$(dirname "${LATEST_ADAPTER}")")"; it=$((10#${it#iter_}))
+    args+=(--lora-adapter-path "${LATEST_ADAPTER}" --load "${RUN_DIR}/ckpt" --start-rollout-id $((it + 1)))
+    echo "[driver] resuming LoRA from ${LATEST_ADAPTER} (iter ${it}), next rollout $((it + 1))"
+elif [ -f "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt" ]; then
     args+=(--load "${RUN_DIR}/ckpt")
     echo "[driver] resuming from ${RUN_DIR}/ckpt (iter $(cat "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt"))"
 fi
