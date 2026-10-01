@@ -27,7 +27,22 @@ fi
 RBS="${RBS:-8}"; NS="${NS:-8}"; NUM_ROLLOUT="${NUM_ROLLOUT:-20}"
 MAX_SEQ_LEN="${MAX_SEQ_LEN:-131072}"; MAXRESP="${MAXRESP:-16384}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-5}"; EXTRA="${EXTRA:-}"
-SESSION_WORKERS="${SESSION_WORKERS:-32}"; SESSION_PORT="${SESSION_PORT:-30000}"
+SESSION_WORKERS="${SESSION_WORKERS:-32}"
+# Session servers listen on SESSION_PORT..+SESSION_WORKERS-1. Default block 65460-65491: above dfw's ephemeral range
+# (9000-65000; a fixed 30000 block collided with an outbound socket: EADDRINUSE at startup) and above Ray's 65010-65458.
+# Bind-checked here; if the block is taken, the first free block below it is used.
+if [ -z "${SESSION_PORT:-}" ]; then
+    SESSION_PORT="$(python3 -c 'import socket, sys
+n = int(sys.argv[1])
+def free(b):
+    for p in range(b, b + n):
+        s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try: s.bind(("0.0.0.0", p))
+        except OSError: return False
+        finally: s.close()
+    return True
+print(next(b for b in [65460] + list(range(65460 - n, 40000, -n)) if free(b)))' "${SESSION_WORKERS}")"
+fi
 
 mkdir -p "${RUN_DIR}/data" "${RUN_DIR}/ckpt" "${RUN_DIR}/dumps"
 # ---- prompts: one row per task (metadata selects the Harbor task + agent)
@@ -48,10 +63,12 @@ case "${HARNESS}" in
         OPENCODE_CONFIG="${OPENCODE_CONFIG:-{\"compaction\": {\"auto\": false}, \"permission\": {\"task\": \"deny\"}, \"agent\": {\"title\": {\"disable\": true}}}}" ;;
 esac
 if [ ! -s "${DATA}" ]; then
-    python3 "$(dirname "$0")/../tools/prepare_data.py" --tasks-dir "${HARBOR_TASKS_DIR}" --out "${DATA}" \
+    _tmp="${DATA}.tmp.$(hostname -s).$$"
+    python3 "$(dirname "$0")/../tools/prepare_data.py" --tasks-dir "${HARBOR_TASKS_DIR}" --out "${_tmp}" \
         ${TASK_IDS_FILE:+--ids-file "${TASK_IDS_FILE}"} --agent "${HARNESS}" \
         ${AGENT_IMPORT_PATH:+--agent-import-path "${AGENT_IMPORT_PATH}"} \
         ${AGENT_KWARGS:+--agent-kwargs "${AGENT_KWARGS}"} ${OPENCODE_CONFIG:+--opencode-config "${OPENCODE_CONFIG}"}
+    mv -f "${_tmp}" "${DATA}"
 fi
 
 # ---- wait for every node's Harbor agent server
@@ -130,12 +147,16 @@ fi
 # trials from training trials (eval runs while the async producer keeps generating training groups).
 if [ -n "${EVAL_INTERVAL:-}" ] && [ -z "${EVAL_DATA:-}" ]; then
     EVAL_DATA="${RUN_DIR}/data/eval.jsonl"
-    [ -s "${EVAL_DATA}" ] || python3 -c 'import json, sys
+    if [ ! -s "${EVAL_DATA}" ]; then   # unique tmp + atomic rename (resumed chunks find it already there)
+        _tmp="${EVAL_DATA}.tmp.$(hostname -s).$$"
+        python3 -c 'import json, sys
 with open(sys.argv[2], "w") as out:
     for line in open(sys.argv[1]):
         if line.strip():
             row = json.loads(line); row.setdefault("metadata", {})["hm_split"] = "eval"; out.write(json.dumps(row) + "\n")' \
-        "${DATA}" "${EVAL_DATA}.tmp" && mv "${EVAL_DATA}.tmp" "${EVAL_DATA}"
+            "${DATA}" "${_tmp}"
+        mv -f "${_tmp}" "${EVAL_DATA}"
+    fi
 fi
 if [ -n "${EVAL_INTERVAL:-}" ]; then
     args+=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${EVAL_DATA}"

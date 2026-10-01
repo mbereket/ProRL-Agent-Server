@@ -11,7 +11,7 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=../setup/common.sh
 source "${HERE}/../setup/common.sh"
-RUN_DIR="${1:?run_dir}"; PORT="${2:-${HM_AGENT_SERVER_PORT:-18300}}"; MAXC="${3:-${HM_SANDBOXES_PER_NODE:-32}}"
+RUN_DIR="${1:?run_dir}"; PORT="$(hm_free_port "${2:-${HM_AGENT_SERVER_PORT:-65500}}")"; MAXC="${3:-${HM_SANDBOXES_PER_NODE:-32}}"
 HOST="$(hostname -s)"
 NODE_IP="$(hm_node_ip)"
 

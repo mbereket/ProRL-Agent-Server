@@ -1,6 +1,8 @@
+diff --git a/miles/rollout/session/sessions.py b/miles/rollout/session/sessions.py
+index c8faedb..bd8c5e8 100644
 --- a/miles/rollout/session/sessions.py
 +++ b/miles/rollout/session/sessions.py
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,7 @@ Thin layer: converts each HTTP request to primitive inputs, calls
  
  import json
  import logging
@@ -8,14 +10,16 @@
  
  from fastapi import Request
  from fastapi.responses import JSONResponse
-@@ -44,6 +45,14 @@
+@@ -44,6 +45,16 @@ from miles.rollout.session.config import SessionServerConfig
  from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
  from miles.rollout.session.errors import SessionError
  from miles.rollout.session.linear_trajectory import SessionRegistry
 +from miles.rollout.session.responses_adapter import (
 +    ResponsesConversionError,
 +    chat_to_response,
++    context_overflow_payload,
 +    error_payload,
++    is_context_limit_stop,
 +    response_sse_events,
 +    responses_to_chat_request,
 +    sse_body,
@@ -23,7 +27,7 @@
  from miles.rollout.session.types import CreateSessionRequest
  from miles.utils.chat_template_utils import get_tito_tokenizer
  from miles.utils.chat_template_utils.message_matcher_hub import (
-@@ -222,6 +231,48 @@
+@@ -222,6 +233,60 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
              logger.exception("Anthropic response conversion failed for session %s", session_id)
              return _anthropic_error_response(500, b"")
  
@@ -56,7 +60,19 @@
 +                content={"error": error_payload(core_response.status_code, core_response.body)},
 +            )
 +        try:
-+            response = chat_to_response(json.loads(core_response.body), responses_request, custom_tools)
++            chat = json.loads(core_response.body)
++        except Exception:
++            logger.exception("Responses conversion failed for session %s", session_id)
++            return JSONResponse(status_code=500, content={"error": {"message": "response conversion failed", "type": "server_error"}})
++        if is_context_limit_stop(chat, chat_request):
++            # The turn is already recorded in the session (it is trained, with the overlong reward). Ending the agent
++            # here with the context error the engine gives for the next request avoids codex retrying an
++            # "incomplete" response (each retry regenerates and rolls the session back).
++            usage = chat.get("usage") or {}
++            detail = f"generation stopped at the context window ({usage.get('prompt_tokens', '?')} prompt + {usage.get('completion_tokens', '?')} completion tokens)"
++            return JSONResponse(status_code=400, content={"error": context_overflow_payload(detail)})
++        try:
++            response = chat_to_response(chat, responses_request, custom_tools)
 +        except Exception:
 +            logger.exception("Responses conversion failed for session %s", session_id)
 +            return JSONResponse(status_code=500, content={"error": {"message": "response conversion failed", "type": "server_error"}})
@@ -72,9 +88,12 @@
      @app.post("/sessions/{session_id}/samples")
      async def collect_samples(request: Request, session_id: str):
          # Starlette matches routes in registration order; keep this before session_proxy.
+diff --git a/miles/rollout/session/responses_adapter.py b/miles/rollout/session/responses_adapter.py
+new file mode 100644
+index 0000000..e59d0e8
 --- /dev/null
 +++ b/miles/rollout/session/responses_adapter.py
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,372 @@
 +"""OpenAI Responses API on the session (TITO) path.
 +
 +Lets Responses-API agents (e.g. codex) run against a session: each ``POST
@@ -428,6 +447,22 @@
 +    except Exception:
 +        message = body.decode(errors="replace") if body else f"upstream error {status_code}"
 +    lowered = str(message).lower()
-+    code = "context_length_exceeded" if ("context length" in lowered or "maximum context" in lowered) else (
-+        "invalid_request_error" if 400 <= status_code < 500 else "server_error")
++    if "context length" in lowered or "maximum context" in lowered:
++        return context_overflow_payload(str(message))
++    code = "invalid_request_error" if 400 <= status_code < 500 else "server_error"
 +    return {"code": code, "message": str(message)}
++
++
++def context_overflow_payload(detail: str) -> dict:
++    """The trajectory hit the model's context window. ``code`` is what codex keys on (ContextWindowExceeded); the
++    message keeps a fixed "maximum context length" phrase so agent-side overflow detection does not depend on the
++    engine's wording."""
++    return {"code": "context_length_exceeded", "type": "invalid_request_error",
++            "message": f"maximum context length reached: {detail}"}
++
++
++def is_context_limit_stop(chat: dict, chat_request: dict) -> bool:
++    """finish_reason=length on a request without a per-call max_tokens: the engine clamps max_new_tokens to the
++    remaining context, so the generation stopped at the context window, not at an output budget."""
++    choice = (chat.get("choices") or [{}])[0]
++    return choice.get("finish_reason") == "length" and not chat_request.get("max_tokens")

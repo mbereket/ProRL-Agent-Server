@@ -7,11 +7,13 @@ first on PATH. Everything else (auth file, config.toml base URL, `codex exec --j
 parsing) is Harbor's Codex unchanged.
 
 Extra codex config (agent kwarg ``codex_config``, a flat dict of dotted keys) is passed as ``-c
-key=value`` flags. Training defaults (overridable):
-  model_context_window           = HARBOR_MAX_SEQ_LEN  (codex does not know a custom model's window)
-  model_auto_compact_token_limit = 1e9                 (auto-compaction rewrites history, which a
-                                                        TITO session cannot extend; a run that
-                                                        reaches the window ends as overlong instead)
+key=value`` flags. Training default (overridable):
+  model_auto_compact_token_limit = 1e9   (auto-compaction rewrites history, which a TITO session
+                                          cannot extend)
+model_context_window is deliberately NOT set: codex treats 95% of it as its window and compacts
+at ~95% of that (65536 -> stops at ~59.1k, measured), i.e. it would end sessions ~6.4k tokens
+before the engine's limit. Without it, a session runs until the engine's context window: the
+session adapter reports that as context_length_exceeded and the trial ends overlong.
 """
 
 from __future__ import annotations
@@ -44,8 +46,6 @@ class PreinstalledCodex(Codex):
                  exec_timeout_sec: int = 7200, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         defaults: dict[str, Any] = {"model_auto_compact_token_limit": 1_000_000_000}
-        if os.environ.get("HARBOR_MAX_SEQ_LEN"):
-            defaults["model_context_window"] = int(os.environ["HARBOR_MAX_SEQ_LEN"])
         self._codex_config = {**defaults, **(codex_config or {})}
         self._exec_timeout_sec = int(exec_timeout_sec)
 

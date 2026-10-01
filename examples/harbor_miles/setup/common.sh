@@ -46,6 +46,25 @@ hm_once() {
     ) 9>"${stamp}.lock"
 }
 
+# Port choice. dfw's ephemeral range is 9000-65000 (any outbound socket can hold a port in it), so fixed listen
+# ports go above it: Ray 65010-65458 (miles_runtime/ray_node.sh), session servers 65460-65491, agent server 65500.
+# hm_ports_free BASE COUNT: every port BASE..BASE+COUNT-1 can be bound right now (SO_REUSEADDR, as uvicorn binds).
+hm_ports_free() {
+    command -v python3 >/dev/null || return 0
+    python3 -c 'import socket, sys
+b, n = int(sys.argv[1]), int(sys.argv[2])
+for p in range(b, b + n):
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: s.bind(("0.0.0.0", p))
+    except OSError: sys.exit(1)
+    finally: s.close()' "$1" "$2"
+}
+# hm_free_port PREFERRED: PREFERRED if free, else a kernel-assigned free port.
+hm_free_port() {
+    if hm_ports_free "$1" 1; then echo "$1"; return; fi
+    python3 -c 'import socket; s = socket.socket(); s.bind(("0.0.0.0", 0)); print(s.getsockname()[1]); s.close()'
+}
+
 # This node's cluster-reachable IPv4 address: what the hostname resolves to (same as the Ray
 # head address), never a link-local 169.254.x interface (dfw lists one first in hostname -I).
 hm_node_ip() {
