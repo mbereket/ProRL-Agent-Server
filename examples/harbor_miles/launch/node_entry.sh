@@ -62,7 +62,10 @@ export MILES_RESPONSES_DEFAULT_MAX_TOKENS="${MILES_RESPONSES_DEFAULT_MAX_TOKENS:
 export AGENT_TRIAL_TIMEOUT="${AGENT_TRIAL_TIMEOUT:-$(( ${HM_AGENT_TIMEOUT:-3600} + 1800 ))}"
 # LORA_SERVE=merged: STACK's train-LoRA/serve-merged patch set goes before ours.
 [ "${LORA_SERVE:-adapter}" = merged ] && MERGED_PATCHES="${MILES_RUNTIME_DIR}/patches/lora-serve-merged" || MERGED_PATCHES=""
+# NO_MTP=1: STACK's patches/no-mtp (drop the bridge-built MTP layer unless trained: removes an unweighted 0.2 next-token
+# loss from the LoRA gradient and the fp32 MTP logits that OOM 27B at 128k). Opt-in until STACK's A/B (aws-iad 7598313).
+[ "${NO_MTP:-0}" = 1 ] && MERGED_PATCHES="${MERGED_PATCHES:+${MERGED_PATCHES}:}${MILES_RUNTIME_DIR}/patches/no-mtp"
 exec bash "${MILES_RUNTIME_DIR}/ray_node.sh" \
     --pythonpath "${HM_EXAMPLE_DIR}/miles_side" --pythonpath "${HM_EXAMPLE_DIR}" \
-    ${MERGED_PATCHES:+--patches "${MERGED_PATCHES}"} ${MILES_PATCH_DIR:+--patches "${MILES_PATCH_DIR}"} \
+    $(IFS=:; for d in ${MERGED_PATCHES}; do printf -- '--patches %s ' "$d"; done) ${MILES_PATCH_DIR:+--patches "${MILES_PATCH_DIR}"} \
     -- bash "${HM_EXAMPLE_DIR}/launch/train_driver.sh"
