@@ -26,6 +26,7 @@ build_tools() {
     fi
     mkdir -p "${DEST}"
     export UV_PYTHON_INSTALL_DIR="${DEST}/python" UV_TOOL_DIR="${DEST}/tools" UV_TOOL_BIN_DIR="${DEST}/bin"
+    export UV_PYTHON_BIN_DIR="${DEST}/python-bin"   # not ~/.local/bin ($HOME is full/read-only on some clusters)
     "${HM_UV}" python install 3.12 >&2
     "${HM_UV}" tool install --python 3.12 "mini-swe-agent==${VERSION}" --with 'litellm[proxy]' >&2 || return 1
     tool_py="${DEST}/tools/mini-swe-agent/bin/python"
@@ -43,7 +44,8 @@ for name, src in (("output cap", m._OUTPUT_CAP_PATCH.format(cap_bytes=m.MAX_COMM
     if r.returncode:
         sys.exit(1)
 PY
-    local_py="$(HOME="${DEST}/build-home" "${tool_py}" -c 'import minisweagent.environments.local as m; print(m.__file__)')"
+    # minisweagent prints a banner on import: take the last line
+    local_py="$(HOME="${DEST}/build-home" "${tool_py}" -c 'import minisweagent.environments.local as m; print(m.__file__)' | tail -1)"
     grep -q "harbor: elided" "${local_py}" || { hm_log "output-cap patch missing in ${local_py}"; return 1; }
     HOME="${DEST}/build-home" "${DEST}/bin/mini-swe-agent" --help >/dev/null || return 1
     "${tool_py}" -c "import importlib.metadata as m; print(m.version('mini-swe-agent'))" > "${DEST}/VERSION" || return 1
