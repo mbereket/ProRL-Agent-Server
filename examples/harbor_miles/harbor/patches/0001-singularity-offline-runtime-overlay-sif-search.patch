@@ -91,7 +91,7 @@ index 04f9644..6e72db5 100644
      try:
          setup_apt_sources()
 diff --git a/src/harbor/environments/singularity/singularity.py b/src/harbor/environments/singularity/singularity.py
-index c728d73..9ecc25d 100644
+index c728d73..5e2a273 100644
 --- a/src/harbor/environments/singularity/singularity.py
 +++ b/src/harbor/environments/singularity/singularity.py
 @@ -21,6 +21,8 @@ runs a FastAPI server inside the container to handle command execution.
@@ -464,7 +464,20 @@ index c728d73..9ecc25d 100644
  
      def _get_process_tree_memory(self, pid: int) -> int:
          """Get total PSS memory of a process and all its descendants.
-@@ -679,9 +901,21 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -626,7 +848,12 @@ class SingularityEnvironment(BaseEnvironment):
+                         f"({usage_pct * 100:.0f}%). Killing container."
+                     )
+                     self._memory_limit_exceeded = error_msg
++                    # Kill the WHOLE tree: SIGKILL to the `singularity exec` starter alone leaves the container's processes
++                    # (own PID namespace) running -- the runaway kept allocating and the agent kept issuing commands
++                    # (dfw 19612902: a 2 TB R allocation filled the 1.2 TB job cgroup; r3 19612545: a 508 GB numpy one).
++                    tree = _descendants(self._server_process.pid)
+                     self._server_process.kill()
++                    _kill_pids(tree | _descendants(self._server_process.pid))
+                     return
+ 
+                 interval = (
+@@ -679,9 +906,21 @@ class SingularityEnvironment(BaseEnvironment):
  
          if self._server_process and self._server_process.returncode is None:
              pid = self._server_process.pid
@@ -488,7 +501,7 @@ index c728d73..9ecc25d 100644
  
              try:
                  await asyncio.wait_for(self._server_process.wait(), timeout=5.0)
-@@ -690,14 +924,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -690,14 +929,7 @@ class SingularityEnvironment(BaseEnvironment):
                  self._server_process.kill()
                  await self._server_process.wait()
  
@@ -504,7 +517,7 @@ index c728d73..9ecc25d 100644
  
          if hasattr(self, "_stream_task") and self._stream_task:
              self._stream_task.cancel()
-@@ -709,6 +936,10 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -709,6 +941,10 @@ class SingularityEnvironment(BaseEnvironment):
          if self._staging_dir and self._staging_dir.exists():
              shutil.rmtree(self._staging_dir, ignore_errors=True)
  
