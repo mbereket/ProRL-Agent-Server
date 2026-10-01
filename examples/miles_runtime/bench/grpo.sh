@@ -105,7 +105,7 @@ train_pid=$!
 ( last=0; since=${SECONDS}; limit=${FIRST_STALL_S:-1800}
   while kill -0 "${train_pid}" 2>/dev/null; do
       sleep 30
-      n=$(grep -c 'perf [0-9]*:' "${OUT}/train.log" 2>/dev/null || echo 0)
+      n=$(grep -c 'perf [0-9]*:' "${OUT}/train.log" 2>/dev/null); n=${n:-0}
       if [ "${n}" -gt "${last}" ]; then last=${n}; since=${SECONDS}; limit=${STEP_STALL_S:-1200}; fi
       if [ $((SECONDS - since)) -gt "${limit}" ]; then
           echo "[grpo] STALL: no progress for $((SECONDS - since)) s (${n} perf lines) -> killing" | tee -a "${OUT}/train.log"
