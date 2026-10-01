@@ -18,8 +18,16 @@ import aiohttp
 async def session(s, url, sid, a, stats):
     rng = random.Random(sid)
     ctx = [rng.randrange(1000, 150000) for _ in range(a.base)]
-    for t in range(a.turns):
+    n_turns = a.turns
+    if a.turns_mean:  # geometric(mean) turns per session (SWE-Gym codex: mean 17, p90 ~31); the cap still applies
+        p = 1.0 / a.turns_mean
+        n_turns = 1
+        while rng.random() > p and n_turns < a.turns:
+            n_turns += 1
+    stats["turns_drawn"].append(n_turns)
+    for t in range(n_turns):
         if len(ctx) + a.gen > a.ctx_cap:
+            stats["capped"] += 1
             break
         payload = {"input_ids": ctx, "sampling_params": {"max_new_tokens": a.gen, "ignore_eos": True, "temperature": 1.0}}
         t0 = time.time()
@@ -39,7 +47,7 @@ async def session(s, url, sid, a, stats):
 
 async def main_async(a):
     urls = a.urls.split(",")
-    stats = {"lat": [], "gen": 0, "prompt": 0, "cached": 0, "done": 0}
+    stats = {"lat": [], "gen": 0, "prompt": 0, "cached": 0, "done": 0, "capped": 0, "turns_drawn": []}
     timeout = aiohttp.ClientTimeout(total=None)
     conn = aiohttp.TCPConnector(limit=0)
     async with aiohttp.ClientSession(timeout=timeout, connector=conn) as s:
@@ -54,7 +62,9 @@ async def main_async(a):
            "gen_tok_per_s": stats["gen"] / wall, "turns_per_s": len(lat) / wall,
            "sessions_per_min": stats["done"] / wall * 60, "lat_p50": lat[len(lat) // 2], "lat_p90": lat[int(.9 * len(lat))],
            "prefill_new_tok_per_s": (stats["prompt"] - stats["cached"]) / wall,
-           "cache_hit": stats["cached"] / max(1, stats["prompt"])}
+           "cache_hit": stats["cached"] / max(1, stats["prompt"]),
+           "turns_mean": statistics.mean(stats["turns_drawn"]), "capped_frac": stats["capped"] / max(1, a.sessions),
+           "gen_tok_per_s_per_gpu": stats["gen"] / wall / max(1, a.gpus)}
     print(json.dumps(res), flush=True)
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, "agent_sim.jsonl"), "a") as f:
@@ -68,6 +78,8 @@ def main():
     ap.add_argument("--base", type=int, default=6000); ap.add_argument("--tool", type=int, default=1400)
     ap.add_argument("--gen", type=int, default=600); ap.add_argument("--ctx-cap", type=int, default=65536)
     ap.add_argument("--tool-wait", type=float, default=0.0, help="max uniform sleep between turns (s)")
+    ap.add_argument("--turns-mean", type=float, default=0.0, help="geometric turns/session with this mean (0: fixed --turns)")
+    ap.add_argument("--gpus", type=int, default=0, help="GPUs behind --urls, for per-GPU throughput")
     asyncio.run(main_async(ap.parse_args()))
 
 
