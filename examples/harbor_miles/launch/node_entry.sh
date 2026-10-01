@@ -39,6 +39,19 @@ if [ -n "${HM_REAPER_EXEMPT_MINS:-}" ] && [ "${SLURM_NODEID:-0}" = 0 ] && comman
         && hm_log "reaper exemption ${HM_REAPER_EXEMPT_MINS} min" || hm_log "WARNING: could not set reaper exemption"
 fi
 
+# Other nodes' sandboxes (multi-node). The slurm-compose step runs this script on node 0 only, and ray_node.sh starts
+# only Ray workers elsewhere, so the head starts every other node's agent server + node monitor itself: one overlapping
+# 1-task srun step per node (launch/node_peer.sh; it blocks while its agent server lives; the job's end tears it down).
+# Skipped when this script already runs once per node (srun --ntasks-per-node=1: each node starts its own).
+if [ "${SLURM_NNODES:-1}" -gt 1 ] && [ "${SLURM_STEP_NUM_TASKS:-1}" -le 1 ] && command -v srun >/dev/null; then
+    mkdir -p "${RUN_DIR}/agent_servers"
+    for _n in $(scontrol show hostnames "${SLURM_JOB_NODELIST}" | tail -n +2); do
+        srun --overlap --nodes=1 --ntasks=1 -w "${_n}" --cpus-per-task="${SLURM_CPUS_PER_TASK:-96}" --kill-on-bad-exit=0 \
+            bash "${HM_EXAMPLE_DIR}/launch/node_peer.sh" "$(readlink -f "${CFG}")" > "${RUN_DIR}/agent_servers/peer-${SLURM_JOB_ID}-${_n}.log" 2>&1 &
+        hm_log "peer node ${_n}: agent server step started (log agent_servers/peer-${SLURM_JOB_ID}-${_n}.log)"
+    done
+fi
+
 # Host side: this node's sandboxes.
 HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" \
     bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${RUN_DIR}" "${HM_AGENT_SERVER_PORT:-65500}" \
