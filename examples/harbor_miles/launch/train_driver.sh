@@ -81,7 +81,22 @@ args=(
     --rollout-num-gpus-per-engine "${ENGINE_TP}" --sglang-mem-fraction-static "${MEMF}"
     --sglang-context-length "${MAX_SEQ_LEN}"
 )
-[ "${ASYNC}" = 1 ] || args+=(--rollout-function-path hm_rollout.RolloutFn)
+if [ "${ASYNC}" = 1 ]; then
+    # Fully async: the engines keep ASYNC_CONCURRENCY trajectories in flight across weight
+    # updates; the trainer drains RBS groups per step. Groups may be up to MAX_STALENESS
+    # versions old; the PPO ratio is taken against the logprobs the behavior policy actually
+    # sampled with (--use-rollout-logprobs), which is the correct off-policy baseline here.
+    args+=(--async-max-concurrent-samples "${ASYNC_CONCURRENCY:-$(( RBS * NS * 2 ))}"
+           --max-weight-staleness "${MAX_STALENESS:-2}" --async-unused-samples-handler retry
+           --use-rollout-logprobs)
+else
+    args+=(--rollout-function-path hm_rollout.RolloutFn)
+fi
+# Resume (chained jobs, same RUN_NAME): Megatron checkpoint incl. the LoRA adapter.
+if [ -f "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt" ]; then
+    args+=(--load "${RUN_DIR}/ckpt")
+    echo "[driver] resuming from ${RUN_DIR}/ckpt (iter $(cat "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt"))"
+fi
 [ "${ENGINE_TP}" -gt 1 ] && args+=(--sglang-disable-custom-all-reduce)   # broken on hel
 [ "${OFFLOAD}" = 1 ] && args+=(--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
 if [ "${LAYOUT}" = colocate ]; then

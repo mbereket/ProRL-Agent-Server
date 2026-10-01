@@ -35,6 +35,7 @@ HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" \
 
 # Everything the rollout process (agent function) needs is in the environment Ray inherits.
 export AGENT_MODEL_NAME="${AGENT_MODEL_NAME:-qwen35-9b}"
+export HM_TRIAL_LOG="${HM_TRIAL_LOG:-${RUN_DIR}/trials-${SLURM_JOB_ID}.jsonl}"
 export AGENT_TRIAL_TIMEOUT="${AGENT_TRIAL_TIMEOUT:-$(( ${HM_AGENT_TIMEOUT:-3600} + 1800 ))}"
 # Container-side temp on node-local disk (common.sh points TMPDIR at lustre for host tools).
 export TMPDIR="/tmp/hm-${USER}-${SLURM_JOB_ID}"; mkdir -p "${TMPDIR}"

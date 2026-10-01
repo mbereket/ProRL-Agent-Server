@@ -18,6 +18,9 @@ Environment (rollout worker):
   AGENT_TRIAL_TIMEOUT    client-side ceiling per trial, s (default 7200; keep above the
                          servers' --agent-timeout so the server ends trials first)
   HARBOR_INFRA_RETRIES   re-dispatches of a trial that failed before the agent ran (default 2)
+  HM_TRIAL_LOG           optional JSONL path: one line per finished trial (reward, exit status,
+                         timings, server, wall clock). Works the same under train.py and
+                         train_async.py --fully-async (where the sync RolloutFn metrics do not run).
 
 Failure attribution. A trial whose agent never started (sandbox start, agent
 setup, unreachable server) made no model calls, so its session is still empty
@@ -30,8 +33,10 @@ them as reward 0.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -102,6 +107,7 @@ async def run(
         if metadata.get(key):
             request[key] = metadata[key]
 
+    t_start = time.time()
     retries = int(os.environ.get("HARBOR_INFRA_RETRIES", "2"))
     servers: list[str] = []
     resp: dict[str, Any] | None = None
@@ -120,13 +126,38 @@ async def run(
     resp = resp or {"exit_status": "DispatchError"}
     agent_metrics = dict(resp.get("agent_metrics") or {})
     agent_metrics.update(agent_server=servers[-1], dispatch_attempts=len(servers))
-    return {
+    out = {
         "reward": float(resp.get("reward", 0.0) or 0.0),
         "exit_status": resp.get("exit_status", ""),
         "eval_report": resp.get("eval_report", {}),
         "agent_metrics": agent_metrics,
         "infra_failure": bool(infra),
     }
+    _log_trial(request["instance_id"], out, t_start)
+    return out
+
+
+def _log_trial(instance_id: str, out: dict[str, Any], t_start: float) -> None:
+    path = os.environ.get("HM_TRIAL_LOG")
+    if not path:
+        return
+    m = out["agent_metrics"]
+    rec = {
+        "t_end": time.time(),
+        "wall_s": round(time.time() - t_start, 1),
+        "instance_id": instance_id,
+        "reward": out["reward"],
+        "exit_status": out["exit_status"],
+        "infra_failure": out["infra_failure"],
+        **{k: m.get(k) for k in ("agent_server", "dispatch_attempts", "env_setup_time", "agent_setup_time",
+                                 "agent_run_time", "eval_time", "total_time", "turns", "n_input_tokens",
+                                 "n_output_tokens", "exception_type")},
+    }
+    try:
+        with open(path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError as exc:
+        logger.warning("could not append to HM_TRIAL_LOG %s: %r", path, exc)
 
 
 async def abort(args) -> None:
