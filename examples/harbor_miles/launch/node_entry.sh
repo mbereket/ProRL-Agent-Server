@@ -37,8 +37,6 @@ HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" \
 export AGENT_MODEL_NAME="${AGENT_MODEL_NAME:-qwen35-9b}"
 export HM_TRIAL_LOG="${HM_TRIAL_LOG:-${RUN_DIR}/trials-${SLURM_JOB_ID}.jsonl}"
 export AGENT_TRIAL_TIMEOUT="${AGENT_TRIAL_TIMEOUT:-$(( ${HM_AGENT_TIMEOUT:-3600} + 1800 ))}"
-# Container-side temp on node-local disk (common.sh points TMPDIR at lustre for host tools).
-export TMPDIR="/tmp/hm-${USER}-${SLURM_JOB_ID}"; mkdir -p "${TMPDIR}"
 exec bash "${MILES_RUNTIME_DIR}/ray_node.sh" \
     --pythonpath "${HM_EXAMPLE_DIR}/miles_side" --pythonpath "${HM_EXAMPLE_DIR}" \
     ${MILES_PATCH_DIR:+--patches "${MILES_PATCH_DIR}"} \

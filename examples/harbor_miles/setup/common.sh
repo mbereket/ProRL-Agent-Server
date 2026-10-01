@@ -10,8 +10,11 @@ hm_log() { echo "[harbor_miles $(date +%H:%M:%S) $(hostname -s)] $*" >&2; }
 hm_die() { hm_log "FATAL: $*"; exit 1; }
 
 export PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1
-mkdir -p "${HM_ROOT}"/{tmp,cache,runs,uv_cache,uv_python,apptainer_config}
-export TMPDIR="${HM_ROOT}/tmp"
+mkdir -p "${HM_ROOT}"/{cache,runs,uv_cache,uv_python,apptainer_config}
+# Node-local temp: short paths (ZMQ IPC sockets are limited to 107 chars; the dfw lustre root alone
+# is ~80) and fast for Harbor's per-trial staging dirs (bind-mounted into sandboxes on this node).
+export TMPDIR="/tmp/hm-${USER}-${SLURM_JOB_ID:-local}"
+mkdir -p "${TMPDIR}"
 export UV_CACHE_DIR="${HM_ROOT}/uv_cache"
 export UV_PYTHON_INSTALL_DIR="${HM_ROOT}/uv_python"
 export UV_LINK_MODE=copy
