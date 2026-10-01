@@ -480,6 +480,8 @@ heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 include
 | 64k | TP4 (4) | synthetic | **141** | 1.05 M | **7.43 k** | 26.9 % | **62.4** | fits |
 | 96k | TP4 (4) | synthetic | 116.5 | 0.79 M | 6.75 k | 27.8 % | 72.7 | fits |
 | 96k | TP4 (4) | **REAL** | — | | | | 78.9 | **OOM** (backward: 11.25 GiB alloc, 10.3 GiB free) |
+| 96k | TP4 (4) + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | **REAL** | 150-189 | 0.62-0.77 M | **4.1 k** | 14.5 % | **77.2** | **fits, but slow** (vs 6.75 k synthetic: allocator pressure at the edge) |
+| 96k | **TP4 (4) + expandable segments + `--log-probs-chunk-size 1024`** | **REAL** | **83-104** | 0.62-0.77 M | **7.45 k** | 26.4 % | 77.2 | **fits at full speed** |
 | 96k | TP4 x DP2 (8) | synthetic | 59.7 | 0.79 M | 13.2 k | 27.1 % | 72.8 | fits on synthetic only: DP keeps the 4-GPU TP4 per-replica footprint, which OOMs on REAL 96k |
 | 128k | TP4 (4) | synthetic | — | | | | 78.9 | OOM (~1 GiB short, logprob chunk) |
 | 128k | TP4 (4) | **REAL** | — | | | | 78.7 | OOM (same place) |
@@ -497,8 +499,17 @@ heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 include
 also dropped: data parallelism leaves the per-replica footprint unchanged, so they fit exactly where the 4- and 8-GPU
 replicas above fit, at ~2x the tokens/s.
 
-Reading so far: **4 trainer GPUs hold 27B at 64k; 96k fits the synthetic worst case but not real packed steps; 128k
-does not fit on 4 GPUs.** The per-microbatch cost that grows with context is the LM-head logits, [tokens/CP x vocab/TP] (vocab
+**Recipe for 4 trainer GPUs (1-node 4 trainer + 1 TP4 engine), 27B LoRA, MTP off (base 0004):**
+- **64k**: TP4 / CP1 / `--max-tokens-per-gpu 65536` — 7.4 k tok/s, 62 GB (synthetic); comfortable.
+- **96k**: TP4 / CP1 / `--max-tokens-per-gpu 98304` **plus `--log-probs-chunk-size 1024` and
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** in the environment Ray's trainer workers inherit (set it before
+  `ray start`) — REAL traces 7.45 k tok/s, 26 % useful MFU, 77.2 GB. Without both it OOMs (or, with only expandable
+  segments, runs 45 % slower). Little headroom: watch per-step peak memory in the first steps of a real run.
+- **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise (REAL: 10.4 k
+  tok/s, 79.0 GB without the rescue settings; rerun with them on aws-iad 7598871).
+- **192k**: needs ≥ 16 trainer GPUs (all 8-GPU layouts OOM); 16-GPU untested.
+
+Older reading (kept for the record): 96k fits the synthetic worst case but not real packed steps with default settings. The per-microbatch cost that grows with context is the LM-head logits, [tokens/CP x vocab/TP] (vocab
 248k: 12 GiB in bf16 at 96k on TP4) plus their gradient; TP cannot go above 4 for 27B, so CP (more GPUs) is the lever.
 The REAL 128k TP4·CP2-hw row has no headroom (79.0 GB) and one slow step (266 s vs 94 s); treat it as "fits only with the
 rescue settings" until the expandable-segments rerun lands.
