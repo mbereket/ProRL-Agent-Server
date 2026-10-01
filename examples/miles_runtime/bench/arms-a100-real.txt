@@ -1,0 +1,6 @@
+# A100 (sm80, patches/a100) mirror of arms-real64k-*.txt: real SWE-Gym codex traces, 64k cap, 24 trajectories/step
+# (892k tokens/step). H100 reference (STACK.md section 11, hel 1524091): r8-tp2cp2-hw 26.0 s, r8-tp2cp4-hw 28.7 s actor_train/step.
+!compose swe24 TRACES_DIR 3
+a-r8-tp2cp4-hw     ARM=lora GPUS=8 TP=2 CP=4 MTPG=16384 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+a-r8-tp2cp2-hw     ARM=lora GPUS=8 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+a-r4-tp2cp2-hw     ARM=lora GPUS=4 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
