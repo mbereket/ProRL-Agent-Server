@@ -41,7 +41,7 @@ export HARBOR_AGENT_SERVERS_FILE="${RUN}/agent_servers.txt"
 bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${RUN}" 18300 "${MAXC:-32}"
 NODE_IP="$(hm_node_ip)"
 if [ -n "${TASK_IDS_FILE:-}" ]; then
-    IDS="$(awk 'NR%7==1' "${HM_EXAMPLE_DIR}/${TASK_IDS_FILE}" | head -"${NTASKS}" | tr '\n' ',')"   # spread over repos
+    IDS="$(awk -v k="${TASK_STRIDE:-7}" 'NR%k==1' "${HM_EXAMPLE_DIR}/${TASK_IDS_FILE}" | head -"${NTASKS}" | tr '\n' ',')"   # spread over repos
 else
     IDS="$(ls "${TASKS}" | head -"${NTASKS}" | tr '\n' ',')"
 fi
