@@ -72,7 +72,10 @@ args=(
     --custom-agent-function-path hm_agent.run
     --custom-rm-path hm_rollout.reward_func
     --custom-reward-post-process-path hm_rollout.post_process_rewards
-    --tito-model qwen35 --use-session-server
+    --tito-model "${TITO_MODEL:-qwen35}" --use-session-server
+    # The TITO family's parsers are NOT applied to the engines automatically: without them the
+    # session returns raw "</think>...<tool_call>" text and no tool_calls (agent stops after 1 turn).
+    --sglang-reasoning-parser "${REASONING_PARSER:-qwen3}" --sglang-tool-call-parser "${TOOL_CALL_PARSER:-qwen3_coder}"
     --session-server-port "${SESSION_PORT}" --session-server-workers "${SESSION_WORKERS}"
     --session-message-matcher "${SESSION_MATCHER:-loose_tool_call}"
     --rollout-num-gpus-per-engine "${ENGINE_TP}" --sglang-mem-fraction-static "${MEMF}"
