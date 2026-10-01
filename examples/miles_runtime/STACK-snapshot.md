@@ -2,7 +2,7 @@
 
 Status: **usable on dfw and hel** (dfw: SIF, Ray 1+2 nodes, NCCL over IB validated; hel: SIF, imports, nested apptainer validated). aws-iad: SIF + compat + nested apptainer + Ray validated (job 7587420). **Benchmark results: §9.**
 Code: ProRL-Agent-Server branch **`miles-stack`**, dir `examples/miles_runtime/` (README there).
-Last updated: 2026-10-01 00:09 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
+Last updated: 2026-10-01 00:53 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
 
 ## 1. What the runtime is
 
@@ -416,9 +416,19 @@ turns of 1.4k tool tokens + 600 generated; context grows to ~38k; prefix-cache r
 | 4 x TP1 | 160 | 3.4 k (collapse) | 5.6 | 13.5 / 65 | 0.33 |
 | 2 x TP2 | 160 | 3.4 k (collapse) | 5.7 | 13.5 / 48 | 0.41 |
 
-- **Use TP2 engines** (+15–22 % vs TP1 at equal GPUs): a TP2 engine holds 1.97 M KV tokens vs 0.85 M per TP1 GPU
+At the real 64k shape (hel 1525224, cancelled after 3 of 4 levels to yield to path-b's D2 baseline; 8k prompt + 37 turns
+x (960 generated + 560 tool), contexts grow to ~64k):
+
+| engines | in-flight | generated tok/s | turns/s | turn latency p50 / p90 s | prefix-cache hit |
+|---|---|---|---|---|---|
+| 4 x TP1 | 32 / 48 / 64 | 3.1 k / 3.5 k / 3.9 k | 3.2 / 3.7 / 4.1 | 9.9 / 13.0 / 13.1 (p90 20.9 at 64) | 0.97 / 0.97 / **0.91** |
+| **2 x TP2** | 32 / 48 / **64** | 3.9 k / 4.2 k / **5.2 k** | 4.1 / 4.4 / **5.4** | 7.8 / 10.9 / 11.5 | 0.97 / 0.97 / 0.97 |
+
+- **Use TP2 engines** (+15–33 % vs TP1 at equal GPUs): a TP2 engine holds 1.97 M KV tokens vs 0.85 M per TP1 GPU
   (+16 % per GPU, weights split) and decodes faster.
-- **Cap in-flight sessions per engine at ≈ 0.9 × KV_tokens / peak session context.** Past it the radix/prefix cache
+- **Cap in-flight sessions per engine by KV: sessions × mean *live* context ≲ 0.9 × KV_tokens** (live context
+  averages ~half the peak over a session's life; the peak-based bound below is conservative — 2 x TP2 still had a 0.97
+  cache hit at 32 sessions/engine with 64k peaks). Past it the radix/prefix cache
   thrashes (hit 0.91 → 0.33–0.41) and throughput halves — same cliff as 27B. 9B TP2 @ mem 0.85: ~45 sessions/engine at
   ~38k peak context, ~27/engine at 64k peak; TP1: ~20 and ~12. Mamba state slots cap running requests too (TP1: 96,
   TP2: 225 at these settings), not binding here.
@@ -426,10 +436,17 @@ turns of 1.4k tool tokens + 600 generated; context grows to ~38k; prefix-cache r
   run 48 in flight with engines at 11–12 running requests, so raising the cap (to the KV bound) is the cheapest 1-node
   speedup.
 
-**Layouts (pending D1/D5)**
-| model | 1 node (8 GPU) | multi-node |
-|---|---|---|
-| 9B @64k | 4 trainer GPUs TP4/CP1 + 4 engine GPUs as **2 x TP2**, fully-async, merged serving, in-flight ≈ 2 x 0.9 x 1.97M / peak ctx (≈ 55 at 64k peak) | 2 nodes: trainer 8 GPUs TP4 DP2 + 8 engine GPUs (pending) |
-| 27B @64k | 4 trainer TP4/CP1 + 1 TP4 engine (qwen27b D5 run, dfw 19596666) | pending D5 |
-Warm 1-node 9B runs are rollout-bound (path-a: train 191 s vs rollout 515 s per 64-session step), so engine GPUs and
-in-flight sessions are the throughput levers, not the trainer.
+**Layouts (D1/D5 pending; current state of the real runs, 2026-10-01 00:15)**
+
+| model | 1 node (8 GPU) — what the real runs use now | measured | next change (recipe) |
+|---|---|---|---|
+| 9B @64k | trainer 4 GPUs TP4/CP1/65536 + **2 x TP2 engines**, async (staleness ≤ 2), 8x8 sessions/step, 48 in flight, session-affine routing | path-a r2 (dfw 19597971): rollout-bound, ~5–10 steps/h, train 8.7–14.4k tok/s on 2.1–2.9M tok/step, engines 10–13 running, KV max .33–.45, cache hit .97–.98 | **`--lora-serve-merged`** (both paths still serve the adapter with triton: −20–26 % rollout); in-flight 48 → KV bound (~96 at these contexts; path-b arm D testing) |
+| 27B @64k | trainer 4 GPUs TP4/CP1/65536 + 1 x TP4 engine, in-flight ≈ 26 | qwen27b r2 (dfw 19599407) running; trainer ~3.5x slower per token than 9B | same merged-serving switch; cap from TP4 KV (1.9M tokens) |
+| 9B / 27B multi-node | 2 nodes: trainer node (8 GPUs, 9B TP4×DP2) + engine node (4 x TP2 for 9B) | path-a 2-node arm ready (P1) | pending D5 |
+
+**Switching a run to merged serving** (patch set `patches/lora-serve-merged`): add `--lora-serve-merged`; remove
+`--sglang-max-lora-rank`, `--sglang-lora-backend`, `--lora-base-cpu-backup`. Miles' session server (path-b) drops
+`lora_path` automatically (the session config carries the flag); **path-a's Polar gateway must stop injecting
+`lora_path`** (SGLang without `--enable-lora` rejects such requests: `ValueError: LoRA adapter 'miles_lora' was requested, but LoRA is not enabled`). Weight sync becomes a full-weight broadcast (9B 0.5 s).
+Warm 1-node 9B runs are rollout-bound (path-a: train ~190 s vs rollout ~515 s per 64-session step), so the levers in
+order are: merged serving, in-flight sessions up to the KV bound, engine GPUs (trainer:engine split), then trainer.
