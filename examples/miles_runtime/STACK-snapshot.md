@@ -480,7 +480,7 @@ heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 include
 | 64k | TP4 (4) | synthetic | **141** | 1.05 M | **7.43 k** | 26.9 % | **62.4** | fits |
 | 96k | TP4 (4) | synthetic | 116.5 | 0.79 M | 6.75 k | 27.8 % | 72.7 | fits |
 | 96k | TP4 (4) | **REAL** | — | | | | 78.9 | **OOM** (backward: 11.25 GiB alloc, 10.3 GiB free) |
-| 96k | TP4 x DP2 (8) | synthetic | 59.7 | 0.79 M | 13.2 k | 27.1 % | 72.8 | fits |
+| 96k | TP4 x DP2 (8) | synthetic | 59.7 | 0.79 M | 13.2 k | 27.1 % | 72.8 | fits on synthetic only: DP keeps the 4-GPU TP4 per-replica footprint, which OOMs on REAL 96k |
 | 128k | TP4 (4) | synthetic | — | | | | 78.9 | OOM (~1 GiB short, logprob chunk) |
 | 128k | TP4 (4) | **REAL** | — | | | | 78.7 | OOM (same place) |
 | 128k | TP2·CP2 headwise (4) | **REAL** | — | | | | | OOM (12 GiB [tokens/CP x vocab/TP] logits alloc) |
@@ -495,6 +495,6 @@ does not fit on 4 GPUs.** The per-microbatch cost that grows with context is the
 The REAL 128k TP4·CP2-hw row has no headroom (79.0 GB) and one slow step (266 s vs 94 s); treat it as "fits only with the
 rescue settings" until the expandable-segments rerun lands.
 In flight: hel 1527310 (4-GPU 96k/128k rescue: expandable segments, logprob chunk 1024; then REAL 128k TP4·CP2-hw + exp,
-synthetic 192k), aws-iad 7598871 (8 GPUs: synthetic 192k TP4·CP2-hw / TP2·CP4-hw, REAL 96k TP4xDP2 / TP4·CP2-hw, REAL 128k
-TP2·CP4-hw / TP4·CP2-hw, all with expandable segments). 2-node layouts queued (`bench/arms-27b-2n.txt`).
+synthetic 192k), aws-iad 7598871 (8 GPUs: synthetic 192k TP4·CP2-hw / TP2·CP4-hw, REAL 96k TP4·CP2-hw, REAL 128k TP2·CP4-hw / TP4·CP2-hw,
+all with expandable segments — the 96k vs 128k TP4·CP2-hw peaks are the margin argument for the cap). 2-node layouts queued (`bench/arms-27b-2n.txt`).
 
