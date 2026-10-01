@@ -33,6 +33,7 @@ while read -r name rest; do
     [ -z "${name}" ] || [ "${name:0:1}" = "#" ] && continue
     if [ "${name}" = "!compose" ]; then   # !compose <name> <dir with real dumps *.pt> <steps>
         read -r cname csrc csteps <<< "${rest}"
+        [ "${csrc}" = TRACES_DIR ] && csrc="${MILES_STACK_ROOT}/traces/swegym-smoke2"   # cluster-local copy
         if [ ! -s "${ROOT}/${cname}/rollout_data/$((csteps - 1)).pt" ]; then
             "${MR}/mrun" --no-nv -- bash -c "python3 '${MR}/bench/compose_replay.py' '${ROOT}/${cname}/rollout_data' ${csrc}/*.pt --steps ${csteps}" 2>&1 | tail -3
         fi
