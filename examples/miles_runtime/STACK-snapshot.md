@@ -491,6 +491,8 @@ heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 include
 | 128k | TP4·CP2 headwise (8) | synthetic | **115.6** | 1.05 M | **9.07 k** | 20.9 % | **77.8** | fits (tight) |
 | 128k | TP4·CP2 headwise (8) | **REAL** | 94.3 (step 2; step 1: 266) | 0.98 M | 10.4 k | 19.3 % | **79.0** | fits at the edge |
 | 128k | TP4 x DP2 (8) | synthetic | — | | | | | OOM (as on 4 GPUs: CP1 at 128k does not fit) |
+| 96k | TP4·CP2 headwise (8) + expandable segments | **REAL** | 136-225 | 0.62-0.77 M | 3.4-4.6 k | 6-8 % | **56.3** | fits with **~24 GB headroom** (slow: see JIT note) |
+| 128k | TP2·CP4 headwise (8) + expandable segments | **REAL** | — | | | | 77.8 | OOM in backward (recompute) |
 | 192k | TP4·CP2 headwise (8) + expandable segments | synthetic | — | | | | 77.2 | OOM (logprob chunk, 0.4 GiB free) |
 | 192k | TP2·CP4 headwise (8) + expandable segments | synthetic | — | | | | 77.7 | OOM (logprob chunk, 0.2 GiB free) |
 | 192k | 16 GPUs (TP4·CP4) | — | | | | | | **not tested** — dropped: de4's longest observed 27B session is ~93k |
@@ -508,6 +510,12 @@ replicas above fit, at ~2x the tokens/s.
 - **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise (REAL: 10.4 k
   tok/s, 79.0 GB without the rescue settings; rerun with them on aws-iad 7598871).
 - **192k**: needs ≥ 16 trainer GPUs (all 8-GPU layouts OOM); 16-GPU untested.
+
+**Speed caveat (open):** step times on REAL traces vary 2-3x between steps and between otherwise similar arms (dfw REAL
+128k TP4·CP2-hw: 266 s then 94 s for the same token count; the 4-GPU 96k exp-only arm ran at 4.1 k tok/s and the next arm,
++ chunk 1024 on identical data, at 7.45 k). The second arm started from the first arm's JIT cache (published 1.3 -> 1.5 GB),
+so part of that gap may be kernel JIT for new shapes rather than the chunk size. Memory conclusions are solid; tok/s on
+REAL rows is a lower bound until a warm-cache rerun (queued as P1). Both 96k settings stay recommended.
 
 Older reading (kept for the record): 96k fits the synthetic worst case but not real packed steps with default settings. The per-microbatch cost that grows with context is the LM-head logits, [tokens/CP x vocab/TP] (vocab
 248k: 12 GiB in bf16 at 96k on TP4) plus their gradient; TP cannot go above 4 for 27B, so CP (more GPUs) is the lever.

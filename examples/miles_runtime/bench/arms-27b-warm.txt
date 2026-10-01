@@ -1,0 +1,8 @@
+# Is the REAL-trace speed gap JIT warm-up or the logprob chunk? Run the exp-only 4-GPU 96k arm twice back to back (b starts
+# from a's JIT cache), then chunk 1024 WITHOUT expandable segments (is exp needed?), then a warm rerun of 8-GPU TP4xCP2-hw.
+# Run in suite z27-real8 (aws-iad) so the composed REAL steps and the JIT cache are shared.
+!compose diag96k @stack/traces/diag9b-96k 3 --max-samples 16
+w-r96k-tp4-exp-a        ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+w-r96k-tp4-exp-b        ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+w-r96k-tp4-ck1k         ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=1024
+w-r96k-tp4cp2-hw-exp-b  ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=8 TP=4 CP=2 MTPG=49152 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
