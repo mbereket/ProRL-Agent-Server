@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Multi-node Ray cluster inside the Miles runtime, one call per Slurm node
-# (srun --ntasks-per-node=1). The first node of the allocation is the head: it
-# starts Ray, waits for every node, runs DRIVER on the head, then tears Ray
-# down; the other nodes join and block until the head goes away.
+# Multi-node Ray cluster inside the Miles runtime. Call it ONCE, on the first node of the
+# allocation (that is what a slurm-compose step does: its command runs in the batch script,
+# not under srun). The head starts the workers itself (`srun --overlap -w <node>` per other
+# node), starts Ray, waits for every node, runs DRIVER, then tears Ray and the workers down.
+# Also works when launched once per node (srun --ntasks-per-node=1): node 0 = head, others join.
 #
 #   ray_node.sh [mrun options, e.g. --patches DIR --bind X --pythonpath P] -- DRIVER [ARGS...]
 #
@@ -50,7 +51,14 @@ export RAY_ADDRESS="${HEAD_IP}:${RAY_GCS_PORT}" RAY_DASHBOARD_URL="http://${HEAD
 mkdir -p "${RAY_TMPDIR}"
 me="$(hostname -s)"
 
-if [ "${me}" != "${HEAD_HOST%%.*}" ] && [ "${SLURM_NODEID:-0}" != 0 ]; then
+# Role: explicit (MR_RAY_ROLE, set for the workers we spawn) > per-node srun step > head.
+role="${MR_RAY_ROLE:-}"
+if [ -z "${role}" ]; then
+    if [ "${SLURM_STEP_NUM_TASKS:-1}" -gt 1 ] && [ "${SLURM_NODEID:-0}" != 0 ]; then role=worker; else role=head; fi
+fi
+self_args=("${mrun_opts[@]}" -- "$@")
+
+if [ "${role}" = worker ]; then
     mr_log "worker ${me}: waiting for ray head ${HEAD_IP}:${RAY_GCS_PORT}"
     for _ in $(seq 1 600); do (echo > "/dev/tcp/${HEAD_IP}/${RAY_GCS_PORT}") 2>/dev/null && break; sleep 2; done
     exec "${MR}/mrun" "${mrun_opts[@]}" -- ray start --address="${RAY_ADDRESS}" --node-ip-address "$(getent ahostsv4 "${me}" | awk 'NR==1{print $1}')" \
@@ -58,9 +66,28 @@ if [ "${me}" != "${HEAD_HOST%%.*}" ] && [ "${SLURM_NODEID:-0}" != 0 ]; then
 fi
 
 mr_log "head ${me} (${HEAD_IP}): ${NUM_NODES} node(s) x ${GPUS} GPU"
+worker_pids=()
+if [ "${NUM_NODES}" -gt 1 ] && [ "${SLURM_STEP_NUM_TASKS:-1}" -le 1 ]; then
+    wlog_dir="${MILES_OWNER_ROOT:-${MILES_STACK_ROOT}}/joblogs"; mkdir -p "${wlog_dir}"
+    for w in "${nodes[@]:1}"; do
+        MR_RAY_ROLE=worker srun --overlap --nodes=1 --ntasks=1 -w "${w}" --gpus-per-node="${GPUS}" \
+            --cpus-per-task="${SLURM_CPUS_PER_TASK:-16}" --kill-on-bad-exit=0 \
+            bash "${MR}/ray_node.sh" "${self_args[@]}" > "${wlog_dir}/ray-worker-${SLURM_JOB_ID}-${w}.log" 2>&1 &
+        worker_pids+=($!)
+    done
+    mr_log "spawned ${#worker_pids[@]} worker(s); logs ${wlog_dir}/ray-worker-${SLURM_JOB_ID}-*.log"
+fi
+cleanup_workers() {
+    [ "${#worker_pids[@]}" -gt 0 ] || return 0
+    kill -TERM "${worker_pids[@]}" 2>/dev/null || true
+    sleep 5; kill -KILL "${worker_pids[@]}" 2>/dev/null || true
+    wait "${worker_pids[@]}" 2>/dev/null || true
+}
+trap cleanup_workers EXIT
 # One container session holds the Ray head daemons and the driver.
 driver="$(printf '%q ' "$@")"
-exec "${MR}/mrun" "${mrun_opts[@]}" -- bash -c "
+set +e
+"${MR}/mrun" "${mrun_opts[@]}" -- bash -c "
 set -uo pipefail
 # The image's opentelemetry is too old for the Ray 2.58 dashboard (ImportError _ExtendedAttributes):
 # off by default (drivers run on the head directly); RAY_DASHBOARD=1 to try it (needed for ray job submit).
@@ -80,3 +107,5 @@ rc=\$?
 ray stop --force >/dev/null 2>&1 || true
 exit \${rc}
 "
+rc=$?
+exit "${rc}"

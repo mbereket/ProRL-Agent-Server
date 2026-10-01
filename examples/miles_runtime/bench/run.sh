@@ -42,7 +42,9 @@ while read -r name rest; do
     done
     mr_log "arm ${name}: ${kv[*]}"
     t0=${SECONDS}
-    env "${kv[@]}" OUT="${out}" RAY_GCS_PORT="${RAY_GCS_PORT:-6379}" \
+    arm_i=$((${arm_i:-0} + 1))
+    # fresh Ray port block per arm: a previous arm's stragglers must not collide with the next head
+    env "${kv[@]}" OUT="${out}" RAY_PORT_BASE="$((20000 + (${SLURM_JOB_ID:-0} % 800) * 50 + (arm_i % 5) * 10))" \
         bash "${MR}/ray_node.sh" "${patch_opts[@]}" -- bash "${MR}/bench/grpo.sh" > "${out}/job.log" 2>&1
     rc=$?
     mr_log "arm ${name}: rc ${rc} in $((SECONDS - t0)) s ($(tail -c 300 "${out}/job.log" | tr '\n' ' ' | cut -c1-200))"
