@@ -15,10 +15,15 @@ HF_CKPT="${HF_CKPT:?config must set HF_CKPT (HF model dir)}"
 GPUS_PER_NODE="$(nvidia-smi --list-gpus | wc -l | tr -d ' ')"
 TOTAL_GPUS=$(( GPUS_PER_NODE * MILES_NUM_NODES ))
 TRAIN_GPUS="${TRAIN_GPUS:-4}"
-TP="${TP:-2}"; CP="${CP:-1}"; MTPG="${MTPG:-16384}"; OFFLOAD="${OFFLOAD:-0}"
-ENGINE_TP="${ENGINE_TP:-1}"; MEMF="${MEMF:-0.8}"
+TP="${TP:-2}"; CP="${CP:-1}"; MTPG="${MTPG:-16384}"
+ENGINE_TP="${ENGINE_TP:-2}"; MEMF="${MEMF:-0.8}"
 LORA_RANK="${LORA_RANK:-32}"; LORA_ALPHA="${LORA_ALPHA:-32}"; LORA_TARGETS="${LORA_TARGETS:-all-linear}"
 LR="${LR:-}"; [ -n "${LR}" ] || { [ "${ARM}" = lora ] && LR=1e-5 || LR=1e-6; }
+# ARM=full is the one-flag full-FT switch; on a <=4-GPU trainer it needs CPU Adam at 64k
+# (STACK §9). LoRA keeps Adam on GPU.
+if [ -z "${OFFLOAD:-}" ]; then
+    if [ "${ARM}" = full ] && [ "${TRAIN_GPUS}" -le 4 ]; then OFFLOAD=1; else OFFLOAD=0; fi
+fi
 RBS="${RBS:-8}"; NS="${NS:-8}"; NUM_ROLLOUT="${NUM_ROLLOUT:-20}"
 MAX_SEQ_LEN="${MAX_SEQ_LEN:-131072}"; MAXRESP="${MAXRESP:-16384}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-5}"; EXTRA="${EXTRA:-}"
@@ -80,18 +85,33 @@ args=(
     --session-message-matcher "${SESSION_MATCHER:-loose_tool_call}"
     --rollout-num-gpus-per-engine "${ENGINE_TP}" --sglang-mem-fraction-static "${MEMF}"
     --sglang-context-length "${MAX_SEQ_LEN}"
+    # Old-policy logprobs = the behavior policy's own (rollout) logprobs: skips a forward pass
+    # (-24% step, STACK) and is the correct ratio baseline under async staleness.
+    --use-rollout-logprobs --log-probs-chunk-size "${LOGPROB_CHUNK:-4096}"
 )
+# In-flight session cap. Every in-flight agent session keeps its prefix in an engine's radix
+# cache between turns; past the engines' KV capacity the cache thrashes (hit ratio collapses,
+# decode slows 2-3x, qwen27b). Cap = engines x floor(KV_FRACTION x ENGINE_KV_TOKENS / AVG_CTX),
+# and never more than the sandbox slots. ENGINE_KV_TOKENS = SGLang's max_total_num_tokens per
+# engine (logged at engine start; hel TP1 @ mem 0.8 = 773763; TP2 ~ 2x).
+if [ "${LAYOUT}" = colocate ]; then N_ENGINES=$(( TOTAL_GPUS / ENGINE_TP )); else N_ENGINES=$(( (TOTAL_GPUS - TRAIN_GPUS) / ENGINE_TP )); fi
+ENGINE_KV_TOKENS="${ENGINE_KV_TOKENS:-$(( 773763 * ENGINE_TP ))}"
+AVG_CTX="${AVG_CTX:-$(( MAX_SEQ_LEN * 3 / 4 ))}"
+KV_CAP=$(( N_ENGINES * ENGINE_KV_TOKENS * ${KV_FRACTION_PCT:-80} / 100 / AVG_CTX ))
+SANDBOX_CAP=$(( ${HM_SANDBOXES_PER_NODE:-32} * MILES_NUM_NODES ))
+SESSION_CAP="${SESSION_CAP:-$(( KV_CAP < SANDBOX_CAP ? KV_CAP : SANDBOX_CAP ))}"
+echo "[driver] session cap ${SESSION_CAP} (${N_ENGINES} engines x TP${ENGINE_TP}, kv/engine ${ENGINE_KV_TOKENS}, avg ctx ${AVG_CTX} -> kv cap ${KV_CAP}; sandbox cap ${SANDBOX_CAP})"
 if [ "${ASYNC}" = 1 ]; then
-    # Fully async: the engines keep ASYNC_CONCURRENCY trajectories in flight across weight
-    # updates; the trainer drains RBS groups per step. Groups may be up to MAX_STALENESS
-    # versions old; the PPO ratio is taken against the logprobs the behavior policy actually
-    # sampled with (--use-rollout-logprobs), which is the correct off-policy baseline here.
-    args+=(--async-max-concurrent-samples "${ASYNC_CONCURRENCY:-$(( RBS * NS * 2 ))}"
-           --max-weight-staleness "${MAX_STALENESS:-2}" --async-unused-samples-handler retry
-           --use-rollout-logprobs)
+    # Fully async: the engines keep SESSION_CAP trajectories in flight across weight updates;
+    # the trainer drains RBS groups per step; groups may be up to MAX_STALENESS versions old.
+    args+=(--async-max-concurrent-samples "${ASYNC_CONCURRENCY:-${SESSION_CAP}}"
+           --max-weight-staleness "${MAX_STALENESS:-2}" --async-unused-samples-handler retry)
 else
     args+=(--rollout-function-path hm_rollout.RolloutFn)
+    # Sync: one step's groups run together; oversubscribing the engines thrashes the cache too.
+    [ $(( RBS * NS )) -le "${SESSION_CAP}" ] || echo "[driver] WARNING: RBS x NS = $(( RBS * NS )) > session cap ${SESSION_CAP}"
 fi
+[ "${DROP_ZERO_STD:-0}" = 1 ] && args+=(--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter)
 # Resume (chained jobs, same RUN_NAME): Megatron checkpoint incl. the LoRA adapter.
 if [ -f "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt" ]; then
     args+=(--load "${RUN_DIR}/ckpt")
@@ -116,6 +136,8 @@ if [ "${ARM}" = lora ]; then
     args+=(--lora-rank "${LORA_RANK}" --lora-alpha "${LORA_ALPHA}" --lora-dropout 0.0
            --target-modules "${LORA_TARGETS}" --no-gradient-accumulation-fusion --sglang-max-lora-rank "${LORA_RANK}")
     [ "${LAYOUT}" = colocate ] && args+=(--lora-base-cpu-backup)
+    # csgmv (default) LoRA serving costs ~25% decode; triton is what STACK validated with TP>1 engines.
+    args+=(--sglang-lora-backend "${LORA_BACKEND:-triton}")
 fi
 [ -n "${WANDB_API_KEY:-}" ] && [ -n "${WANDB_PROJECT:-}" ] && args+=(--use-wandb --wandb-project "${WANDB_PROJECT}"
     --wandb-group "${RUN_NAME}" --wandb-key "${WANDB_API_KEY}")

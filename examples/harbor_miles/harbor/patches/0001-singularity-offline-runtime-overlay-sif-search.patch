@@ -1,6 +1,19 @@
+diff --git a/src/harbor/environments/singularity/bootstrap.sh b/src/harbor/environments/singularity/bootstrap.sh
+index d1b3868..3cbd45e 100755
+--- a/src/harbor/environments/singularity/bootstrap.sh
++++ b/src/harbor/environments/singularity/bootstrap.sh
+@@ -3,7 +3,7 @@
+ # First arg is WORKDIR (container cwd), rest are server args.
+ export WORKDIR="${1:-/app}"; shift
+ export HARBOR_STAGING="/staging/env_files"
+-mkdir -p "$WORKDIR"
++mkdir -p "$WORKDIR" && cd "$WORKDIR"
+ 
+ export DEBIAN_FRONTEND=noninteractive
+ 
 diff --git a/src/harbor/environments/singularity/bootstrap_offline.sh b/src/harbor/environments/singularity/bootstrap_offline.sh
 new file mode 100755
-index 0000000..45c8beb
+index 0000000..6d72e95
 --- /dev/null
 +++ b/src/harbor/environments/singularity/bootstrap_offline.sh
 @@ -0,0 +1,32 @@
@@ -16,7 +29,7 @@ index 0000000..45c8beb
 +# First arg is WORKDIR (container cwd), rest are server args.
 +export WORKDIR="${1:-/app}"; shift
 +export HARBOR_STAGING="/staging/env_files"
-+mkdir -p "$WORKDIR"
++mkdir -p "$WORKDIR" && cd "$WORKDIR"
 +
 +export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp/.harbor-tmux}"
 +mkdir -p "$TMUX_TMPDIR"
@@ -37,7 +50,7 @@ index 0000000..45c8beb
 +echo "[harbor] starting server with $HARBOR_PYTHON $(date +%T)" >&2
 +exec "$HARBOR_PYTHON" "$@"
 diff --git a/src/harbor/environments/singularity/singularity.py b/src/harbor/environments/singularity/singularity.py
-index c728d73..2030b5c 100644
+index c728d73..c11ed47 100644
 --- a/src/harbor/environments/singularity/singularity.py
 +++ b/src/harbor/environments/singularity/singularity.py
 @@ -21,6 +21,8 @@ runs a FastAPI server inside the container to handle command execution.
@@ -170,7 +183,19 @@ index c728d73..2030b5c 100644
  
          memory_mb = self._effective_memory_mb
          self._memory_limit_bytes = (
-@@ -206,6 +308,11 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -170,7 +272,10 @@ class SingularityEnvironment(BaseEnvironment):
+             self.logger.debug(f"Using pre-built .sif image: {sif_path}")
+ 
+     def _resolve_workdir(self) -> str:
+-        """Resolve container workdir from Dockerfile WORKDIR or default to /app."""
++        """Resolve container workdir: task.toml [environment] workdir, else the Dockerfile's
++        last WORKDIR, else /app."""
++        if self.task_env_config.workdir:
++            return self.task_env_config.workdir
+         if self._dockerfile_path.exists():
+             workdir = "/app"
+             try:
+@@ -206,6 +311,11 @@ class SingularityEnvironment(BaseEnvironment):
          Uses file locking to prevent race conditions when multiple concurrent
          tasks try to convert the same image simultaneously.
          """
@@ -182,7 +207,7 @@ index c728d73..2030b5c 100644
          if ":" not in docker_image:
              docker_image = f"{docker_image}:latest"
  
-@@ -248,7 +355,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -248,7 +358,7 @@ class SingularityEnvironment(BaseEnvironment):
              )
  
              cmd = [
@@ -191,7 +216,7 @@ index c728d73..2030b5c 100644
                  "pull",
                  str(tmp_sif_path),
                  f"docker://{docker_image}",
-@@ -327,13 +434,23 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -327,13 +437,23 @@ class SingularityEnvironment(BaseEnvironment):
          staging_server = self._staging_dir / "_hbexec.py"
          shutil.copy(server_script, staging_server)
  
@@ -216,7 +241,7 @@ index c728d73..2030b5c 100644
  
          for port_attempt in range(max_port_retries):
              reserved_socket, port = self._reserve_port()
-@@ -350,9 +467,34 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -350,9 +470,34 @@ class SingularityEnvironment(BaseEnvironment):
              ]
              for mount in self._mounts:
                  if mount.get("type") == "bind":
@@ -253,7 +278,7 @@ index c728d73..2030b5c 100644
  
              no_mount_args: list[str] = []
              singularity_no_mount = self._singularity_no_mount
-@@ -377,15 +519,16 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -377,15 +522,18 @@ class SingularityEnvironment(BaseEnvironment):
                  self._workdir,
              ]
              cmd = [
@@ -261,10 +286,13 @@ index c728d73..2030b5c 100644
 +                _singularity_bin(),
                  "exec",
                  *no_mount_args,
++                # The workdir may not exist in the image (e.g. /app in SWE-bench images); start in /
++                # and let the bootstrap create and enter it.
                  "--pwd",
-                 self._workdir,
+-                self._workdir,
 -                "--writable-tmpfs",
 -                "--fakeroot",
++                "/",
 +                *writable_args,
 +                *fakeroot_args,
                  "--containall",
@@ -273,7 +301,7 @@ index c728d73..2030b5c 100644
                  *bind_mounts,
                  str(self._sif_path),
                  *bootstrap_cmd,
-@@ -409,7 +552,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -409,7 +557,7 @@ class SingularityEnvironment(BaseEnvironment):
              self._http_client = httpx.AsyncClient(timeout=30.0)
              server_ready = False
  
@@ -282,7 +310,7 @@ index c728d73..2030b5c 100644
                  try:
                      response = await self._http_client.get(
                          f"http://localhost:{self._server_port}/health"
-@@ -429,7 +572,12 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -429,7 +577,12 @@ class SingularityEnvironment(BaseEnvironment):
                                  f"- port {self._server_port} collision"
                              )
                              break
@@ -296,7 +324,7 @@ index c728d73..2030b5c 100644
                          if self._memory_limit_bytes is not None:
                              self._memory_watchdog_task = asyncio.create_task(
                                  self._memory_watchdog()
-@@ -481,13 +629,47 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -481,13 +634,47 @@ class SingularityEnvironment(BaseEnvironment):
          if not self._server_process or not self._server_process.stdout:
              return
  
@@ -344,7 +372,7 @@ index c728d73..2030b5c 100644
  
      def _get_process_tree_memory(self, pid: int) -> int:
          """Get total PSS memory of a process and all its descendants.
-@@ -679,9 +861,21 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -679,9 +866,21 @@ class SingularityEnvironment(BaseEnvironment):
  
          if self._server_process and self._server_process.returncode is None:
              pid = self._server_process.pid
@@ -368,7 +396,7 @@ index c728d73..2030b5c 100644
  
              try:
                  await asyncio.wait_for(self._server_process.wait(), timeout=5.0)
-@@ -690,14 +884,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -690,14 +889,7 @@ class SingularityEnvironment(BaseEnvironment):
                  self._server_process.kill()
                  await self._server_process.wait()
  
@@ -384,7 +412,7 @@ index c728d73..2030b5c 100644
  
          if hasattr(self, "_stream_task") and self._stream_task:
              self._stream_task.cancel()
-@@ -709,6 +896,10 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -709,6 +901,10 @@ class SingularityEnvironment(BaseEnvironment):
          if self._staging_dir and self._staging_dir.exists():
              shutil.rmtree(self._staging_dir, ignore_errors=True)
  

@@ -22,6 +22,49 @@ import sys
 _STEP_RE = re.compile(r"step (\d+): (\{.*\})\s*$")
 _ROLLOUT_RE = re.compile(r"rollout (\d+): (\{.*\})\s*$")
 _PERF_RE = re.compile(r"train_metric_utils\.py:\d+ - perf (\d+): (\{.*\})\s*$")
+_TS_RE = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
+_PREFILL_RE = re.compile(r"Prefill batch, #new-seq: (\d+), #new-token: (\d+), #cached-token: (\d+)")
+_DECODE_RE = re.compile(r"Decode batch, #running-req: (\d+), #full token: (\d+), full token usage: ([\d.]+)"
+                        r"(?:, mamba num: (\d+), mamba usage: ([\d.]+))?.*gen throughput \(token/s\): ([\d.]+)")
+_STEP_LINE_RE = re.compile(r"log_utils\.py:\d+ - step (\d+): ")
+
+
+def parse_engine_stats(path: str) -> dict:
+    """Prefix-cache hit and KV usage from SGLang logs, bucketed by training step (the window
+    between consecutive `step N:` log lines) and overall."""
+    buckets: dict[int, dict] = collections.defaultdict(lambda: collections.defaultdict(float))
+    step = -1
+    with open(path, errors="replace") as f:
+        for line in f:
+            m = _STEP_LINE_RE.search(line)
+            if m:
+                step = int(m.group(1))
+                continue
+            b = buckets[step + 1]  # stats observed while producing data for the next step
+            m = _PREFILL_RE.search(line)
+            if m:
+                b["prefill_new"] += int(m.group(2))
+                b["prefill_cached"] += int(m.group(3))
+                continue
+            m = _DECODE_RE.search(line)
+            if m:
+                b["decode_lines"] += 1
+                b["running_sum"] += int(m.group(1))
+                b["kv_usage_max"] = max(b["kv_usage_max"], float(m.group(3)))
+                if m.group(5):
+                    b["mamba_usage_max"] = max(b["mamba_usage_max"], float(m.group(5)))
+                b["gen_tok_s_sum"] += float(m.group(6))
+    out = {}
+    for k, b in sorted(buckets.items()):
+        tot = b["prefill_new"] + b["prefill_cached"]
+        out[k] = {
+            "cache_hit": round(b["prefill_cached"] / tot, 3) if tot else None,
+            "prefill_new_M": round(b["prefill_new"] / 1e6, 2),
+            "kv_usage_max": round(b["kv_usage_max"], 2),
+            "mamba_usage_max": round(b["mamba_usage_max"], 2),
+            "avg_running_per_engine": round(b["running_sum"] / b["decode_lines"], 1) if b["decode_lines"] else None,
+        }
+    return out
 
 
 def _parse_dict(text: str) -> dict:
@@ -127,6 +170,13 @@ def main() -> None:
         summary.update(first_k_mean_reward=round(statistics.mean(rewards[:k]), 3),
                        last_k_mean_reward=round(statistics.mean(rewards[-k:]), 3), k=k)
     summary["trials"] = summarize_trials(a.trials)
+    eng = parse_engine_stats(a.log)
+    summary["engine_by_step"] = eng
+    allnew = sum(v["prefill_new_M"] for v in eng.values())
+    print("engine stats by step (cache_hit, kv_usage_max, avg running/engine):")
+    for k, v in eng.items():
+        print(f"  step {k}: hit {v['cache_hit']}  kv_max {v['kv_usage_max']}  mamba_max {v['mamba_usage_max']}  "
+              f"running/engine {v['avg_running_per_engine']}  prefill_new {v['prefill_new_M']}M")
     print(json.dumps(summary, indent=1))
     if a.out:
         with open(a.out, "w") as f:
