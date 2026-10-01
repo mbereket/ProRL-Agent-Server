@@ -95,6 +95,11 @@ def _tokenizer(args):
     return _TOKENIZER
 
 
+# Sample.status as set from the final turn's engine finish_reason (miles session merge); TRUNCATED can also come from the
+# collect-time max_seq_len trim. None arrives here as NaN (codec 0003); the session server's "hm codec nonfinite" line has
+# None vs float NaN and the positions.
+_FINISH_REASON = {"completed": "stop|tool_calls", "truncated": "length", "aborted": "abort"}
+
 NAN_KEYS = ("tail_samples", "tail_tokens_stripped", "tail_truncated", "tail_overlong", "mid_samples", "mid_tokens")
 
 
@@ -129,7 +134,15 @@ def quarantine_nonfinite_logprobs(samples: list[Sample], args=None, where: str =
         mid_bad = [i for i in bad if i < t]
         status = getattr(getattr(s, "status", None), "value", getattr(s, "status", None))
         md = s.metadata if isinstance(s.metadata, dict) else {}
-        info = {"response_len": n, "tail_start": t if tail_bad else None, "tail_nonfinite": len(tail_bad),
+        # Where in the turn: the turn holding the first non-finite token starts after the last untrainable token before it.
+        turn_start = max((i for i in range(bad[0]) if not mask[i]), default=-1) + 1
+        turn_end = next((i for i in range(bad[0], n) if not mask[i]), n)
+        info = {"response_length": n, "finish_reason": _FINISH_REASON.get(status, status),
+                "first_nonfinite_from_turn_end": turn_end - bad[0], "turn_len": turn_end - turn_start,
+                "nan": sum(1 for i in bad if lp[i] is not None and math.isnan(lp[i])),
+                "inf": sum(1 for i in bad if lp[i] is not None and math.isinf(lp[i])),
+                "none": sum(1 for i in bad if lp[i] is None),
+                "tail_start": t if tail_bad else None, "tail_nonfinite": len(tail_bad),
                 "stripped": 0, "mid_nonfinite": len(mid_bad), "first_mid": mid_bad[0] if mid_bad else None,
                 "status": status, "overlong": _is_overlong(s), "exit_status": md.get("exit_status")}
         if tail_bad:
