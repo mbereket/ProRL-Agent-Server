@@ -91,7 +91,7 @@ index 04f9644..6e72db5 100644
      try:
          setup_apt_sources()
 diff --git a/src/harbor/environments/singularity/singularity.py b/src/harbor/environments/singularity/singularity.py
-index c728d73..a10c0e7 100644
+index c728d73..9ecc25d 100644
 --- a/src/harbor/environments/singularity/singularity.py
 +++ b/src/harbor/environments/singularity/singularity.py
 @@ -21,6 +21,8 @@ runs a FastAPI server inside the container to handle command execution.
@@ -317,7 +317,7 @@ index c728d73..a10c0e7 100644
  
          for port_attempt in range(max_port_retries):
              reserved_socket, port = self._reserve_port()
-@@ -350,9 +496,34 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -350,9 +496,41 @@ class SingularityEnvironment(BaseEnvironment):
              ]
              for mount in self._mounts:
                  if mount.get("type") == "bind":
@@ -336,6 +336,13 @@ index c728d73..a10c0e7 100644
 +            env_args: list[str] = []
 +            if server_python:
 +                env_args.extend(["--env", f"HARBOR_SERVER_PYTHON={server_python}"])
++            # Per-process memory cap inside the sandbox (RLIMIT_DATA, inherited by the agent, its tools and the
++            # verifier): cgroup limits (--memory) need systemd/cgroup delegation that HPC nodes lack, and one runaway
++            # analysis process filled a 1.2 TB job cgroup in 8 minutes (dfw 19612902). A capped process gets ENOMEM /
++            # MemoryError instead. Host-side apptainer processes are not limited.
++            data_limit_kb = _env_str("HARBOR_SANDBOX_DATA_LIMIT_KB")
++            if data_limit_kb:
++                env_args.extend(["--env", f"HARBOR_SANDBOX_DATA_LIMIT_KB={int(data_limit_kb)}"])
 +
 +            if overlay_base:
 +                if self._overlay_dir is None:
@@ -354,7 +361,16 @@ index c728d73..a10c0e7 100644
  
              no_mount_args: list[str] = []
              singularity_no_mount = self._singularity_no_mount
-@@ -377,15 +548,18 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -367,6 +545,8 @@ class SingularityEnvironment(BaseEnvironment):
+             bootstrap_cmd = [
+                 "bash",
+                 "-c",
++                'if [ -n "${HARBOR_SANDBOX_DATA_LIMIT_KB:-}" ]; then ulimit -d "$HARBOR_SANDBOX_DATA_LIMIT_KB" '
++                '|| echo "[harbor] WARNING: could not set the sandbox memory limit (ulimit -d)" >&2; fi; '
+                 'exec /staging/bootstrap.sh "$@"',
+                 "bash",
+                 self._workdir,
+@@ -377,15 +557,18 @@ class SingularityEnvironment(BaseEnvironment):
                  self._workdir,
              ]
              cmd = [
@@ -377,7 +393,7 @@ index c728d73..a10c0e7 100644
                  *bind_mounts,
                  str(self._sif_path),
                  *bootstrap_cmd,
-@@ -409,7 +583,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -409,7 +592,7 @@ class SingularityEnvironment(BaseEnvironment):
              self._http_client = httpx.AsyncClient(timeout=30.0)
              server_ready = False
  
@@ -386,7 +402,7 @@ index c728d73..a10c0e7 100644
                  try:
                      response = await self._http_client.get(
                          f"http://localhost:{self._server_port}/health"
-@@ -429,7 +603,12 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -429,7 +612,12 @@ class SingularityEnvironment(BaseEnvironment):
                                  f"- port {self._server_port} collision"
                              )
                              break
@@ -400,7 +416,7 @@ index c728d73..a10c0e7 100644
                          if self._memory_limit_bytes is not None:
                              self._memory_watchdog_task = asyncio.create_task(
                                  self._memory_watchdog()
-@@ -481,13 +660,47 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -481,13 +669,47 @@ class SingularityEnvironment(BaseEnvironment):
          if not self._server_process or not self._server_process.stdout:
              return
  
@@ -448,7 +464,7 @@ index c728d73..a10c0e7 100644
  
      def _get_process_tree_memory(self, pid: int) -> int:
          """Get total PSS memory of a process and all its descendants.
-@@ -679,9 +892,21 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -679,9 +901,21 @@ class SingularityEnvironment(BaseEnvironment):
  
          if self._server_process and self._server_process.returncode is None:
              pid = self._server_process.pid
@@ -472,7 +488,7 @@ index c728d73..a10c0e7 100644
  
              try:
                  await asyncio.wait_for(self._server_process.wait(), timeout=5.0)
-@@ -690,14 +915,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -690,14 +924,7 @@ class SingularityEnvironment(BaseEnvironment):
                  self._server_process.kill()
                  await self._server_process.wait()
  
@@ -488,7 +504,7 @@ index c728d73..a10c0e7 100644
  
          if hasattr(self, "_stream_task") and self._stream_task:
              self._stream_task.cancel()
-@@ -709,6 +927,10 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -709,6 +936,10 @@ class SingularityEnvironment(BaseEnvironment):
          if self._staging_dir and self._staging_dir.exists():
              shutil.rmtree(self._staging_dir, ignore_errors=True)
  

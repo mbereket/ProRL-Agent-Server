@@ -56,15 +56,18 @@ index 0d37ec6..363db83 100644
          # trial span (the result object itself carries started_at/finished_at);
          # the named phases are its constituents. ``env_setup_time`` covers the
 diff --git a/agent_server/state.py b/agent_server/state.py
-index 33fb9bf..2030ff8 100644
+index 33fb9bf..0b7e8db 100644
 --- a/agent_server/state.py
 +++ b/agent_server/state.py
-@@ -36,7 +36,13 @@ class ServerState:
+@@ -36,7 +36,16 @@ class ServerState:
      # Every in-flight ``/run`` task, so flush can cancel direct calls too (the
      # heartbeat-based ``active_tasks`` only covers Miles-session-server requests).
      inflight_tasks: set[asyncio.Task] = field(default_factory=set)
 +    # In-flight /run task -> its request.instance_id (the task id), for the per-trial cancel-file trigger.
 +    inflight_instance: dict[asyncio.Task, str] = field(default_factory=dict)
++    # Trial worker pgid -> its /run task, and the tasks the memory watchdog killed (reported as an infra failure).
++    pgid_task: dict[int, asyncio.Task] = field(default_factory=dict)
++    watchdog_killed: set[asyncio.Task] = field(default_factory=set)
      semaphore: asyncio.Semaphore | None = None
 +    # Process-group ids of live per-trial worker processes (singularity: the
 +    # container processes are in the same group), so flush_all can kill them.
@@ -94,7 +97,7 @@ index 5b92059..d2e4c85 100644
  
      Matches each live compose project against this server's registered project
 diff --git a/agent_server/trial_runner.py b/agent_server/trial_runner.py
-index cd7eb6e..89f77db 100644
+index cd7eb6e..e79d6fe 100644
 --- a/agent_server/trial_runner.py
 +++ b/agent_server/trial_runner.py
 @@ -12,6 +12,7 @@ import json
@@ -216,7 +219,7 @@ index cd7eb6e..89f77db 100644
              compose_project = _trial_compose_project(trial)
          result = await trial.run()
  
-@@ -454,16 +514,28 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
+@@ -454,16 +514,32 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
          stdin=asyncio.subprocess.PIPE,
          stdout=asyncio.subprocess.PIPE,
          stderr=asyncio.subprocess.PIPE,
@@ -226,6 +229,9 @@ index cd7eb6e..89f77db 100644
 +        start_new_session=True,
      )
 +    _state.trial_pgids.add(proc.pid)
++    _task = asyncio.current_task()
++    if _task is not None:
++        _state.pgid_task[proc.pid] = _task
      try:
          out, err = await proc.communicate(blob.encode())
      except asyncio.CancelledError:
@@ -239,6 +245,7 @@ index cd7eb6e..89f77db 100644
          raise
 +    finally:
 +        _state.trial_pgids.discard(proc.pid)
++        _state.pgid_task.pop(proc.pid, None)
 +        # Safety net: anything the trial left in its group (a sandbox whose
 +        # teardown did not finish) dies with it.
 +        try:
@@ -248,7 +255,7 @@ index cd7eb6e..89f77db 100644
      for line in reversed(out.decode(errors="replace").splitlines()):
          if line.startswith(_WORKER_RESULT_MARKER):
              result = json.loads(line[len(_WORKER_RESULT_MARKER):])
-@@ -481,6 +553,85 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
+@@ -481,6 +557,85 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
      return _error_response("Error: NoResult")
  
  
@@ -334,7 +341,7 @@ index cd7eb6e..89f77db 100644
  def _worker_main() -> None:
      """Entrypoint for the per-trial worker process."""
      data = json.loads(sys.stdin.read())
-@@ -489,7 +640,17 @@ def _worker_main() -> None:
+@@ -489,7 +644,17 @@ def _worker_main() -> None:
      _state.agent_timeout_sec = data.get("agent_timeout_sec")
      _state.agent_setup_timeout_sec = data.get("agent_setup_timeout_sec")
      logging.basicConfig(level=logging.INFO)
@@ -354,10 +361,21 @@ index cd7eb6e..89f77db 100644
  
  
 diff --git a/miles_agent_server.py b/miles_agent_server.py
-index 687526d..a69d207 100644
+index 687526d..ee1d507 100644
 --- a/miles_agent_server.py
 +++ b/miles_agent_server.py
-@@ -74,6 +74,41 @@ _ADMIN_SECRET = os.getenv("HARBOR_ADMIN_SECRET")
+@@ -58,8 +58,10 @@ from agent_server.results import _error_response
+ from agent_server.state import _state
+ from agent_server.teardown import _cancel_all_inflight, _kill_trial_containers
+ from agent_server.trial_runner import (
++    _descendants,
+     _discard_active_task,
+     _register_active_task,
++    _sigkill_group_and_tree,
+     run_trial_in_subprocess,
+ )
+ from server_dashboard.dashboard import create_dashboard_app
+@@ -74,6 +76,136 @@ _ADMIN_SECRET = os.getenv("HARBOR_ADMIN_SECRET")
  _request_logger: RequestLogger | None = None
  
  
@@ -396,10 +414,105 @@ index 687526d..a69d207 100644
 +                pass
 +
 +
++def _job_memory_cgroup() -> tuple[Path, bool] | None:
++    """The Slurm job's memory cgroup dir (walk up from this process to job_<SLURM_JOB_ID>) and whether it is cgroup v2."""
++    job = os.getenv("SLURM_JOB_ID", "")
++    try:
++        lines = Path("/proc/self/cgroup").read_text().splitlines()
++    except OSError:
++        return None
++    for line in lines:
++        _, ctrls, path = line.split(":", 2)
++        if ctrls == "":
++            base, v2, probe = Path("/sys/fs/cgroup" + path), True, "memory.max"
++        elif "memory" in ctrls.split(","):
++            base, v2, probe = Path(f"/sys/fs/cgroup/{ctrls}{path}"), False, "memory.limit_in_bytes"
++        else:
++            continue
++        d = base
++        while str(d) not in ("/", "/sys/fs/cgroup"):
++            if d.name == f"job_{job}" and (d / probe).exists():
++                return d, v2
++            d = d.parent
++        if (base / probe).exists():
++            return base, v2
++    return None
++
++
++def _cgroup_limit_and_unreclaimable(d: Path, v2: bool) -> tuple[int | None, int | None]:
++    """(limit, unreclaimable bytes = anon + shmem). Page cache is excluded: the kernel lets it fill a cgroup and reclaims
++    it under pressure, so memory.current near the limit is normal. shmem covers tmpfs files (e.g. a sandbox /tmp)."""
++    try:
++        raw = (d / ("memory.max" if v2 else "memory.limit_in_bytes")).read_text().strip()
++        limit = int(raw) if raw.isdigit() and int(raw) < (1 << 60) else None
++        stat = dict(line.split() for line in (d / "memory.stat").read_text().splitlines() if len(line.split()) == 2)
++    except (OSError, ValueError):
++        return None, None
++    keys = ("anon", "shmem") if v2 else ("total_rss", "total_shmem")
++    return limit, sum(int(stat.get(k, 0)) for k in keys)
++
++
++def _tree_rss(root: int) -> int:
++    page = os.sysconf("SC_PAGE_SIZE")
++    total = 0
++    for pid in {root} | _descendants(root):
++        try:
++            total += int(Path(f"/proc/{pid}/statm").read_text().split()[1]) * page
++        except (OSError, ValueError, IndexError):
++            pass
++    return total
++
++
++async def _mem_watchdog_loop(frac: float, interval: float = 5.0) -> None:
++    """Node memory watchdog (HARBOR_MEM_WATCHDOG_FRAC, default 0.8; 0 disables).
++
++    Sandboxes have no cgroup memory limit on HPC nodes, and one runaway analysis process filled a 1.2 TB job cgroup in
++    8 minutes and hung the whole job (dfw 19612902). When the job's unreclaimable memory (anon + shmem) reaches
++    ``frac`` of the job cgroup limit, the trial with the largest process-tree RSS is SIGKILLed at once (no grace period:
++    memory grows by GB/s) and its /run returns exit_status "Error: MemoryWatchdog" (= infra failure, excluded from the
++    loss). Then it waits 15 s for the memory to drop before checking again.
++    """
++    found = _job_memory_cgroup()
++    if found is None:
++        logger.warning("memory watchdog: no memory cgroup found; disabled")
++        return
++    d, v2 = found
++    limit, _ = _cgroup_limit_and_unreclaimable(d, v2)
++    if not limit:
++        logger.warning("memory watchdog: %s has no memory limit; disabled", d)
++        return
++    logger.info("memory watchdog: %s limit %.0f GB, kill threshold %.0f%%", d, limit / 2**30, 100 * frac)
++    while True:
++        await asyncio.sleep(interval)
++        limit, used = _cgroup_limit_and_unreclaimable(d, v2)
++        if not limit or used is None or used < frac * limit:
++            continue
++        sizes = {pgid: await asyncio.to_thread(_tree_rss, pgid) for pgid in list(_state.trial_pgids)}
++        if not sizes:
++            logger.error("MEMORY WATCHDOG: job memory %.0f of %.0f GB but no trial is running here", used / 2**30, limit / 2**30)
++            await asyncio.sleep(15)
++            continue
++        ranked = sorted(sizes.items(), key=lambda kv: kv[1], reverse=True)
++        pgid, rss = ranked[0]
++        task = _state.pgid_task.get(pgid)
++        iid = _state.inflight_instance.get(task) if task is not None else None
++        logger.error(
++            "MEMORY WATCHDOG: job anon+shmem %.0f of %.0f GB (>= %.0f%%): killing trial %s (worker pgid %d, tree RSS %.1f GB; "
++            "next largest %.1f GB)", used / 2**30, limit / 2**30, 100 * frac, iid, pgid, rss / 2**30,
++            ranked[1][1] / 2**30 if len(ranked) > 1 else 0.0,
++        )
++        if task is not None:
++            _state.watchdog_killed.add(task)
++        _sigkill_group_and_tree(pgid, _descendants(pgid))
++        if task is not None:
++            task.cancel()
++        await asyncio.sleep(15)
++
++
  @asynccontextmanager
  async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
      max_concurrent = int(
-@@ -82,13 +117,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+@@ -82,13 +214,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
      _state.semaphore = asyncio.Semaphore(max_concurrent)
      logger.info(f"Initialized semaphore with max_concurrent={max_concurrent}")
      checker_task = asyncio.create_task(_health_checker_loop())
@@ -408,6 +521,8 @@ index 687526d..a69d207 100644
 -    prune_task = None if _daytona else asyncio.create_task(_docker_prune_loop())
 +    _cancel_dir = os.getenv("HARBOR_CANCEL_DIR")
 +    cancel_task = asyncio.create_task(_cancel_file_loop(Path(_cancel_dir))) if _cancel_dir else None
++    _mem_frac = float(os.getenv("HARBOR_MEM_WATCHDOG_FRAC", "0.8") or 0)
++    memwatch_task = asyncio.create_task(_mem_watchdog_loop(_mem_frac)) if _mem_frac > 0 else None
 +    _state.max_concurrent = max_concurrent
 +    # only the local docker backend has a build cache to prune
 +    _docker = os.getenv("HARBOR_ENV_TYPE", "docker").lower() == "docker"
@@ -418,10 +533,12 @@ index 687526d..a69d207 100644
          checker_task.cancel()
 +        if cancel_task is not None:
 +            cancel_task.cancel()
++        if memwatch_task is not None:
++            memwatch_task.cancel()
          if prune_task is not None:
              prune_task.cancel()
          try:
-@@ -191,6 +231,7 @@ async def run_instance(request: RunRequest, raw_request: Request) -> RunResponse
+@@ -191,6 +332,7 @@ async def run_instance(request: RunRequest, raw_request: Request) -> RunResponse
      current_task = asyncio.current_task()
      if current_task is not None:
          _state.inflight_tasks.add(current_task)
@@ -429,7 +546,16 @@ index 687526d..a69d207 100644
      if tracking_key and heartbeat_target and current_task:
          try:
              _register_active_task(
-@@ -223,6 +264,7 @@ async def run_instance(request: RunRequest, raw_request: Request) -> RunResponse
+@@ -219,10 +361,15 @@ async def run_instance(request: RunRequest, raw_request: Request) -> RunResponse
+             sid,
+             expected_instance_id,
+         )
+-        result = _error_response("Flushed")
++        if current_task is not None and current_task in _state.watchdog_killed:
++            _state.watchdog_killed.discard(current_task)
++            result = _error_response("Error: MemoryWatchdog")
++        else:
++            result = _error_response("Flushed")
      finally:
          if current_task is not None:
              _state.inflight_tasks.discard(current_task)
@@ -437,7 +563,7 @@ index 687526d..a69d207 100644
          if tracking_key and current_task:
              _discard_active_task(tracking_key, current_task)
  
-@@ -258,6 +300,19 @@ async def health():
+@@ -258,6 +405,19 @@ async def health():
      return {"status": "ok"}
  
  
@@ -457,7 +583,7 @@ index 687526d..a69d207 100644
  def _require_admin_secret(authorization: str | None) -> None:
      if not _ADMIN_SECRET:
          return
-@@ -388,8 +443,8 @@ def main():
+@@ -388,8 +548,8 @@ def main():
      )
      args = parser.parse_args()
  
