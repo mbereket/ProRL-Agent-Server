@@ -1,0 +1,3 @@
+# Real SWE-Gym 64k traces: DP replicas of TP2, partial recompute at TP4, and a 6-trainer-GPU split (1-node runs).
+!compose swe24 TRACES_DIR 3
+q4-tp2dp2         ARM=lora GPUS=4 TP=2 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
