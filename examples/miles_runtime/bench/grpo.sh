@@ -37,7 +37,7 @@ args=(
     --optimizer adam --lr "${LR}" --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98
     --attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32
     --attention-softmax-in-fp32 --attention-backend flash
-    --num-gpus-per-node "${GPUS}" --actor-num-nodes 1
+    --num-gpus-per-node "${GPUS}" --actor-num-nodes "${ACTOR_NODES:-1}"   # ACTOR_NODES=2: trainer spans 2 nodes (train_only)
 )
 [ "${SP:-1}" = 1 ] && [ "${TP}" -gt 1 ] && args+=(--sequence-parallel)
 case "${RECOMPUTE:-full}" in
@@ -85,7 +85,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(MODEL_PATH|MODEL_TYPE|SP|GPUS|ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(ACTOR_NODES|MODEL_PATH|MODEL_TYPE|SP|GPUS|ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).

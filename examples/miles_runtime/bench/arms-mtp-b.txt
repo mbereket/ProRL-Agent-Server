@@ -1,0 +1,10 @@
+# MTP A/B, arm B: + patches/no-mtp. Then 27B layouts with MTP off (synthetic fixed-length, labeled).
+!compose swe24 TRACES_DIR 3
+!synth fix128k 131072 8 3
+!synth fix96k 98304 8 3
+!synth fix64k 65536 16 3
+mtp-off-9b             ARM=lora GPUS=4 TP=4 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
+nm27-128k-tp4cp2-hw    ARM=lora MODEL_PATH=/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 GPUS=8 TP=4 CP=2 MTPG=65536 REPLAY=@fix128k RBS=1 NS=8 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+nm27-96k-tp4           ARM=lora MODEL_PATH=/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 GPUS=8 TP=4 CP=1 MTPG=98304 REPLAY=@fix96k RBS=1 NS=8 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+nm27-128k-tp4          ARM=lora MODEL_PATH=/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 GPUS=8 TP=4 CP=1 MTPG=131072 REPLAY=@fix128k RBS=1 NS=8 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+nm27-64k-tp4-4g        ARM=lora MODEL_PATH=/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 GPUS=4 TP=4 CP=1 MTPG=65536 REPLAY=@fix64k RBS=2 NS=8 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096

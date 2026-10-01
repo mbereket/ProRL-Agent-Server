@@ -2,7 +2,14 @@
 
 Status: **usable on dfw and hel** (dfw: SIF, Ray 1+2 nodes, NCCL over IB validated; hel: SIF, imports, nested apptainer validated). aws-iad: SIF + compat + nested apptainer + Ray validated (job 7587420). **Benchmark results: §9.**
 Code: ProRL-Agent-Server branch **`miles-stack`**, dir `examples/miles_runtime/` (README there).
-Last updated: 2026-10-01 00:53 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
+Last updated: 2026-10-01 05:35 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
+
+> **[2026-10-01 05:30] MTP auxiliary loss in every bridge-mode Qwen3.5/3.8 run (validation running).** The HF configs have
+> `mtp_num_hidden_layers: 1`; Megatron-Bridge builds an MTP layer although Miles logs `mtp_num_layers None` /
+> `enable_mtp_training False`. `gpt_model._postprocess -> process_mtp_loss` computes a next-token CE over ALL tokens
+> (scale 0.2, not advantage-weighted) and `MTPLossAutoScaler` attaches it to the decoder output, so it flows into the LoRA
+> gradient; its fp32 `[tokens x vocab/TP]` logits are also where 27B 128k OOMs. Fix: `--patches <runtime>/patches/no-mtp`
+> (miles-stack `efbb7e4d`, opt-in) — A/B (grad_norm, memory, merged export) on aws-iad 7598313; promoted to base if confirmed.
 
 ## 1. What the runtime is
 
@@ -450,3 +457,22 @@ x (960 generated + 560 tool), contexts grow to ~64k):
 `lora_path`** (SGLang without `--enable-lora` rejects such requests: `ValueError: LoRA adapter 'miles_lora' was requested, but LoRA is not enabled`). Weight sync becomes a full-weight broadcast (9B 0.5 s).
 Warm 1-node 9B runs are rollout-bound (path-a: train ~190 s vs rollout ~515 s per 64-session step), so the levers in
 order are: merged serving, in-flight sessions up to the KV bound, engine GPUs (trainer:engine split), then trainer.
+
+## 13. 27B LoRA trainer layouts for de4 (in progress; synthetic fixed-length data until de4 dumps exist)
+
+Qwen3.8-27B, LoRA r32 all-linear, bridge mode, full recompute, `--use-rollout-logprobs`, logprob chunk 4096, train_only replay
+of fixed-length synthetic samples (8 x L tokens/step), aws-iad H100 80GB. Megatron TP <= 4 (4 query groups); GDN 16 key /
+48 value heads -> headwise TP*CP must divide 16. **All rows so far have the MTP layer ON** (see the note at the top).
+
+| context | layout (GPUs) | result |
+|---|---|---|
+| 64k | TP4 (4) | 153 s per 1.05 M tok = 6.85 k tok/s (1.7 k/GPU), useful MFU 24.8 %, peak 74 GB |
+| 128k | TP4 CP1 (8) | OOM |
+| 128k | TP4·CP2 headwise (8) | OOM at step 0 (78.5 GB) |
+| 128k | TP2·CP4 headwise (8) | OOM (15.16 GiB alloc in the MTP cross-entropy) |
+| 128k | TP4·CP2 headwise, logprob chunk 1024 (8) | OOM in backward |
+
+Running (aws-iad 7598313, MTP off): 128k TP4·CP2-hw, 96k TP4, 128k TP4, 64k TP4 (4 GPUs). Queued as P1: 1-node 96k/128k/192k
+CP variants; 2-node (16 GPUs) TP4·CP2·DP2-hw, TP4·DP4, TP4·CP4-hw (`bench/arms-27b-2n.txt`, `ACTOR_NODES=2`). Table for qwen27b's
+trade-off: this section.
+
