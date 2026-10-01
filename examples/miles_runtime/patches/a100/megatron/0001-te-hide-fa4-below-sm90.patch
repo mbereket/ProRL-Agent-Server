@@ -1,0 +1,38 @@
+--- a/megatron/core/extensions/transformer_engine.py	2026-09-30 21:51:22
++++ b/megatron/core/extensions/transformer_engine.py	2026-09-30 21:51:22
+@@ -1628,6 +1628,27 @@
+         """Compute weight gradients during the backward pass if delay_wgrad_compute is enabled."""
+         if self.config.delay_wgrad_compute:
+             super().backward_dw()
++
++
++def _hide_fa4_below_sm90() -> None:
++    """Make Transformer Engine fall back to FlashAttention 2 below sm90.
++
++    TE prefers FlashAttention 4 (CuTe DSL) whenever it is installed, and there is no env knob to skip it.
++    On A100 (sm80) FA4 fails to compile the GQA head_dim-256 epilogue of Qwen3.5's gated attention
++    (MLIRError in flash_attn/cute/pack_gqa.py store_O), and cuDNN fused attention is not available for
++    that shape on sm80 either; FlashAttention 2 works. Set MEGATRON_TE_ALLOW_FA4=1 to keep FA4.
++    """
++    if os.getenv("MEGATRON_TE_ALLOW_FA4", "0") == "1" or not torch.cuda.is_available():
++        return
++    if torch.cuda.get_device_capability() >= (9, 0):
++        return
++    try:
++        from transformer_engine.pytorch.attention.dot_product_attention.utils import (
++            FlashAttentionUtils,
++        )
++    except ImportError:
++        return
++    FlashAttentionUtils.v4_is_installed = False
+ 
+ 
+ class TEDotProductAttention(te.pytorch.DotProductAttention):
+@@ -1661,6 +1682,7 @@
+                 "Please install it with `pip install transformer-engine`."
+             )
+ 
++        _hide_fa4_below_sm90()
+         self.config = config
+         self.te_forward_mask_type = False
+         self.qkv_format: str = "sbhd"
