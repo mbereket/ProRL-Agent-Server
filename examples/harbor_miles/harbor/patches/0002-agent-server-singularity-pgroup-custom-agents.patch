@@ -1,8 +1,8 @@
 diff --git a/agent_server/results.py b/agent_server/results.py
-index 0d37ec6..d49e787 100644
+index 0d37ec6..363db83 100644
 --- a/agent_server/results.py
 +++ b/agent_server/results.py
-@@ -20,6 +20,22 @@ _OUTPUT_LIMIT_EXCEPTIONS = {
+@@ -20,6 +20,26 @@ _OUTPUT_LIMIT_EXCEPTIONS = {
  }
  
  
@@ -14,6 +14,10 @@ index 0d37ec6..d49e787 100644
 +    "maximum context length",
 +    "exceeds the model's maximum context",
 +    "context_length_exceeded",
++    # codex: when the window is exhausted it tries to compact the history remotely
++    "remote compact task",
++    "/responses/compact",
++    "ran out of room in the model's context window",
 +)
 +
 +
@@ -25,7 +29,7 @@ index 0d37ec6..d49e787 100644
  def _extract_exit_status(result) -> str:
      """Derive exit status from Harbor TrialResult."""
      exc = getattr(result, "exception_info", None)
-@@ -27,7 +43,7 @@ def _extract_exit_status(result) -> str:
+@@ -27,7 +47,7 @@ def _extract_exit_status(result) -> str:
          exc_type = getattr(exc, "exception_type", "")
          if exc_type in _TIMEOUT_EXCEPTIONS:
              return "TimeLimitExceeded"
@@ -34,7 +38,7 @@ index 0d37ec6..d49e787 100644
              return "SequenceLengthLimitExceeded"
          return "AgentError"
      if getattr(result, "verifier_result", None) is not None:
-@@ -94,6 +110,16 @@ def _extract_metrics(result) -> dict[str, Any]:
+@@ -94,6 +114,16 @@ def _extract_metrics(result) -> dict[str, Any]:
              if isinstance(agent_meta, dict):
                  metrics.update(agent_meta)
  

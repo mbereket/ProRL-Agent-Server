@@ -56,6 +56,9 @@ INFRA_EXCEPTIONS = {
     "ReadError",
     "NoResult",
 }
+_OVERFLOW_MARKERS = ("remote compact task", "/responses/compact", "context_length_exceeded",
+                     "maximum context length", "ContextOverflowError", "context window")
+
 # Exit statuses produced by the agent server itself (never a policy outcome).
 INFRA_STATUSES = {"DispatchError", "Error: NoResult", "Flushed", "ImportError", "TaskNotFound", "InvalidInstanceId"}
 
@@ -125,6 +128,11 @@ async def run(
 
     resp = resp or {"exit_status": "DispatchError"}
     agent_metrics = dict(resp.get("agent_metrics") or {})
+    # Context exhaustion reported only in the agent's error text (e.g. codex's remote-compaction attempt)
+    # is an overlong trajectory, not an agent error.
+    msg = str(agent_metrics.get("exception_message") or "")
+    if resp.get("exit_status") == "AgentError" and any(m in msg for m in _OVERFLOW_MARKERS):
+        resp = {**resp, "exit_status": "SequenceLengthLimitExceeded"}
     agent_metrics.update(agent_server=servers[-1], dispatch_attempts=len(servers))
     out = {
         "reward": float(resp.get("reward", 0.0) or 0.0),
