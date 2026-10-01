@@ -28,6 +28,7 @@ def main() -> None:
     p.add_argument("--agent", default="opencode")
     p.add_argument("--agent-import-path", default="")
     p.add_argument("--opencode-config", default="")
+    p.add_argument("--agent-kwargs", default="", help="JSON merged into metadata.agent_kwargs")
     p.add_argument("--repeat", type=int, default=1, help="repeat the task list (small overfit sets)")
     a = p.parse_args()
 
@@ -44,8 +45,11 @@ def main() -> None:
         md = {"instance_id": tid, "agent_name": a.agent}
         if a.agent_import_path:
             md["agent_import_path"] = a.agent_import_path
+        kwargs = json.loads(a.agent_kwargs) if a.agent_kwargs else {}
         if a.opencode_config:
-            md["agent_kwargs"] = {"opencode_config": json.loads(a.opencode_config)}
+            kwargs["opencode_config"] = json.loads(a.opencode_config)
+        if kwargs:
+            md["agent_kwargs"] = kwargs
         instruction = (task / "instruction.md").read_text()
         rows.append({"prompt": [{"role": "user", "content": instruction}], "metadata": md})
     with open(a.out, "w") as f:

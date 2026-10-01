@@ -32,14 +32,21 @@ SESSION_WORKERS="${SESSION_WORKERS:-32}"; SESSION_PORT="${SESSION_PORT:-30000}"
 mkdir -p "${RUN_DIR}/data" "${RUN_DIR}/ckpt" "${RUN_DIR}/dumps"
 # ---- prompts: one row per task (metadata selects the Harbor task + agent)
 DATA="${RUN_DIR}/data/train.jsonl"
-# opencode: no compaction (the trajectory must stay one linear session), no sub-agents,
-# no title-generation side calls.
-DEFAULT_OPENCODE_CONFIG='{"compaction": {"auto": false}, "permission": {"task": "deny"}, "agent": {"title": {"disable": true}}}'
+# Harness = Harbor agent (HARNESS) + optional custom class (AGENT_IMPORT_PATH) + kwargs.
+HARNESS="${HARNESS:-mini-swe-agent}"
+case "${HARNESS}" in
+    mini-swe-agent)
+        AGENT_IMPORT_PATH="${AGENT_IMPORT_PATH:-harbor_miles_agents.mini_swe_agents:PreinstalledMiniSweAgent}"
+        AGENT_KWARGS="${AGENT_KWARGS:-{\"max_tokens\": ${MAXRESP:-8192}}}" ;;
+    opencode)
+        # no compaction (the trajectory must stay one linear session), no sub-agents, no title calls
+        OPENCODE_CONFIG="${OPENCODE_CONFIG:-{\"compaction\": {\"auto\": false}, \"permission\": {\"task\": \"deny\"}, \"agent\": {\"title\": {\"disable\": true}}}}" ;;
+esac
 if [ ! -s "${DATA}" ]; then
     python3 "$(dirname "$0")/../tools/prepare_data.py" --tasks-dir "${HARBOR_TASKS_DIR}" --out "${DATA}" \
-        ${TASK_IDS_FILE:+--ids-file "${TASK_IDS_FILE}"} --agent opencode \
+        ${TASK_IDS_FILE:+--ids-file "${TASK_IDS_FILE}"} --agent "${HARNESS}" \
         ${AGENT_IMPORT_PATH:+--agent-import-path "${AGENT_IMPORT_PATH}"} \
-        --opencode-config "${OPENCODE_CONFIG:-${DEFAULT_OPENCODE_CONFIG}}"
+        ${AGENT_KWARGS:+--agent-kwargs "${AGENT_KWARGS}"} ${OPENCODE_CONFIG:+--opencode-config "${OPENCODE_CONFIG}"}
 fi
 
 # ---- wait for every node's Harbor agent server
