@@ -7,8 +7,41 @@ Every output step <k>.pt holds ALL input samples (groups kept contiguous, group 
 packing varies), re-indexed: unique index / group_index, and rollout_id (Miles' trajectory id) remapped per
 (input file, original id) so trajectories from different dumps never collide. Prints the length stats.
 """
-import argparse, os, random, statistics
+import argparse, os, pickle, random, statistics, types
 import torch
+
+
+class _Stub:  # stands in for classes from packages absent in the runtime (polar, slime_bridge, ...)
+    def __init__(self, *a, **k): pass
+    def __setstate__(self, state): self.__dict__["_state"] = state
+
+
+class _TolerantUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except (ImportError, AttributeError):
+            return _Stub
+
+
+_pickle_shim = types.SimpleNamespace(Unpickler=_TolerantUnpickler, load=pickle.load, loads=pickle.loads,
+                                     dump=pickle.dump, dumps=pickle.dumps, Pickler=pickle.Pickler,
+                                     HIGHEST_PROTOCOL=pickle.HIGHEST_PROTOCOL, __name__="pickle")
+
+
+def _load(path):
+    return torch.load(path, weights_only=False, pickle_module=_pickle_shim)
+
+
+def _clean(obj):
+    """Drop anything that only unpickles with packages missing from the runtime."""
+    if isinstance(obj, _Stub):
+        return None
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items() if not isinstance(v, _Stub)}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_clean(v) for v in obj)
+    return obj
 
 
 def main():
@@ -18,7 +51,7 @@ def main():
     a = ap.parse_args()
     groups = []  # list of lists of sample dicts
     for fi, path in enumerate(a.inputs):
-        S = torch.load(path, weights_only=False)["samples"]
+        S = [_clean(x) for x in _load(path)["samples"]]
         by_g = {}
         for s in S:
             by_g.setdefault(s.get("group_index"), []).append(s)
@@ -38,6 +71,7 @@ def main():
         for gi, g in enumerate(order):
             for s in groups[g]:
                 t = dict(s); key = t.pop("_traj")
+                t["metadata"] = {}  # bridge/Polar metadata is not needed to train
                 t["group_index"] = gi; t["index"] = idx; idx += 1
                 t["rollout_id"] = traj_ids.setdefault(key, len(traj_ids))
                 out.append(t)
