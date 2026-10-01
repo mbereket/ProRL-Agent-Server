@@ -1,0 +1,4 @@
+# 27B 128k one-node follow-up: TP4xCP2 headwise OOMed at step 0 (78.5 GB). TP2xCP4 headwise (TP*CP=8 | 16/48 GDN heads).
+!synth fix128k 131072 8 3
+z27-128k-tp2cp4-hw   ARM=lora MODEL_PATH=/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B GPUS=8 TP=2 CP=4 MTPG=32768 MODE=train_only REPLAY=@fix128k NUM_ROLLOUT=3 RBS=1 NS=8 ROLLOUT_LOGPROBS=1 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+z27-128k-tp4cp2-hw-ck1k ARM=lora MODEL_PATH=/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B GPUS=8 TP=4 CP=2 MTPG=65536 MODE=train_only REPLAY=@fix128k NUM_ROLLOUT=3 RBS=1 NS=8 ROLLOUT_LOGPROBS=1 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=1024,--linear-cp-mode=headwise
