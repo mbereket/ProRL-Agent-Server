@@ -121,6 +121,17 @@ if [ "${DRY_RUN}" = 0 ]; then
     select+=(--image-dir "${APPTAINER_IMAGE_DIR}")
 fi
 config_python "${SHARED}/internal/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" --output-jsonl "${RUN_DIR}/train.jsonl" "${select[@]}"
+if [ -n "${EVAL_TASK_IDS_FILE}" ]; then   # held-out eval set from the same task dir
+    eval_select=(--mount-root "${TASKS_MOUNT_ROOT}" --task-ids-file "${EVAL_TASK_IDS_FILE}")
+    if [ "${DRY_RUN}" = 0 ]; then
+        to_pull_eval="$(mktemp)"
+        config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
+            --shared-dir "${SHARED_IMAGE_DIRS[0]}" --shared-dir "${SHARED_IMAGE_DIRS[1]}" --task-ids-file "${EVAL_TASK_IDS_FILE}" > "${to_pull_eval}"
+        cut -f1,2 "${to_pull_eval}" | tr '\t' ' ' | xargs -r -P "${JOBS:-6}" -L 1 bash -c 'pull_one "$0" "$1"'
+        eval_select+=(--image-dir "${APPTAINER_IMAGE_DIR}")
+    fi
+    config_python "${SHARED}/internal/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" --output-jsonl "${RUN_DIR}/eval.jsonl" "${eval_select[@]}"
+fi
 
 if [ "${DRY_RUN}" = 0 ]; then
     log "harness ${HARNESS}${HARNESS_CLI_VERSION:+ @ ${HARNESS_CLI_VERSION}} in ${HARNESS_DIR}"

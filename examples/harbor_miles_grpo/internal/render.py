@@ -19,7 +19,7 @@ algorithm/layout knobs. Unknown keys are an error. Schema (defaults in SCHEMA):
   rollout:  batch_size, n_samples_per_prompt, num_steps | num_epoch, max_prompt_len,
             max_response_len, sglang_context_length, sglang_mem_fraction, sglang_lora_backend,
             disable_custom_all_reduce
-  training: sync, max_tokens_per_gpu, qkv_format (thd|bshd), lr, loss_aggregation, normalize_advantages, old_logprobs,
+  training: sync, max_tokens_per_gpu, linear_cp_mode, qkv_format (thd|bshd), lr, loss_aggregation, normalize_advantages, old_logprobs,
             use_kl_loss, kl_loss_coef, grpo_std_normalization, optimizer_cpu_offload,
             group_id_scope, timeout_reward_zero, overlong_policy, drop_zero_variance_groups,
             save_interval, save_hf_interval, extra_train_args
@@ -134,6 +134,9 @@ SCHEMA = {
     "training": {
         "sync": False,               # false: train_async.py (generation overlaps training, TIS-corrected)
         "max_tokens_per_gpu": 16384, # trace cap = this x context_parallel_size
+        "linear_cp_mode": "headwise",  # GDN context parallelism when CP > 1: headwise (split GDN heads across CP, keeps
+                                       # attention's zigzag layout) | chunkwise (Megatron default: layout conversion around
+                                       # every GDN layer, naive TP-gather fallback with THD + SP -> slow / OOM on real traces)
         "qkv_format": "thd",         # thd (packed, dynamic batch, CP) | bshd (one sample per micro-batch). The pinned
                                      # megatron-core GatedDeltaNet (ssm/gated_delta_net/gdn.py) handles thd + CP, so the
                                      # Miles 35B-A3B launcher's "GDN rejects packed sequences" no longer applies; bshd also
@@ -158,6 +161,8 @@ SCHEMA = {
     },
     "eval": {
         "prompt_data": "",
+        "task_ids_file": PATH,       # held-out eval tasks from tasks.dir (built into <run dir>/eval.jsonl); overrides prompt_data
+        "name": "heldout",
         "interval": 10,
         "n_samples_per_prompt": 1,
         "before_train": True,        # step-0 eval (the base model under LoRA)
@@ -222,7 +227,7 @@ def load(path: str) -> dict:
         die(f"{path}: cluster.router_policy must be one of {ROUTER_POLICIES}")
     if h["name"] not in HARNESSES:
         die(f"{path}: harness.name must be one of {HARNESSES}")
-    if r["num_steps"] == 0 and not cfg["eval"]["prompt_data"]:
+    if r["num_steps"] == 0 and not (cfg["eval"]["prompt_data"] or cfg["eval"]["task_ids_file"]):
         die(f"{path}: rollout.num_steps: 0 (eval only) needs eval.prompt_data")
     if h["max_async_level"] > 1 and tr["sync"]:
         die(f"{path}: harness.max_async_level > 1 needs training.sync: false")
@@ -230,6 +235,8 @@ def load(path: str) -> dict:
         die(f"{path}: training.loss_aggregation must be token_mean or trajectory_mean")
     if tr["old_logprobs"] not in ("rollout", "recompute"):
         die(f"{path}: training.old_logprobs must be rollout or recompute")
+    if tr["linear_cp_mode"] not in ("headwise", "chunkwise"):
+        die(f"{path}: training.linear_cp_mode must be headwise or chunkwise")
     if tr["qkv_format"] not in ("thd", "bshd"):
         die(f"{path}: training.qkv_format must be thd or bshd")
     if int(lo["rank"]) < 0:
@@ -283,6 +290,7 @@ def mode_env(cfg: dict) -> None:
         "SANDBOX_NODES": c["sandbox_nodes"],
         "POLAR_KEEP_SESSION_DIRS": "1" if h["keep_sessions"] else "",
         "JUDGE_API_KEY_ENV": cfg["judge"]["api_key_env"],
+        "EVAL_TASK_IDS_FILE": cfg["eval"]["task_ids_file"] or "",
         "SUMMARY": (
             f"{cfg['name']} (RUN_ID {d['RUN_ID']}): {h['name']} on {t['dir']}{subset}; {m['hf_checkpoint']} {mode}; "
             f"{c['num_nodes']} node(s), trainer {c['actor_num_gpus']} GPUs TP{c['tp_size']} x CP{c['context_parallel_size']}, "
@@ -406,6 +414,8 @@ def train_args(cfg: dict, d: dict, f: dict) -> list:
     else:
         steps = ["--num-epoch", str(r["num_epoch"])]
     eval_args: list = []
+    if ev["task_ids_file"]:
+        ev = {**ev, "prompt_data": f"{ev['name']} {run_dir}/eval.jsonl"}
     if ev["prompt_data"]:
         eval_args = ["--eval-prompt-data", *ev["prompt_data"].replace("${RUN_DIR}", run_dir).split(),
                      "--eval-interval", ev["interval"], "--n-samples-per-eval-prompt", ev["n_samples_per_prompt"]]
@@ -465,6 +475,7 @@ def train_args(cfg: dict, d: dict, f: dict) -> list:
         # Parallelism / memory
         "--tensor-model-parallel-size", c["tp_size"], "--sequence-parallel", "--pipeline-model-parallel-size", 1,
         "--context-parallel-size", c["context_parallel_size"], "--expert-model-parallel-size", 1,
+        *(["--linear-cp-mode", tr["linear_cp_mode"]] if c["context_parallel_size"] > 1 else []),
         "--expert-tensor-parallel-size", 1,
         "--recompute-granularity", "full", "--recompute-method", "uniform", "--recompute-num-layers", 1,
         *batching,
