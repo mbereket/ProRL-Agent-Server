@@ -138,6 +138,8 @@ if [ -f "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt" ]; then
 fi
 [ "${ENGINE_TP}" -gt 1 ] && args+=(--sglang-disable-custom-all-reduce)   # broken on hel
 [ "${OFFLOAD}" = 1 ] && args+=(--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
+# GatedDeltaNet context-parallel mode when CP > 1 (H2H_SPEC: headwise; never chunkwise).
+[ "${CP}" -gt 1 ] && [ -n "${LINEAR_CP_MODE:-headwise}" ] && args+=(--linear-cp-mode "${LINEAR_CP_MODE:-headwise}")
 if [ "${LAYOUT}" = colocate ]; then
     args+=(--colocate --actor-num-nodes "${MILES_NUM_NODES}" --actor-num-gpus-per-node "${GPUS_PER_NODE}")
 else
