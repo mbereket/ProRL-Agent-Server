@@ -456,7 +456,7 @@ def train_args(cfg: dict, d: dict, f: dict) -> list:
         *batching,
         "--log-probs-chunk-size", 256, "--distributed-timeout-minutes", 30,
         # Algorithm: GRPO-style group baseline (bridge: leave-one-trajectory-out), TIS, clip-higher.
-        "--advantage-estimator", "grpo", "--use-tis", "--get-mismatch-metrics",
+        "--advantage-estimator", "grpo", "--use-tis",  # TIS also reports train_rollout_logprob_abs_diff
         *(["--normalize-advantages"] if tr["normalize_advantages"] else []),
         *loss,
         *(["--use-kl-loss", "--kl-loss-coef", str(tr["kl_loss_coef"]), "--kl-loss-type", "low_var_kl"] if tr["use_kl_loss"] else []),
