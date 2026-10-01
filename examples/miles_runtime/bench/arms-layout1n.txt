@@ -1,0 +1,7 @@
+# 1-node LoRA layouts (8 GPUs), merged serving, dapo-math 32x8 / 8k responses (same shape as the e2e arms).
+lay-colo-tp2        ARM=lora LORA_SERVE=merged LAYOUT=colocate ENGINE_TP=2 NUM_ROLLOUT=6
+lay-colo-nooff-tp2  ARM=lora LORA_SERVE=merged LAYOUT=colocate NOOFF=1 MEMF=0.45 MTPG=8192 ENGINE_TP=2 NUM_ROLLOUT=6 EXTRA=--log-probs-chunk-size=4096
+lay-async-4x4       ARM=lora LORA_SERVE=merged LAYOUT=disagg TRAIN_GPUS=4 ASYNC=1 ENGINE_TP=2 NUM_ROLLOUT=6
+lay-async-2x6       ARM=lora LORA_SERVE=merged LAYOUT=disagg TRAIN_GPUS=2 ASYNC=1 ENGINE_TP=2 NUM_ROLLOUT=6
+lay-sync-4x4        ARM=lora LORA_SERVE=merged LAYOUT=disagg TRAIN_GPUS=4 ENGINE_TP=2 NUM_ROLLOUT=6
+lay-async-4x4-adpt  ARM=lora LAYOUT=disagg TRAIN_GPUS=4 ASYNC=1 ENGINE_TP=2 NUM_ROLLOUT=6 EXTRA=--sglang-lora-backend=triton

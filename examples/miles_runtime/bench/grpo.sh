@@ -56,6 +56,8 @@ else
     [ "${ENGINE_TP}" -gt 1 ] && args+=(--sglang-disable-custom-all-reduce)   # broken on hel (see STACK.md)
     if [ "${LAYOUT}" = colocate ]; then
         args+=(--colocate --actor-num-gpus-per-node "${GPUS}")
+        # trainer and engines both stay resident (no sleep/wake): needs a small trainer (LoRA) + lower MEMF
+        [ "${NOOFF:-0}" = 1 ] && args+=(--no-offload-train --no-offload-rollout)
     else
         args+=(--actor-num-gpus-per-node "${TRAIN_GPUS}" --rollout-num-gpus "$((GPUS - TRAIN_GPUS))"
                --update-weight-transfer-mode broadcast)
@@ -81,7 +83,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).
@@ -90,9 +92,11 @@ echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFF
 trap 'kill ${sampler} 2>/dev/null || true' EXIT
 
 cd /root/miles
+entry=train.py
+if [ "${ASYNC:-0}" = 1 ]; then entry=train_async.py; args+=(--fully-async); fi   # needs LAYOUT=disagg
 t0=${SECONDS}
 set +e
-python3 train.py "${args[@]}" 2>&1 | tee "${OUT}/train.log"
+python3 "${entry}" "${args[@]}" 2>&1 | tee "${OUT}/train.log"
 rc=${PIPESTATUS[0]}
 set -e
 echo "[grpo] exit ${rc} after $((SECONDS - t0)) s"
