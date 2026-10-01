@@ -70,12 +70,18 @@ def main(path: str) -> None:
     examples = {}
     tools_changed = 0
     for j, mj in enumerate(reqs):
+        # Longest-prefix predecessor. Sibling sessions (several attempts of one task) share identical
+        # early requests, so among equally long candidates prefer the one whose response this
+        # request actually replays (the same session); fall back to the latest.
+        cands = [i for i in range(j) if len(keys[i]) < len(keys[j]) and keys[j][:len(keys[i])] == keys[i]]
         best = None
-        for i in range(j):
-            mi = keys[i]
-            if len(mi) < len(keys[j]) and keys[j][:len(mi)] == mi:
-                if best is None or len(mi) > len(keys[best]):
-                    best = i
+        if cands:
+            longest = max(len(keys[i]) for i in cands)
+            same_len = [i for i in cands if len(keys[i]) == longest]
+            nxt = mj[longest] if longest < len(mj) else {}
+            matching = [i for i in same_len if nxt.get("role") == "assistant"
+                        and classify(calls[i].get("response") or {}, nxt) in ("strict", "loose_tool_call")]
+            best = (matching or same_len)[-1]
         if best is None:
             # root, or a request that does not extend any earlier one
             is_root = len(mj) <= 2 or all(m.get("role") in ("system", "user") for m in mj)
