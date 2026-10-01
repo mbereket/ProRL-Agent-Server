@@ -5,7 +5,7 @@
 #
 # Layout knobs: LAYOUT colocate|disagg, TRAIN_GPUS (disagg: trainer GPUs, rest -> SGLang),
 #   ACTOR_NODES (trainer nodes; disagg multi-node: whole nodes), ENGINE_TP, TP, CP, MTPG.
-# Algorithm: ARM lora|full, LORA_RANK/ALPHA/TARGETS, LR, RBS (prompts/step), NS (samples/prompt),
+# Algorithm: ARM lora|full, LORA_RANK/ALPHA/TARGETS, LORA_SERVE adapter|merged, LR, RBS (prompts/step), NS (samples/prompt),
 #   NUM_ROLLOUT, ASYNC 0|1 (train_async.py --fully-async), MAX_SEQ_LEN (trajectory cap), MAXRESP (per turn).
 set -euo pipefail
 : "${RUN_DIR:?}" "${HARBOR_TASKS_DIR:?}" "${MILES_NUM_NODES:?}"
@@ -198,10 +198,18 @@ else
 fi
 if [ "${ARM}" = lora ]; then
     args+=(--lora-rank "${LORA_RANK}" --lora-alpha "${LORA_ALPHA}" --lora-dropout 0.0
-           --target-modules "${LORA_TARGETS}" --no-gradient-accumulation-fusion --sglang-max-lora-rank "${LORA_RANK}")
-    [ "${LAYOUT}" = colocate ] && args+=(--lora-base-cpu-backup)
-    # csgmv (default) LoRA serving costs ~25% decode; triton is what STACK validated with TP>1 engines.
-    args+=(--sglang-lora-backend "${LORA_BACKEND:-triton}")
+           --target-modules "${LORA_TARGETS}" --no-gradient-accumulation-fusion)
+    if [ "${LORA_SERVE:-adapter}" = merged ]; then
+        # Train LoRA, serve merged (STACK §10, patch set miles_runtime/patches/lora-serve-merged, added by
+        # node_entry): each sync pushes W + (alpha/r)BA as full weights; SGLang runs a plain model (no LoRA
+        # kernels, no lora_path), ~26% faster rollout. No LoRA serving flags.
+        args+=(--lora-serve-merged)
+    else
+        args+=(--sglang-max-lora-rank "${LORA_RANK}")
+        [ "${LAYOUT}" = colocate ] && args+=(--lora-base-cpu-backup)
+        # csgmv (default) LoRA serving costs ~25% decode; triton is what STACK validated with TP>1 engines.
+        args+=(--sglang-lora-backend "${LORA_BACKEND:-triton}")
+    fi
 fi
 [ -n "${WANDB_API_KEY:-}" ] && [ -n "${WANDB_PROJECT:-}" ] && args+=(--use-wandb --wandb-project "${WANDB_PROJECT}"
     --wandb-group "${RUN_NAME}" --wandb-key "${WANDB_API_KEY}")

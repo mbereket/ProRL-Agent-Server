@@ -53,7 +53,9 @@ export MILES_PATCH_DIR="${MILES_PATCH_DIR:-${HM_EXAMPLE_DIR}/miles_patches}"
 # at the context window, which the session adapter reports to the agent as context_length_exceeded (overlong).
 export MILES_RESPONSES_DEFAULT_MAX_TOKENS="${MILES_RESPONSES_DEFAULT_MAX_TOKENS:-0}"
 export AGENT_TRIAL_TIMEOUT="${AGENT_TRIAL_TIMEOUT:-$(( ${HM_AGENT_TIMEOUT:-3600} + 1800 ))}"
+# LORA_SERVE=merged: STACK's train-LoRA/serve-merged patch set goes before ours.
+[ "${LORA_SERVE:-adapter}" = merged ] && MERGED_PATCHES="${MILES_RUNTIME_DIR}/patches/lora-serve-merged" || MERGED_PATCHES=""
 exec bash "${MILES_RUNTIME_DIR}/ray_node.sh" \
     --pythonpath "${HM_EXAMPLE_DIR}/miles_side" --pythonpath "${HM_EXAMPLE_DIR}" \
-    ${MILES_PATCH_DIR:+--patches "${MILES_PATCH_DIR}"} \
+    ${MERGED_PATCHES:+--patches "${MERGED_PATCHES}"} ${MILES_PATCH_DIR:+--patches "${MILES_PATCH_DIR}"} \
     -- bash "${HM_EXAMPLE_DIR}/launch/train_driver.sh"
