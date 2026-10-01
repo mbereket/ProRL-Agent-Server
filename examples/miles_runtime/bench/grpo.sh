@@ -42,6 +42,7 @@ args=(
 [ "${SP:-1}" = 1 ] && [ "${TP}" -gt 1 ] && args+=(--sequence-parallel)
 case "${RECOMPUTE:-full}" in
     full) args+=(--recompute-granularity full --recompute-method uniform --recompute-num-layers 1) ;;
+    block:*) args+=(--recompute-granularity full --recompute-method block --recompute-num-layers "${RECOMPUTE#block:}") ;;  # first N layers only
     selective) args+=(--recompute-granularity selective) ;;
     none) ;;
     *) echo "bad RECOMPUTE=${RECOMPUTE}" >&2; exit 2 ;;
