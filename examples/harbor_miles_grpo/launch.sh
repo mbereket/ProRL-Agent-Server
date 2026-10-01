@@ -77,23 +77,21 @@ if [ "${DRY_RUN}" = 0 ]; then
     mkdir -p "${APPTAINER_IMAGE_DIR}"
     log "task images -> ${APPTAINER_IMAGE_DIR}${SHARED_IMAGE_DIR:+ (links into ${SHARED_IMAGE_DIR})}"
     to_pull="$(mktemp)"
-    while IFS=$'\t' read -r ref sif; do
-        [ -s "${APPTAINER_IMAGE_DIR}/${sif}" ] && continue
-        if [ -n "${SHARED_IMAGE_DIR}" ] && [ "${SHARED_IMAGE_DIR}" != "${APPTAINER_IMAGE_DIR}" ] && [ -s "${SHARED_IMAGE_DIR}/${sif}" ]; then
-            ln -sfn "${SHARED_IMAGE_DIR}/${sif}" "${APPTAINER_IMAGE_DIR}/${sif}"; info "linked ${sif}"
-        else
-            printf '%s\t%s\n' "${ref}" "${sif}" >> "${to_pull}"
-        fi
-    done < <(config_python "${SHARED}/internal/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" --list-images "${select[@]:2}")
-    while IFS=$'\t' read -r ref sif; do
-        info "pulling ${ref} -> ${sif}"
-        # Registry credentials in the environment (the cluster layer maps a GitLab token to
-        # APPTAINER_DOCKER_*) belong to that registry only: public images are pulled anonymously.
-        creds=(env -u APPTAINER_DOCKER_USERNAME -u APPTAINER_DOCKER_PASSWORD -u SINGULARITY_DOCKER_USERNAME -u SINGULARITY_DOCKER_PASSWORD)
-        case "${ref%%/*}" in *.*|*:*|localhost) creds=() ;; esac   # explicit registry host: keep its credentials
-        ${creds[@]+"${creds[@]}"} "${POLAR_APPTAINER_BIN}" pull "${APPTAINER_IMAGE_DIR}/${sif}.part" "docker://${ref}" >/dev/null \
-            && mv "${APPTAINER_IMAGE_DIR}/${sif}.part" "${APPTAINER_IMAGE_DIR}/${sif}"
-    done < "${to_pull}"
+    config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
+        --shared-dir "${SHARED_IMAGE_DIR}" "${select[@]:2}" > "${to_pull}"
+    # Registry credentials in the environment (the cluster layer maps a GitLab token to APPTAINER_DOCKER_*)
+    # belong to that registry only: Docker Hub refs (no registry host) are pulled anonymously.
+    pull_one() {
+        local ref="$1" sif="$2" creds=()
+        case "${ref%%/*}" in *.*|*:*|localhost) ;; *) creds=(env -u APPTAINER_DOCKER_USERNAME -u APPTAINER_DOCKER_PASSWORD -u SINGULARITY_DOCKER_USERNAME -u SINGULARITY_DOCKER_PASSWORD) ;; esac
+        echo "  pulling ${ref} -> ${sif}"
+        "${creds[@]}" "${POLAR_APPTAINER_BIN}" pull "${APPTAINER_IMAGE_DIR}/${sif}.part.$$" "docker://${ref}" >/dev/null 2>"${APPTAINER_IMAGE_DIR}/${sif}.pull.log" \
+            && mv "${APPTAINER_IMAGE_DIR}/${sif}.part.$$" "${APPTAINER_IMAGE_DIR}/${sif}" || echo "  FAILED ${ref} (${APPTAINER_IMAGE_DIR}/${sif}.pull.log)"
+    }
+    export -f pull_one; export APPTAINER_IMAGE_DIR POLAR_APPTAINER_BIN
+    NCPU="$(nproc 2>/dev/null || echo 8)"; JOBS="${APPTAINER_JOBS:-6}"
+    export APPTAINER_MKSQUASHFS_PROCS="${APPTAINER_MKSQUASHFS_PROCS:-$(( NCPU / JOBS > 0 ? NCPU / JOBS : 1 ))}"
+    tr '\t' ' ' < "${to_pull}" | xargs -r -P "${JOBS}" -L 1 bash -c 'pull_one "$0" "$1"'
     select+=(--image-dir "${APPTAINER_IMAGE_DIR}")
 fi
 config_python "${SHARED}/internal/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" --output-jsonl "${RUN_DIR}/train.jsonl" "${select[@]}"
