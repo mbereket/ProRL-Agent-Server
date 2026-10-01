@@ -76,6 +76,12 @@ if [ "${DRY_RUN}" = 0 ]; then
     # Images other dirs already hold (the cluster profile's SIF cache, this work root's older dir) are symlinked in,
     # never moved; anything still missing is pulled into it. MILES_IMAGE_DIR overrides.
     SHARED_IMAGE_DIRS=("${APPTAINER_IMAGE_DIR:-}" "${WORKROOT}/harbor_sif_images")
+    if [ -n "${CLUSTER_USER_ROOT:-}" ]; then   # every agent's image dir under <user root>/miles (Harbor cache naming = ours)
+        for d in "${CLUSTER_USER_ROOT}"/miles/*/harbor_sif_images "${CLUSTER_USER_ROOT}"/miles/*/sif_cache; do
+            [ -d "${d}" ] && SHARED_IMAGE_DIRS+=("${d}")
+        done
+    fi
+    shared_args=(); for d in "${SHARED_IMAGE_DIRS[@]}"; do [ -n "${d}" ] && shared_args+=(--shared-dir "${d}"); done
     default_dir="${WORKROOT}/harbor_sif_images"
     [ -n "${CLUSTER_USER_ROOT:-}" ] && default_dir="${CLUSTER_USER_ROOT}/miles/shared/harbor_sif_images"
     export APPTAINER_IMAGE_DIR="${MILES_IMAGE_DIR:-${default_dir}}"
@@ -84,7 +90,7 @@ if [ "${DRY_RUN}" = 0 ]; then
     log "task images -> ${APPTAINER_IMAGE_DIR}${SHARED_IMAGE_DIR:+ (links into ${SHARED_IMAGE_DIR})}"
     to_pull="$(mktemp)"
     config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
-        --shared-dir "${SHARED_IMAGE_DIRS[0]}" --shared-dir "${SHARED_IMAGE_DIRS[1]}" "${select[@]:2}" > "${to_pull}"
+        "${shared_args[@]}" "${select[@]:2}" > "${to_pull}"
     # Registry credentials in the environment (the cluster layer maps a GitLab token to APPTAINER_DOCKER_*)
     # belong to that registry only: Docker Hub refs (no registry host) are pulled anonymously.
     pull_one() {
@@ -99,12 +105,12 @@ if [ "${DRY_RUN}" = 0 ]; then
         echo "  FAILED ${ref} (${APPTAINER_IMAGE_DIR}/${sif}.pull.log)"
     }
     export -f pull_one; export APPTAINER_IMAGE_DIR POLAR_APPTAINER_BIN
-    NCPU="$(nproc 2>/dev/null || echo 8)"; JOBS="${APPTAINER_JOBS:-6}"
+    NCPU="$(nproc 2>/dev/null || echo 8)"; JOBS="${APPTAINER_JOBS:-$(( NCPU / 4 > 16 ? 16 : (NCPU / 4 < 4 ? 4 : NCPU / 4) ))}"
     export APPTAINER_MKSQUASHFS_PROCS="${APPTAINER_MKSQUASHFS_PROCS:-$(( NCPU / JOBS > 0 ? NCPU / JOBS : 1 ))}"
     cut -f1,2 "${to_pull}" | tr '\t' ' ' | xargs -r -P "${JOBS}" -L 1 bash -c 'pull_one "$0" "$1"'
     # Tasks whose image still could not be staged are left out of this run (listed), not fatal.
     config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
-        --shared-dir "${SHARED_IMAGE_DIRS[0]}" --shared-dir "${SHARED_IMAGE_DIRS[1]}" "${select[@]:2}" > "${to_pull}"
+        "${shared_args[@]}" "${select[@]:2}" > "${to_pull}"
     if [ -s "${to_pull}" ]; then
         skip="${RUN_DIR}/tasks_without_image.txt"
         cut -f3 "${to_pull}" | tr ',' '\n' > "${skip}"
@@ -126,7 +132,7 @@ if [ -n "${EVAL_TASK_IDS_FILE}" ]; then   # held-out eval set from the same task
     if [ "${DRY_RUN}" = 0 ]; then
         to_pull_eval="$(mktemp)"
         config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
-            --shared-dir "${SHARED_IMAGE_DIRS[0]}" --shared-dir "${SHARED_IMAGE_DIRS[1]}" --task-ids-file "${EVAL_TASK_IDS_FILE}" > "${to_pull_eval}"
+            "${shared_args[@]}" --task-ids-file "${EVAL_TASK_IDS_FILE}" > "${to_pull_eval}"
         cut -f1,2 "${to_pull_eval}" | tr '\t' ' ' | xargs -r -P "${JOBS:-6}" -L 1 bash -c 'pull_one "$0" "$1"'
         eval_select+=(--image-dir "${APPTAINER_IMAGE_DIR}")
     fi
