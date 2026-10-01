@@ -5,19 +5,39 @@
 #   ${HM_ROOT}/agent-tools/<name>-<ver>/   python (relocatable, uv-managed) + uv tool env + bin/
 # The directory is bind-mounted into sandboxes at the same absolute path (start_agent_server.sh).
 # Prints the toolchain root on stdout.
-#   ensure_agent_tools.sh mini-swe-agent [version]
+#   ensure_agent_tools.sh mini-swe-agent [version]     (default 2.4.6)
+#   ensure_agent_tools.sh codex [version]              (default 0.125.0; Node 22 + @openai/codex)
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=./common.sh
 source "${HERE}/common.sh"
-NAME="${1:?agent name}"; VERSION="${2:-${HM_MSWEA_VERSION:-2.4.6}}"
+NAME="${1:?agent name}"
 case "${NAME}" in
-    mini-swe-agent) ;;
+    mini-swe-agent) VERSION="${2:-${HM_MSWEA_VERSION:-2.4.6}}" ;;
+    codex) VERSION="${2:-${HM_CODEX_VERSION:-0.125.0}}" ;;
     *) hm_die "ensure_agent_tools.sh: no recipe for ${NAME}" ;;
 esac
+NODE_VERSION="${HM_NODE_VERSION:-22.20.0}"
 HARBOR_DIR="$(bash "${HERE}/ensure_harbor.sh")"
 TAG="${NAME}-${VERSION}"
 DEST="${HM_ROOT}/agent-tools/${TAG}"
+
+build_codex() {
+    set -e
+    if [ -e "${DEST}" ]; then
+        mkdir -p "${HM_ROOT}/to_delete"; mv "${DEST}" "${HM_ROOT}/to_delete/${TAG}.partial-$(date +%s)"
+    fi
+    mkdir -p "${DEST}"
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "${DEST}/node.tar.xz" || return 1
+    mkdir -p "${DEST}/node" && tar -xJf "${DEST}/node.tar.xz" -C "${DEST}/node" --strip-components=1 || return 1
+    rm -f "${DEST}/node.tar.xz"
+    export PATH="${DEST}/node/bin:${PATH}" npm_config_cache="${DEST}/npm-cache"
+    npm install -g --prefix "${DEST}/node" "@openai/codex@${VERSION}" >&2 || return 1
+    mkdir -p "${DEST}/bin"
+    ln -sfn ../node/bin/codex "${DEST}/bin/codex"; ln -sfn ../node/bin/node "${DEST}/bin/node"
+    HOME="${DEST}/build-home" "${DEST}/bin/codex" --version > "${DEST}/VERSION" || return 1
+    hm_log "agent tools: codex $(cat "${DEST}/VERSION") at ${DEST}"
+}
 
 build_tools() {
     set -e   # not inherited: this runs inside hm_once's `cmd && touch stamp`
@@ -51,5 +71,8 @@ PY
     "${tool_py}" -c "import importlib.metadata as m; print(m.version('mini-swe-agent'))" > "${DEST}/VERSION" || return 1
     hm_log "agent tools: ${NAME} $(cat "${DEST}/VERSION") at ${DEST}"
 }
-hm_once "agent-tools-${TAG}" build_tools >&2
+case "${NAME}" in
+    codex) hm_once "agent-tools-${TAG}" build_codex >&2 ;;
+    *) hm_once "agent-tools-${TAG}" build_tools >&2 ;;
+esac
 echo "${DEST}"

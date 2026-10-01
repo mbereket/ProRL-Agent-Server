@@ -1,0 +1,433 @@
+--- a/miles/rollout/session/sessions.py
++++ b/miles/rollout/session/sessions.py
+@@ -6,6 +6,7 @@
+ 
+ import json
+ import logging
++import os
+ 
+ from fastapi import Request
+ from fastapi.responses import JSONResponse
+@@ -44,6 +45,14 @@
+ from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
+ from miles.rollout.session.errors import SessionError
+ from miles.rollout.session.linear_trajectory import SessionRegistry
++from miles.rollout.session.responses_adapter import (
++    ResponsesConversionError,
++    chat_to_response,
++    error_payload,
++    response_sse_events,
++    responses_to_chat_request,
++    sse_body,
++)
+ from miles.rollout.session.types import CreateSessionRequest
+ from miles.utils.chat_template_utils import get_tito_tokenizer
+ from miles.utils.chat_template_utils.message_matcher_hub import (
+@@ -222,6 +231,48 @@
+             logger.exception("Anthropic response conversion failed for session %s", session_id)
+             return _anthropic_error_response(500, b"")
+ 
++    # OpenAI Responses API (e.g. codex) through the same TITO chat path; see responses_adapter.
++    # Keep before session_proxy: Starlette's first match must not bypass session/TITO.
++    @app.post("/sessions/{session_id}/v1/responses")
++    async def openai_responses(request: Request, session_id: str):
++        body = await request.body()
++        try:
++            responses_request = json.loads(body or b"{}")
++            chat_request, custom_tools = responses_to_chat_request(
++                responses_request,
++                default_max_tokens=int(os.environ.get("MILES_RESPONSES_DEFAULT_MAX_TOKENS", "0")) or None,
++            )
++        except (ValueError, ResponsesConversionError) as exc:
++            return JSONResponse(status_code=400, content={"error": {"message": str(exc), "type": "invalid_request_error"}})
++        try:
++            core_response = await core.chat_completions(
++                session_id,
++                method=request.method,
++                query=request.url.query,
++                headers=dict(request.headers),
++                body=_render_json(chat_request),
++            )
++        except SessionError as exc:
++            return JSONResponse(status_code=exc.status_code, content={"error": error_payload(exc.status_code, str(exc).encode())})
++        if core_response.status_code != 200:
++            return JSONResponse(
++                status_code=core_response.status_code,
++                content={"error": error_payload(core_response.status_code, core_response.body)},
++            )
++        try:
++            response = chat_to_response(json.loads(core_response.body), responses_request, custom_tools)
++        except Exception:
++            logger.exception("Responses conversion failed for session %s", session_id)
++            return JSONResponse(status_code=500, content={"error": {"message": "response conversion failed", "type": "server_error"}})
++        if responses_request.get("stream"):
++            return Response(
++                content=sse_body(response_sse_events(response)),
++                status_code=200,
++                headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
++                media_type="text/event-stream",
++            )
++        return Response(content=_render_json(response), status_code=200, media_type=JSON_MEDIA_TYPE)
++
+     @app.post("/sessions/{session_id}/samples")
+     async def collect_samples(request: Request, session_id: str):
+         # Starlette matches routes in registration order; keep this before session_proxy.
+--- /dev/null
++++ b/miles/rollout/session/responses_adapter.py
+@@ -0,0 +1,356 @@
++"""OpenAI Responses API on the session (TITO) path.
++
++Lets Responses-API agents (e.g. codex) run against a session: each ``POST
++/sessions/{id}/v1/responses`` is converted to a chat-completions request, served
++by ``SessionCore.chat_completions`` (so TITO token tracking, LoRA selection and
++session affinity are unchanged), and the chat response is converted back to a
++Responses object (or a fake SSE stream of Responses events).
++
++Exact replay. TITO extends a session only if each request replays the previous
++assistant turn exactly. A Responses client replays a turn as separate items
++(reasoning, message, function_call ...) that it may reorder or re-serialize, so
++every response carries the stored assistant chat message verbatim in its
++reasoning item's ``encrypted_content`` (opaque to the client; clients built for
++``store=false`` round-trip it unchanged). On replay that snapshot is emitted
++as-is and the turn's other items are skipped. Without a snapshot (foreign
++history) items are converted structurally.
++
++Conversion rules (requests):
++* ``instructions`` and developer/system messages before the first other message
++  form one leading system message (chat templates expect a single leading
++  system block); a later developer/system message becomes a user message, so
++  the earlier prefix is never rewritten.
++* text content parts are joined into a string; tool outputs are flattened.
++* ``function`` tools pass through; ``custom`` (free-form) tools are offered as a
++  function with one string argument ``input`` and replayed the same way.
++"""
++
++from __future__ import annotations
++
++import base64
++import json
++import time
++import uuid
++from typing import Any
++
++_SNAPSHOT_PREFIX = "miles-tito-v1:"
++_CUSTOM_TOOL_ARG = "input"
++
++
++class ResponsesConversionError(ValueError):
++    pass
++
++
++# --------------------------------------------------------------------------- snapshot
++
++
++def encode_turn_snapshot(message: dict) -> str:
++    keep = {k: message[k] for k in ("role", "content", "reasoning_content", "tool_calls") if k in message}
++    raw = json.dumps(keep, separators=(",", ":"), ensure_ascii=False).encode()
++    return _SNAPSHOT_PREFIX + base64.b64encode(raw).decode()
++
++
++def decode_turn_snapshot(blob: Any) -> dict | None:
++    if not isinstance(blob, str) or not blob.startswith(_SNAPSHOT_PREFIX):
++        return None
++    try:
++        return json.loads(base64.b64decode(blob[len(_SNAPSHOT_PREFIX):]))
++    except Exception:
++        return None
++
++
++# --------------------------------------------------------------------------- request -> chat
++
++
++def _text_of(content: Any) -> Any:
++    """Join text parts into one string; keep non-text multimodal lists as-is."""
++    if content is None or isinstance(content, str):
++        return content or ""
++    if isinstance(content, list):
++        texts, other = [], False
++        for part in content:
++            if isinstance(part, str):
++                texts.append(part)
++            elif isinstance(part, dict) and part.get("type") in ("input_text", "output_text", "text"):
++                texts.append(part.get("text") or "")
++            else:
++                other = True
++        if not other:
++            return "".join(texts)
++        raise ResponsesConversionError("non-text content parts are not supported on the session path")
++    return str(content)
++
++
++def _flatten_output(output: Any) -> str:
++    if isinstance(output, list):
++        return "".join(p.get("text", "") for p in output if isinstance(p, dict))
++    if isinstance(output, dict):
++        return json.dumps(output)
++    return "" if output is None else str(output)
++
++
++def _tools_to_chat(tools: list | None) -> tuple[list[dict], set[str]]:
++    out, custom = [], set()
++    for tool in tools or []:
++        ttype = tool.get("type")
++        if ttype == "function":
++            fn = {"name": tool["name"], "parameters": tool.get("parameters") or {"type": "object", "properties": {}}}
++            if tool.get("description"):
++                fn["description"] = tool["description"]
++            out.append({"type": "function", "function": fn})
++        elif ttype == "custom" and tool.get("name"):
++            custom.add(tool["name"])
++            desc = tool.get("description") or ""
++            fmt = tool.get("format") or {}
++            if fmt.get("type") == "grammar" and fmt.get("definition"):
++                desc = f"{desc}\n\nThe `{_CUSTOM_TOOL_ARG}` argument must follow this {fmt.get('syntax', '')} grammar:\n{fmt['definition']}"
++            out.append({
++                "type": "function",
++                "function": {
++                    "name": tool["name"],
++                    "description": desc.strip(),
++                    "parameters": {
++                        "type": "object",
++                        "properties": {_CUSTOM_TOOL_ARG: {"type": "string", "description": "Raw tool input."}},
++                        "required": [_CUSTOM_TOOL_ARG],
++                    },
++                },
++            })
++        # built-in tools (web_search, local_shell, ...) have no chat equivalent: not offered
++    return out, custom
++
++
++def responses_to_chat_request(body: dict, *, default_max_tokens: int | None = None) -> tuple[dict, set[str]]:
++    """Responses request JSON -> (chat-completions request JSON, custom tool names)."""
++    if body.get("previous_response_id"):
++        raise ResponsesConversionError("previous_response_id is not supported (send full input, store=false)")
++    messages: list[dict] = []
++    system_chunks: list[str] = []
++    if body.get("instructions"):
++        system_chunks.append(body["instructions"])
++    leading = True  # still in the leading system block
++
++    items = body.get("input")
++    if isinstance(items, str):
++        items = [{"type": "message", "role": "user", "content": items}]
++    pending: dict | None = None  # assistant turn being assembled from structural items
++    skip_call_ids: set[str] = set()
++    skipping_turn = False
++
++    def flush():
++        nonlocal pending
++        if pending is not None:
++            messages.append(pending)
++            pending = None
++
++    def assistant():
++        nonlocal pending
++        if pending is None:
++            pending = {"role": "assistant", "content": ""}
++        return pending
++
++    for item in items or []:
++        itype = item.get("type") or ("message" if "role" in item else None)
++        role = item.get("role")
++        # Items belonging to a turn already emitted from its snapshot.
++        if skipping_turn:
++            if (itype == "message" and role == "assistant") or (
++                itype in ("function_call", "custom_tool_call") and item.get("call_id") in skip_call_ids
++            ):
++                continue
++            skipping_turn = False
++        if itype == "reasoning":
++            snap = decode_turn_snapshot(item.get("encrypted_content"))
++            if snap is not None:
++                flush()
++                if leading and system_chunks:
++                    messages.append({"role": "system", "content": "\n\n".join(system_chunks)})
++                leading = False
++                messages.append(snap)
++                skip_call_ids = {tc.get("id") for tc in snap.get("tool_calls") or []}
++                skipping_turn = True
++                continue
++            text = "\n".join(p.get("text", "") for p in (item.get("summary") or item.get("content") or [])
++                             if isinstance(p, dict) and p.get("text"))
++            if text:
++                cur = assistant()
++                cur["reasoning_content"] = (cur.get("reasoning_content", "") + ("\n" if cur.get("reasoning_content") else "") + text)
++            continue
++        if itype == "message":
++            if role in ("system", "developer"):
++                text = _text_of(item.get("content"))
++                if leading:
++                    system_chunks.append(text)
++                    continue
++                flush()
++                messages.append({"role": "user", "content": text})
++                continue
++            if leading:
++                if system_chunks:
++                    messages.append({"role": "system", "content": "\n\n".join(system_chunks)})
++                leading = False
++            if role == "assistant":
++                cur = assistant()
++                cur["content"] = (cur.get("content") or "") + _text_of(item.get("content"))
++                continue
++            flush()
++            messages.append({"role": role or "user", "content": _text_of(item.get("content"))})
++            continue
++        if leading:
++            if system_chunks:
++                messages.append({"role": "system", "content": "\n\n".join(system_chunks)})
++            leading = False
++        if itype in ("function_call", "custom_tool_call"):
++            if itype == "function_call":
++                args = item.get("arguments")
++                args = args if isinstance(args, str) else json.dumps(args or {})
++            else:
++                args = json.dumps({_CUSTOM_TOOL_ARG: item.get("input") or ""}, ensure_ascii=False)
++            cur = assistant()
++            cur.setdefault("tool_calls", []).append(
++                {"id": item.get("call_id") or item.get("id"), "type": "function",
++                 "function": {"name": item.get("name"), "arguments": args}}
++            )
++            continue
++        if itype in ("function_call_output", "custom_tool_call_output"):
++            flush()
++            messages.append({"role": "tool", "tool_call_id": item.get("call_id"),
++                             "content": _flatten_output(item.get("output"))})
++            continue
++        raise ResponsesConversionError(f"unsupported Responses input item type: {itype!r}")
++    flush()
++    if leading and system_chunks:
++        messages.insert(0, {"role": "system", "content": "\n\n".join(system_chunks)})
++
++    tools, custom = _tools_to_chat(body.get("tools"))
++    chat: dict[str, Any] = {"model": body.get("model") or "default", "messages": messages, "stream": False}
++    if tools:
++        chat["tools"] = tools
++        tc = body.get("tool_choice")
++        if isinstance(tc, str):
++            chat["tool_choice"] = tc
++        elif isinstance(tc, dict) and tc.get("name"):
++            chat["tool_choice"] = {"type": "function", "function": {"name": tc["name"]}}
++        if body.get("parallel_tool_calls") is not None:
++            chat["parallel_tool_calls"] = bool(body["parallel_tool_calls"])
++    for src, dst in (("temperature", "temperature"), ("top_p", "top_p"), ("max_output_tokens", "max_tokens")):
++        if body.get(src) is not None:
++            chat[dst] = body[src]
++    if "max_tokens" not in chat and default_max_tokens:
++        chat["max_tokens"] = int(default_max_tokens)
++    return chat, custom
++
++
++# --------------------------------------------------------------------------- chat -> response
++
++
++def _new_id(prefix: str) -> str:
++    return f"{prefix}_{uuid.uuid4().hex}"
++
++
++def chat_to_response(chat: dict, request_body: dict, custom_tools: set[str]) -> dict:
++    choice = (chat.get("choices") or [{}])[0]
++    message = choice.get("message") or {}
++    output: list[dict] = [{
++        "type": "reasoning",
++        "id": _new_id("rs"),
++        "summary": [],
++        "encrypted_content": encode_turn_snapshot(message),
++    }]
++    reasoning = message.get("reasoning_content")
++    if reasoning:
++        output[0]["content"] = [{"type": "reasoning_text", "text": reasoning}]
++    content = message.get("content") or ""
++    if content.strip():
++        output.append({
++            "type": "message", "id": _new_id("msg"), "role": "assistant", "status": "completed",
++            "content": [{"type": "output_text", "text": content, "annotations": []}],
++        })
++    for tc in message.get("tool_calls") or []:
++        fn = tc.get("function") or {}
++        name, args = fn.get("name"), fn.get("arguments") or "{}"
++        if name in custom_tools:
++            try:
++                raw_input = json.loads(args).get(_CUSTOM_TOOL_ARG, "")
++            except Exception:
++                raw_input = args
++            output.append({"type": "custom_tool_call", "id": _new_id("ctc"), "call_id": tc.get("id"),
++                           "name": name, "input": raw_input, "status": "completed"})
++        else:
++            output.append({"type": "function_call", "id": _new_id("fc"), "call_id": tc.get("id"),
++                           "name": name, "arguments": args, "status": "completed"})
++    usage = chat.get("usage") or {}
++    finish = choice.get("finish_reason")
++    incomplete = finish == "length"
++    return {
++        "id": _new_id("resp"),
++        "object": "response",
++        "created_at": int(chat.get("created") or time.time()),
++        "status": "incomplete" if incomplete else "completed",
++        "incomplete_details": {"reason": "max_output_tokens"} if incomplete else None,
++        "model": request_body.get("model") or chat.get("model"),
++        "output": output,
++        "parallel_tool_calls": bool(request_body.get("parallel_tool_calls", True)),
++        "tool_choice": request_body.get("tool_choice", "auto"),
++        "tools": request_body.get("tools") or [],
++        "usage": {
++            "input_tokens": usage.get("prompt_tokens", 0),
++            "input_tokens_details": {"cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0},
++            "output_tokens": usage.get("completion_tokens", 0),
++            "output_tokens_details": {"reasoning_tokens": usage.get("reasoning_tokens", 0) or 0},
++            "total_tokens": usage.get("total_tokens", 0),
++        },
++    }
++
++
++def response_sse_events(response: dict) -> list[dict]:
++    """The event sequence of a (fake) streamed response: created, per item added/done, completed."""
++    seq = 0
++    events = []
++
++    def ev(etype: str, **kw):
++        nonlocal seq
++        events.append({"type": etype, "sequence_number": seq, **kw})
++        seq += 1
++
++    shell = {**response, "status": "in_progress", "output": [], "usage": None}
++    ev("response.created", response=shell)
++    ev("response.in_progress", response=shell)
++    for i, item in enumerate(response["output"]):
++        ev("response.output_item.added", output_index=i, item={**item, "status": "in_progress"}
++           if item["type"] != "reasoning" else item)
++        if item["type"] == "message":
++            text = item["content"][0]["text"]
++            ev("response.content_part.added", item_id=item["id"], output_index=i, content_index=0,
++               part={"type": "output_text", "text": "", "annotations": []})
++            ev("response.output_text.delta", item_id=item["id"], output_index=i, content_index=0, delta=text)
++            ev("response.output_text.done", item_id=item["id"], output_index=i, content_index=0, text=text)
++            ev("response.content_part.done", item_id=item["id"], output_index=i, content_index=0,
++               part=item["content"][0])
++        elif item["type"] == "function_call":
++            ev("response.function_call_arguments.done", item_id=item["id"], output_index=i,
++               arguments=item["arguments"])
++        ev("response.output_item.done", output_index=i, item=item)
++    ev("response.incomplete" if response["status"] == "incomplete" else "response.completed", response=response)
++    return events
++
++
++def sse_body(events: list[dict]) -> bytes:
++    return b"".join(
++        f"event: {e['type']}\ndata: ".encode() + json.dumps(e, ensure_ascii=False).encode() + b"\n\n" for e in events
++    )
++
++
++def error_payload(status_code: int, body: bytes) -> dict:
++    """Responses-style error object from an upstream error body (context overflow -> context_length_exceeded)."""
++    try:
++        text = body.decode(errors="replace")
++        parsed = json.loads(text)
++        message = parsed.get("error") if isinstance(parsed.get("error"), str) else (
++            (parsed.get("error") or {}).get("message") or parsed.get("message") or text)
++    except Exception:
++        message = body.decode(errors="replace") if body else f"upstream error {status_code}"
++    lowered = str(message).lower()
++    code = "context_length_exceeded" if ("context length" in lowered or "maximum context" in lowered) else (
++        "invalid_request_error" if 400 <= status_code < 500 else "server_error")
++    return {"code": code, "message": str(message)}

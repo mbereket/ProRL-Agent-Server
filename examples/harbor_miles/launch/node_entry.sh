@@ -36,6 +36,10 @@ HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" \
 # Everything the rollout process (agent function) needs is in the environment Ray inherits.
 export AGENT_MODEL_NAME="${AGENT_MODEL_NAME:-qwen35-9b}"
 export HM_TRIAL_LOG="${HM_TRIAL_LOG:-${RUN_DIR}/trials-${SLURM_JOB_ID}.jsonl}"
+# Miles patches (setup-time, pinned upstream + patch files): session /v1/responses for codex.
+export MILES_PATCH_DIR="${MILES_PATCH_DIR:-${HM_EXAMPLE_DIR}/miles_patches}"
+# Per-turn output cap for Responses clients that send none (codex).
+export MILES_RESPONSES_DEFAULT_MAX_TOKENS="${MILES_RESPONSES_DEFAULT_MAX_TOKENS:-${MAXRESP:-8192}}"
 export AGENT_TRIAL_TIMEOUT="${AGENT_TRIAL_TIMEOUT:-$(( ${HM_AGENT_TIMEOUT:-3600} + 1800 ))}"
 exec bash "${MILES_RUNTIME_DIR}/ray_node.sh" \
     --pythonpath "${HM_EXAMPLE_DIR}/miles_side" --pythonpath "${HM_EXAMPLE_DIR}" \

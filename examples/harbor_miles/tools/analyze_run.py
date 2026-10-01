@@ -170,6 +170,17 @@ def main() -> None:
         summary.update(first_k_mean_reward=round(statistics.mean(rewards[:k]), 3),
                        last_k_mean_reward=round(statistics.mean(rewards[-k:]), 3), k=k)
     summary["trials"] = summarize_trials(a.trials)
+    # TITO session divergence: v1 one-turn rollbacks (logged) and rejected requests (4xx to the agent).
+    div = collections.Counter()
+    with open(a.log, errors="replace") as f:
+        for line in f:
+            if "Rolling back session" in line:
+                div["rollbacks"] += 1
+            elif "MessageValidationError" in line or "rollback failed" in line:
+                div["rejected"] += 1
+            elif "/v1/chat/completions HTTP/1.1\" 200" in line or "/v1/chat/completions HTTP/1.1\" 4" in line:
+                div["engine_chat_calls"] += 1
+    summary["session_divergence"] = dict(div)
     eng = parse_engine_stats(a.log)
     summary["engine_by_step"] = eng
     allnew = sum(v["prefill_new_M"] for v in eng.values())

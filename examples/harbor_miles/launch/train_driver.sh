@@ -38,6 +38,11 @@ case "${HARNESS}" in
     mini-swe-agent)
         AGENT_IMPORT_PATH="${AGENT_IMPORT_PATH:-harbor_miles_agents.mini_swe_agents:PreinstalledMiniSweAgent}"
         AGENT_KWARGS="${AGENT_KWARGS:-{\"max_tokens\": ${MAXRESP:-8192}}}" ;;
+    codex)
+        # Responses API -> Miles session server /v1/responses (miles_patches 0001). Path A's codex settings:
+        # no sub-agents, no code mode, no web search.
+        AGENT_IMPORT_PATH="${AGENT_IMPORT_PATH:-harbor_miles_agents.codex_agents:PreinstalledCodex}"
+        AGENT_KWARGS="${AGENT_KWARGS:-{\"web_search\": \"disabled\", \"codex_config\": {\"features.multi_agent\": false, \"features.code_mode\": false}}}" ;;
     opencode)
         # no compaction (the trajectory must stay one linear session), no sub-agents, no title calls
         OPENCODE_CONFIG="${OPENCODE_CONFIG:-{\"compaction\": {\"auto\": false}, \"permission\": {\"task\": \"deny\"}, \"agent\": {\"title\": {\"disable\": true}}}}" ;;
