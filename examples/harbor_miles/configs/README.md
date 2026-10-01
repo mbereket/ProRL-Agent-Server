@@ -5,7 +5,7 @@ A run is ONE short experiment file. The launcher (`setup/config.sh` `hm_load_con
 
 | layer | file | holds |
 |---|---|---|
-| 1 recipe | `recipe.env` | the current best settings for every run: LoRA r32/a64 all-linear, merged serving, no MTP loss, LR 3e-5, fully async (staleness <= 2), zero-variance groups dropped, overlong = reward 0, codex, CPU reserve 16, save every step, chaining. Evidence: `miles-work/FINDINGS.md`. |
+| 1 recipe | `recipe.env` | the current best settings for every run: LoRA r32/a64 all-linear, merged serving, no MTP loss, LR 3e-5, fully async (staleness <= 2), zero-variance groups dropped, overlong = reward 0, codex, CPU reserve 16, sandbox memory safety (per-process cap 16 GB, node watchdog at 80 %), save every step, chaining. Evidence: `miles-work/FINDINGS.md`. |
 | 2 layout | `layouts/<name>.env` (`LAYOUT_PRESET=`) | model (`models/*.env`), nodes, trainer GPUs / TP / CP, engine TP / memory, in-flight sessions per engine (the measured KV knee), the largest cap the trainer fits (`MAX_CAP`) |
 | 3 dataset | `datasets/<name>.env` (`DATASET=`) | task packages, default task list, verifier env (`HM_REQUIRE_ENV`), agent timeout, agent process env |
 | 4 experiment | `experiments/<name>.env` | run name, tasks, **cap (`CAP`, required: no default)**, batch (RBS x NS), steps, LR and whatever else this run changes |
