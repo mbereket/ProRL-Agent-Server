@@ -23,7 +23,7 @@ mkdir -p "${OUT}"
 read -ra MODEL_ARGS <<< "$(python3 /root/miles/miles/utils/external_utils/model_args_utils.py "${MODEL_TYPE}")"
 args=(
     "${MODEL_ARGS[@]}"
-    --hf-checkpoint "${MODELS}/${MODEL}" --megatron-to-hf-mode bridge
+    --hf-checkpoint "${MODEL_PATH:-${MODELS}/${MODEL}}" --megatron-to-hf-mode bridge
     --prompt-data "${DATA}/dapo-math-17k/dapo-math-17k.jsonl" --input-key prompt --label-key label
     --apply-chat-template --rollout-shuffle --rm-type deepscaler
     --num-rollout "${NUM_ROLLOUT}" --rollout-batch-size "${RBS}" --n-samples-per-prompt "${NS}"
@@ -85,7 +85,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(SP|GPUS|ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(MODEL_PATH|MODEL_TYPE|SP|GPUS|ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).
