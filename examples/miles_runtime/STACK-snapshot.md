@@ -506,8 +506,8 @@ replicas above fit, at ~2x the tokens/s.
 - **64k**: TP4 / CP1 / `--max-tokens-per-gpu 65536` — 7.4 k tok/s, 62 GB (synthetic); comfortable.
 - **96k**: TP4 / CP1 / `--max-tokens-per-gpu 98304` **plus `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** in the
   environment Ray's trainer workers inherit (set it before `ray start`) — REAL traces, warm JIT: 7.2-7.45 k tok/s, 26 % useful
-  MFU, 77.2 GB (cold: ~4.4 k, see the speed note below). Without expandable segments it OOMs. `--log-probs-chunk-size 1024`
-  does not change speed; whether it alone (without expandable segments) fits is being measured. Little headroom: watch
+  MFU, 77.2 GB (cold: ~4.4 k, see the speed note below). Without expandable segments it OOMs — also with
+  `--log-probs-chunk-size 1024` (dfw 19613127), which changes neither memory fit nor speed. Little headroom: watch
   per-step peak memory in the first steps of a real run.
 - **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise **with expandable
   segments** (REAL: 68.3 GB; 79.0 GB without). TP2·CP4 headwise OOMs on REAL 128k.
