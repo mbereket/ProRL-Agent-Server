@@ -16,6 +16,14 @@ CFG="${1:?config.env}"
 set -a; source "${CFG}"; set +a
 : "${RUN_NAME:?config must set RUN_NAME}" "${HARBOR_TASKS_DIR:?config must set HARBOR_TASKS_DIR}"
 export RUN_DIR="${HM_ROOT}/runs/${RUN_NAME}"
+mkdir -p "${RUN_DIR}"
+# Run-dir lock: a run never executes twice at once (chained resubmits, dual-cluster twins sharing a
+# filesystem). Held by the head node for the job's lifetime (fd survives the exec below).
+if [ "${SLURM_NODEID:-0}" = 0 ]; then
+    exec 9>"${RUN_DIR}/run.lock"
+    flock -n 9 || hm_die "run ${RUN_NAME} is already running (lock ${RUN_DIR}/run.lock held)"
+    echo "${SLURM_JOB_ID} $(hostname -s) $(date +%s)" > "${RUN_DIR}/run.owner"
+fi
 # Chained jobs (same RUN_NAME) share RUN_DIR; per-job files are keyed by SLURM_JOB_ID.
 export HARBOR_AGENT_SERVERS_FILE="${RUN_DIR}/agent_servers-${SLURM_JOB_ID}.txt"
 mkdir -p "${RUN_DIR}"
