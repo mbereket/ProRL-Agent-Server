@@ -44,20 +44,30 @@ Agents (`harbor_miles_agents/`): `opencode_agents.PreinstalledOpenCode` (the ima
 per-trial npm install), `BbhOpenCode` (starts the BBH MCP server in agent setup, where the task env
 with the judge key is applied; stops opencode after `submit_answer`, same as eval-v2).
 
-## Launch
+## Launch (branch `harbor-miles`; full guide: miles-work/EXPERIMENTS.md)
+
+A run is one short experiment file on top of the recipe (`configs/README.md`: recipe > layout > dataset > experiment):
 
 ```bash
-cd examples/harbor_miles/cluster
-~/Desktop/code/cluster-tools/.venv/bin/python submit.py --cluster hel --partition interactive \
-    --nodes 1 --gpus 8 --cpus 96 --mem 1200G --hours 4 --name learn1n \
-    --extra-pkg ../../miles_runtime launch/node_entry.sh configs/learn-bbh8-async-1n.env
+cat > configs/experiments/de4-27b-lr5e-5-r1.env <<'EOT'
+RUN_NAME=de4-27b-lr5e-5-r1
+LAYOUT_PRESET=27b-2n
+DATASET=de4-v1-k1
+CAP=96k
+LR=5e-5
+EOT
+tools/dry_render.sh --cluster dfw configs/experiments/de4-27b-lr5e-5-r1.env     # layers, derived knobs, exact Miles args
+cd cluster && ~/Desktop/code/cluster-tools/.venv/bin/python submit.py --cluster dfw --partition interactive \
+    --nodes 2 --gpus 8 --cpus 96 --mem 1200G --hours 4 --name de4-lr5e-5 \
+    --extra-pkg ../../miles_runtime launch/node_entry.sh configs/experiments/de4-27b-lr5e-5-r1.env
 ```
 
-`launch/node_entry.sh` runs once per node: agent server on the host, then `miles_runtime/ray_node.sh`
-(STACK's runtime: Miles SIF, Ray; head runs `launch/train_driver.sh`). Everything is in the config
-env (`configs/*.env`); outputs in `<HM_ROOT>/runs/<RUN_NAME>/` (`trials-<job>.jsonl` one line per
-trial, `trials/<host>/` full Harbor trial dirs, `ckpt/`, `args-<job>.txt`). A rerun with the same
-`RUN_NAME` resumes from `ckpt/`. `tools/analyze_run.py <job.log> <trials.jsonl>` summarizes.
+`launch/node_entry.sh` runs on node 0 (the slurm-compose step): it loads the config layers, takes the run lock, queues the
+chain successor (`HM_CHAIN_MAX`), starts the other nodes' agent servers (`launch/node_peer.sh`) and its own, then
+`miles_runtime/ray_node.sh` (Miles SIF, Ray; the head runs `launch/train_driver.sh`). Outputs: ONE run root per cluster,
+`<user root>/miles/runs/<RUN_NAME>/` (`trials-<job>.jsonl` one line per trial, `trials/<host>/` Harbor trial dirs, `ckpt/`,
+`args-<job>.txt`, `config-<job>.txt`, `jobs.log`, `chain.log`, `gpu-<job>.csv`, `node-<job>-<host>.csv`); Slurm logs in
+`<user root>/miles/joblogs/`. A rerun with the same `RUN_NAME` resumes from `ckpt/`. Analysis: `tools/README.md`.
 
 Validation jobs (no Miles): `tools/hv1_job.sh` (SGLang + agent server: nop wave, real opencode
 trials, flush), `tools/hv2_job.sh` (64-wide nop wave + flush of sleeping sandboxes; leak check).

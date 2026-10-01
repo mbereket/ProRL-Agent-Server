@@ -1,0 +1,98 @@
+{
+ "label": "27B de4 (codex, PROVISIONAL n~100/388, biased short)",
+ "workload": {
+  "64k": {
+   "decode": 25500.0,
+   "total": 46100.0,
+   "tool_share": 0.05,
+   "trunc": 0.14,
+   "inflation": 1.0,
+   "success": 0.65,
+   "zv_drop": 0.25,
+   "src": "MEASURED base pass (provisional)"
+  },
+  "96k": {
+   "decode": 25500.0,
+   "total": 46100.0,
+   "tool_share": 0.05,
+   "trunc": 0.0,
+   "inflation": 1.0,
+   "success": 0.65,
+   "zv_drop": 0.25,
+   "src": "MEASURED base pass (provisional)"
+  }
+ },
+ "engine": {
+  "gpus": 4,
+  "kv_tokens": 1890000.0,
+  "mamba_slots": 144,
+  "merged_speedup": 1.2987,
+  "curve": [
+   [
+    14,
+    901
+   ],
+   [
+    18,
+    1027
+   ],
+   [
+    22,
+    1138
+   ],
+   [
+    26,
+    1278
+   ],
+   [
+    30,
+    1411
+   ],
+   [
+    34,
+    1463
+   ],
+   [
+    38,
+    1518
+   ]
+  ],
+  "inflight_cap": 35,
+  "src": "MEASURED TP4 curve (27B real SWE-Gym logs); de4 knee ~38 running (MEASURED KV saturation on TP2 x1.89M/700k)"
+ },
+ "trainers": {
+  "64k": [
+   {
+    "name": "4 GPU TP4 CP1",
+    "gpus": 4,
+    "tok_s": 7400.0,
+    "peak_gb": 62,
+    "src": "STACK REPLAY real, MTP off"
+   },
+   {
+    "name": "8 GPU TP4 DP2",
+    "gpus": 8,
+    "tok_s": 14800.0,
+    "peak_gb": 62,
+    "src": "MODEL 2x4-GPU"
+   }
+  ],
+  "96k": [
+   {
+    "name": "4 GPU TP4 CP1 (chunk 1024 + expandable seg)",
+    "gpus": 4,
+    "tok_s": 7450.0,
+    "peak_gb": 77.2,
+    "src": "STACK REAL 96k (hel 1527310)"
+   },
+   {
+    "name": "8 GPU TP4 CP2 headwise",
+    "gpus": 8,
+    "tok_s": 9100.0,
+    "peak_gb": 72,
+    "src": "STACK 128k synthetic 9.1k (96k >= that); smoke 72 GB"
+   }
+  ]
+ },
+ "sync_s": 15
+}
