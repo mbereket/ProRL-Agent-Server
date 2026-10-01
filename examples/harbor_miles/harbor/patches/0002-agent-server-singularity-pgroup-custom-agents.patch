@@ -1,8 +1,40 @@
 diff --git a/agent_server/results.py b/agent_server/results.py
-index 0d37ec6..5511151 100644
+index 0d37ec6..d49e787 100644
 --- a/agent_server/results.py
 +++ b/agent_server/results.py
-@@ -94,6 +94,16 @@ def _extract_metrics(result) -> dict[str, Any]:
+@@ -20,6 +20,22 @@ _OUTPUT_LIMIT_EXCEPTIONS = {
+ }
+ 
+ 
++# Context-window exhaustion as reported by installed agents (opencode's error event,
++# OpenAI-compatible 400s). Harbor maps the agent's non-zero exit to assorted exception
++# types (NonZeroAgentExitCode, NetworkConnection, ApiRateLimit, ...), so match the text.
++_CONTEXT_OVERFLOW_MARKERS = (
++    "ContextOverflowError",
++    "maximum context length",
++    "exceeds the model's maximum context",
++    "context_length_exceeded",
++)
++
++
++def _is_context_overflow(exc) -> bool:
++    message = getattr(exc, "exception_message", "") or ""
++    return any(marker in message for marker in _CONTEXT_OVERFLOW_MARKERS)
++
++
+ def _extract_exit_status(result) -> str:
+     """Derive exit status from Harbor TrialResult."""
+     exc = getattr(result, "exception_info", None)
+@@ -27,7 +43,7 @@ def _extract_exit_status(result) -> str:
+         exc_type = getattr(exc, "exception_type", "")
+         if exc_type in _TIMEOUT_EXCEPTIONS:
+             return "TimeLimitExceeded"
+-        if exc_type in _OUTPUT_LIMIT_EXCEPTIONS:
++        if exc_type in _OUTPUT_LIMIT_EXCEPTIONS or _is_context_overflow(exc):
+             return "SequenceLengthLimitExceeded"
+         return "AgentError"
+     if getattr(result, "verifier_result", None) is not None:
+@@ -94,6 +110,16 @@ def _extract_metrics(result) -> dict[str, Any]:
              if isinstance(agent_meta, dict):
                  metrics.update(agent_meta)
  
