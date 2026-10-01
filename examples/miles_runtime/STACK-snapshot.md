@@ -504,20 +504,24 @@ replicas above fit, at ~2x the tokens/s.
 
 **Recipe for 4 trainer GPUs (1-node 4 trainer + 1 TP4 engine), 27B LoRA, MTP off (base 0004):**
 - **64k**: TP4 / CP1 / `--max-tokens-per-gpu 65536` — 7.4 k tok/s, 62 GB (synthetic); comfortable.
-- **96k**: TP4 / CP1 / `--max-tokens-per-gpu 98304` **plus `--log-probs-chunk-size 1024` and
-  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** in the environment Ray's trainer workers inherit (set it before
-  `ray start`) — REAL traces 7.45 k tok/s, 26 % useful MFU, 77.2 GB. Without both it OOMs (or, with only expandable
-  segments, runs 45 % slower). Little headroom: watch per-step peak memory in the first steps of a real run.
+- **96k**: TP4 / CP1 / `--max-tokens-per-gpu 98304` **plus `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** in the
+  environment Ray's trainer workers inherit (set it before `ray start`) — REAL traces, warm JIT: 7.2-7.45 k tok/s, 26 % useful
+  MFU, 77.2 GB (cold: ~4.4 k, see the speed note below). Without expandable segments it OOMs. `--log-probs-chunk-size 1024`
+  does not change speed; whether it alone (without expandable segments) fits is being measured. Little headroom: watch
+  per-step peak memory in the first steps of a real run.
 - **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise **with expandable
   segments** (REAL: 68.3 GB; 79.0 GB without). TP2·CP4 headwise OOMs on REAL 128k.
 - **Margin, 8 GPUs TP4·CP2 headwise + expandable segments, REAL (same cluster/settings): 96k 56.3 GB vs 128k 68.3 GB.**
 - **192k**: needs ≥ 16 trainer GPUs (all 8-GPU layouts OOM); 16-GPU untested.
 
-**Speed caveat (open):** step times on REAL traces vary 2-3x between steps and between otherwise similar arms (dfw REAL
-128k TP4·CP2-hw: 266 s then 94 s for the same token count; the 4-GPU 96k exp-only arm ran at 4.1 k tok/s and the next arm,
-+ chunk 1024 on identical data, at 7.45 k). The second arm started from the first arm's JIT cache (published 1.3 -> 1.5 GB),
-so part of that gap may be kernel JIT for new shapes rather than the chunk size. Memory conclusions are solid; tok/s on
-REAL rows is a lower bound until a warm-cache rerun (queued as P1). Both 96k settings stay recommended.
+**Speed: the 4.1-4.4 k vs 7.2-7.45 k tok/s gap on REAL 96k (4 GPUs) is JIT/autotune warm-up, not the logprob chunk**
+(dfw 19613127, identical arms back to back, expandable segments only, chunk 4096): run a (cold for these shapes) 4.4 k tok/s
+(141-175 s/step, useful MFU 15-16 %); run b, same data, starting from a's JIT cache: **7.2-7.3 k tok/s** (86-106 s/step, 25-26 %).
+Peak 77.2 GB in both. So chunk 1024 is not a speed lever; warm 4-GPU 96k = ~7.3 k tok/s.
+**Open risk for real runs:** run a stayed cold on all 3 steps, and each step held different samples (new sequence lengths ->
+new packed microbatch sizes). If kernel compile/autotune keys on those sizes, a production run (new lengths every step) would
+sit near the cold ~4.4 k tok/s rather than 7.3 k. The 9B real-trace numbers (§11) replayed the SAME 24 samples every step, so
+they were warm. Diagnostic queued (P1): fresh 6-step composition with `TRITON_PRINT_AUTOTUNING=1`.
 
 Older reading (kept for the record): 96k fits the synthetic worst case but not real packed steps with default settings. The per-microbatch cost that grows with context is the LM-head logits, [tokens/CP x vocab/TP] (vocab
 248k: 12 GiB in bf16 at 96k on TP4) plus their gradient; TP cannot go above 4 for 27B, so CP (more GPUs) is the lever.
