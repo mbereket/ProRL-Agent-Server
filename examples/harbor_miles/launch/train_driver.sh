@@ -12,6 +12,14 @@ set -euo pipefail
 ARM="${ARM:-lora}"; LAYOUT="${LAYOUT:-disagg}"; ASYNC="${ASYNC:-0}"
 # Colocated trainer + engines cannot overlap rollout and training: always the synchronous loop.
 if [ "${LAYOUT}" = colocate ] && [ "${ASYNC}" = 1 ]; then echo "[driver] LAYOUT=colocate -> ASYNC=0 (sync loop)"; ASYNC=0; fi
+# ROLLOUT_ONLY=1: rollout-only measurement (base pass rates, session lengths / overflow at a cap, trace dumps). No trainer
+# (Miles --debug-rollout-only): EVERY GPU of the job serves, as TOTAL_GPUS / ENGINE_TP engines with the base weights. Sync
+# loop, unfiltered groups, no eval: NUM_ROLLOUT rollouts x RBS tasks x NS attempts; concurrency = sandbox slots (dispatch
+# queues the rest). Dumps on by default (ROLLOUT_DUMPS=0 turns them off): RUN_DIR/dumps/rollout_<id>.pt (token ids, loss
+# masks: trainer replay) and RUN_DIR/dumps/traj_<id>.jsonl. Trials: RUN_DIR/trials-<job>.jsonl. The job ends after the last
+# rollout. Leave HM_CHAIN_MAX unset.
+ROLLOUT_ONLY="${ROLLOUT_ONLY:-0}"
+if [ "${ROLLOUT_ONLY}" = 1 ]; then ASYNC=0; LAYOUT=disagg; DROP_ZERO_STD=0; EVAL_INTERVAL=""; fi
 MODEL_TYPE="${MODEL_TYPE:-qwen3.5-9B}"
 HF_CKPT="${HF_CKPT:?config must set HF_CKPT (HF model dir)}"
 GPUS_PER_NODE="$(nvidia-smi --list-gpus | wc -l | tr -d ' ')"
@@ -127,7 +135,7 @@ args=(
 # decode slows 2-3x, qwen27b). Cap = engines x floor(KV_FRACTION x ENGINE_KV_TOKENS / AVG_CTX),
 # and never more than the sandbox slots. ENGINE_KV_TOKENS = SGLang's max_total_num_tokens per
 # engine (logged at engine start; hel TP1 @ mem 0.8 = 773763; TP2 ~ 2x).
-if [ "${LAYOUT}" = colocate ]; then N_ENGINES=$(( TOTAL_GPUS / ENGINE_TP )); else N_ENGINES=$(( (TOTAL_GPUS - TRAIN_GPUS) / ENGINE_TP )); fi
+if [ "${LAYOUT}" = colocate ] || [ "${ROLLOUT_ONLY}" = 1 ]; then N_ENGINES=$(( TOTAL_GPUS / ENGINE_TP )); else N_ENGINES=$(( (TOTAL_GPUS - TRAIN_GPUS) / ENGINE_TP )); fi
 ENGINE_KV_TOKENS="${ENGINE_KV_TOKENS:-$(( ENGINE_TP == 1 ? 773763 : 913457 * ENGINE_TP ))}"   # measured on hel/dfw @ mem 0.8: TP1 773,763; TP2 1,826,914
 AVG_CTX="${AVG_CTX:-$(( MAX_SEQ_LEN * 3 / 4 ))}"
 KV_CAP=$(( N_ENGINES * ENGINE_KV_TOKENS * ${KV_FRACTION_PCT:-80} / 100 / AVG_CTX ))
@@ -187,7 +195,17 @@ fi
 [ "${OFFLOAD}" = 1 ] && args+=(--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
 # GatedDeltaNet context-parallel mode when CP > 1 (H2H_SPEC: headwise; never chunkwise).
 [ "${CP}" -gt 1 ] && [ -n "${LINEAR_CP_MODE:-headwise}" ] && args+=(--linear-cp-mode "${LINEAR_CP_MODE:-headwise}")
-if [ "${LAYOUT}" = colocate ]; then
+if [ "${ROLLOUT_ONLY}" = 1 ]; then
+    [ $(( GPUS_PER_NODE % ENGINE_TP )) -eq 0 ] \
+        || { echo "[driver] FATAL: ENGINE_TP ${ENGINE_TP} does not tile a ${GPUS_PER_NODE}-GPU node" >&2; exit 2; }
+    # Miles sizes the (unused) actor from --rollout-num-gpus under --debug-rollout-only; no trainer GPUs are reserved.
+    args+=(--debug-rollout-only --rollout-num-gpus "${TOTAL_GPUS}")
+    if [ "${ROLLOUT_DUMPS:-1}" = 1 ]; then
+        args+=(--save-debug-rollout-data "${RUN_DIR}/dumps/rollout_{rollout_id}.pt"
+               --save-debug-trajectory-data "${RUN_DIR}/dumps/traj_{rollout_id}.jsonl")
+    fi
+    echo "[driver] ROLLOUT_ONLY: ${N_ENGINES} engines x TP${ENGINE_TP} on ${TOTAL_GPUS} GPUs, ${NUM_ROLLOUT} rollout(s) x ${RBS} tasks x ${NS}, no training"
+elif [ "${LAYOUT}" = colocate ]; then
     # Trainer and engines time-share every GPU (offload between phases; with LORA_SERVE=merged the patch set keys the
     # sleep/wake layout on "LoRA is trained"). Engines: all GPUs / ENGINE_TP.
     args+=(--colocate --actor-num-nodes "${MILES_NUM_NODES}" --actor-num-gpus-per-node "${GPUS_PER_NODE}")
