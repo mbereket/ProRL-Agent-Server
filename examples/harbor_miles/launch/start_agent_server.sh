@@ -39,7 +39,7 @@ hm_log "sandbox overlays under ${HARBOR_SINGULARITY_OVERLAY_DIR} ($(df -h "${HAR
 mkdir -p "${HARBOR_SINGULARITY_CACHE_DIR}"
 # Read-only agent toolchains (setup/ensure_agent_tools.sh), bound into every sandbox at the same path.
 MOUNTS=""
-for tool in ${HM_AGENT_TOOLS:-mini-swe-agent}; do
+for tool in ${HM_AGENT_TOOLS:-codex}; do
     root="$(bash "${HM_EXAMPLE_DIR}/setup/ensure_agent_tools.sh" "${tool}")"
     var="HM_AGENT_TOOLS_$(echo "${tool}" | tr 'a-z-' 'A-Z_')"
     export "${var}=${root}"
@@ -64,19 +64,19 @@ for _v in ${HM_REQUIRE_ENV:-}; do
     hm_log "verifier env ${_v}: set"
 done
 hm_log "agent server on ${NODE_IP}:${PORT} (max ${MAXC} sandboxes), harbor ${HARBOR_DIR}"
-# HM_SANDBOX_RESERVE_CPUS=N (opt-in): pin the agent server, and with it every sandbox process (affinity is inherited), to
+# HM_SANDBOX_RESERVE_CPUS=N (recipe default 16; 0 = off): pin the agent server, and with it every sandbox process (affinity is inherited), to
 # all of this job's CPUs except N, which stay free for SGLang/Ray/the trainer. Reason: unthrottled sandbox workloads
 # (e.g. torch tests with one thread per CPU) pinned the job cgroup at 96/96 cores and halved engine decode (dfw 19608789).
 PIN=()
-if [ "${HM_SANDBOX_RESERVE_CPUS:-0}" -gt 0 ] 2>/dev/null && command -v taskset >/dev/null; then
+if [ "${HM_SANDBOX_RESERVE_CPUS:-16}" -gt 0 ] 2>/dev/null && command -v taskset >/dev/null; then
     _cpus="$(python3 -c 'import os, sys
 c = sorted(os.sched_getaffinity(0)); r = int(sys.argv[1])
-print(",".join(map(str, c[r:])) if len(c) > r + 8 else "")' "${HM_SANDBOX_RESERVE_CPUS}" 2>/dev/null || true)"
+print(",".join(map(str, c[r:])) if len(c) > r + 8 else "")' "${HM_SANDBOX_RESERVE_CPUS:-16}" 2>/dev/null || true)"
     if [ -n "${_cpus}" ]; then
         PIN=(taskset -c "${_cpus}")
-        hm_log "sandboxes pinned to $(echo "${_cpus}" | tr ',' '\n' | wc -l) CPUs (${HM_SANDBOX_RESERVE_CPUS} reserved)"
+        hm_log "sandboxes pinned to $(echo "${_cpus}" | tr ',' '\n' | wc -l) CPUs (${HM_SANDBOX_RESERVE_CPUS:-16} reserved)"
     else
-        hm_log "WARNING: HM_SANDBOX_RESERVE_CPUS=${HM_SANDBOX_RESERVE_CPUS} leaves too few CPUs; not pinning"
+        hm_log "WARNING: HM_SANDBOX_RESERVE_CPUS=${HM_SANDBOX_RESERVE_CPUS:-16} leaves too few CPUs; not pinning"
     fi
 fi
 (

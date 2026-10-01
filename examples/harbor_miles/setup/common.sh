@@ -7,6 +7,9 @@ export HM_EXAMPLE_DIR
 source "${HM_EXAMPLE_DIR}/cluster/clusters.sh"
 
 hm_log() { echo "[harbor_miles $(date +%H:%M:%S) $(hostname -s)] $*" >&2; }
+# Layered run configuration: hm_load_config <experiment.env> (recipe > layout > dataset > experiment, then derived knobs).
+# shellcheck source=config.sh
+source "${HM_EXAMPLE_DIR}/setup/config.sh"
 hm_die() { hm_log "FATAL: $*"; exit 1; }
 
 export PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1

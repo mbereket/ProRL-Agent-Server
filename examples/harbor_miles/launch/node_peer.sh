@@ -11,8 +11,8 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${HERE}/../setup/common.sh"
 CFG="${1:?config.env}"
 [ -f "${CFG}" ] || CFG="${HM_EXAMPLE_DIR}/${CFG}"
-set -a; source "${CFG}"; set +a
-export RUN_DIR="${HM_ROOT}/runs/${RUN_NAME:?}"
+hm_load_config "${CFG}" || hm_die "config ${CFG}: see the message above"
+export RUN_DIR="${HM_RUNS_ROOT}/${RUN_NAME:?}"
 export HARBOR_AGENT_SERVERS_FILE="${RUN_DIR}/agent_servers-${SLURM_JOB_ID}.txt"
 HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" \
     bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${RUN_DIR}" "${HM_AGENT_SERVER_PORT:-65500}" \

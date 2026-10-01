@@ -7,7 +7,7 @@
 Rewards come from the Harbor verifier via hm_agent.run (sample.metadata).
 
 Policies (env, read in the rollout process):
-  HM_OVERLONG_REWARD  "verifier" (default) | "zero": reward of a trajectory that ran out of
+  HM_OVERLONG_REWARD  "zero" (default, recipe) | "verifier": reward of a trajectory that ran out of
                       context. The verifier still runs on the sandbox state the agent left
                       (Harbor runs it after agent errors/timeouts), so "verifier" rewards the
                       outcome only: a fix that landed before the context ran out counts. "zero"
@@ -51,7 +51,7 @@ def _is_overlong(sample: Sample) -> bool:
 def _reward_of(sample: Sample) -> float:
     md = sample.metadata or {}
     reward = float(md.get("reward", 0.0) or 0.0)
-    if os.environ.get("HM_OVERLONG_REWARD", "verifier") == "zero" and _is_overlong(sample):
+    if os.environ.get("HM_OVERLONG_REWARD", "zero") == "zero" and _is_overlong(sample):
         return 0.0
     return reward
 

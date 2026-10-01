@@ -100,6 +100,9 @@ wandb/
 checkpoints/
 models/
 experiments/
+# harbor_miles config layers are NOT weights/outputs (configs/README.md): keep them tracked
+!examples/harbor_miles/configs/models/
+!examples/harbor_miles/configs/experiments/
 rollout_results/
 outputs/
 local/

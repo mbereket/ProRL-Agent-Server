@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Miles GRPO on Harbor tasks — runs on the Ray head INSIDE the Miles runtime (via
-# node_entry.sh -> miles_runtime/ray_node.sh). All knobs come from the config env
-# (configs/*.env), already in the environment.
+# node_entry.sh -> miles_runtime/ray_node.sh). All knobs come from the layered config env (configs/README.md:
+# recipe > layout > dataset > experiment, plus derived knobs from setup/config.sh), already in the environment.
+# The fallbacks below equal configs/recipe.env, so a knob no layer sets gets the recipe value either way.
 #
 # Layout knobs: LAYOUT colocate|disagg, TRAIN_GPUS (disagg: trainer GPUs, rest -> SGLang),
 #   ACTOR_NODES (trainer nodes; disagg multi-node: whole nodes), ENGINE_TP, TP, CP, MTPG.
@@ -9,7 +10,7 @@
 #   NUM_ROLLOUT, ASYNC 0|1 (train_async.py --fully-async), MAX_SEQ_LEN (trajectory cap), MAXRESP (per turn).
 set -euo pipefail
 : "${RUN_DIR:?}" "${HARBOR_TASKS_DIR:?}" "${MILES_NUM_NODES:?}"
-ARM="${ARM:-lora}"; LAYOUT="${LAYOUT:-disagg}"; ASYNC="${ASYNC:-0}"
+ARM="${ARM:-lora}"; LAYOUT="${LAYOUT:-disagg}"; ASYNC="${ASYNC:-1}"
 # Colocated trainer + engines cannot overlap rollout and training: always the synchronous loop.
 if [ "${LAYOUT}" = colocate ] && [ "${ASYNC}" = 1 ]; then echo "[driver] LAYOUT=colocate -> ASYNC=0 (sync loop)"; ASYNC=0; fi
 # ROLLOUT_ONLY=1: rollout-only measurement (base pass rates, session lengths / overflow at a cap, trace dumps). No trainer
@@ -27,8 +28,8 @@ TOTAL_GPUS=$(( GPUS_PER_NODE * MILES_NUM_NODES ))
 TRAIN_GPUS="${TRAIN_GPUS:-4}"
 TP="${TP:-2}"; CP="${CP:-1}"; MTPG="${MTPG:-16384}"
 ENGINE_TP="${ENGINE_TP:-2}"; MEMF="${MEMF:-0.8}"
-LORA_RANK="${LORA_RANK:-32}"; LORA_ALPHA="${LORA_ALPHA:-32}"; LORA_TARGETS="${LORA_TARGETS:-all-linear}"
-LR="${LR:-}"; [ -n "${LR}" ] || { [ "${ARM}" = lora ] && LR=1e-5 || LR=1e-6; }
+LORA_RANK="${LORA_RANK:-32}"; LORA_ALPHA="${LORA_ALPHA:-64}"; LORA_TARGETS="${LORA_TARGETS:-all-linear}"
+LR="${LR:-}"; [ -n "${LR}" ] || { [ "${ARM}" = lora ] && LR=3e-5 || LR=1e-6; }
 # ARM=full is the one-flag full-FT switch; on a <=4-GPU trainer it needs CPU Adam at 64k
 # (STACK §9). LoRA keeps Adam on GPU.
 if [ -z "${OFFLOAD:-}" ]; then
@@ -59,7 +60,7 @@ mkdir -p "${RUN_DIR}/data" "${RUN_DIR}/ckpt" "${RUN_DIR}/dumps"
 DATA="${RUN_DIR}/data/train.jsonl"
 # Harness = Harbor agent (HARNESS) + optional custom class (AGENT_IMPORT_PATH) + kwargs + AGENT_ENV (JSON, agent process env;
 # e.g. BLAS/OpenMP thread caps for data-analysis tasks).
-HARNESS="${HARNESS:-mini-swe-agent}"
+HARNESS="${HARNESS:-codex}"
 case "${HARNESS}" in
     mini-swe-agent)
         AGENT_IMPORT_PATH="${AGENT_IMPORT_PATH:-harbor_miles_agents.mini_swe_agents:PreinstalledMiniSweAgent}"
@@ -130,6 +131,7 @@ args=(
     --sglang-context-length "${MAX_SEQ_LEN}"
     # Old-policy logprobs = the behavior policy's own (rollout) logprobs: skips a forward pass
     # (-24% step, STACK) and is the correct ratio baseline under async staleness.
+    # Chunk: 1024 at >= 96k tokens of one sequence per trainer GPU, else 4096 (derived from the cap, setup/config.sh).
     --use-rollout-logprobs --log-probs-chunk-size "${LOGPROB_CHUNK:-4096}"
 )
 # In-flight session cap. Every in-flight agent session keeps its prefix in an engine's radix
@@ -143,7 +145,7 @@ AVG_CTX="${AVG_CTX:-$(( MAX_SEQ_LEN * 3 / 4 ))}"
 KV_CAP=$(( N_ENGINES * ENGINE_KV_TOKENS * ${KV_FRACTION_PCT:-80} / 100 / AVG_CTX ))
 SANDBOX_CAP=$(( ${HM_SANDBOXES_PER_NODE:-32} * MILES_NUM_NODES ))
 SESSION_CAP="${SESSION_CAP:-$(( KV_CAP < SANDBOX_CAP ? KV_CAP : SANDBOX_CAP ))}"
-echo "[driver] session cap ${SESSION_CAP} (${N_ENGINES} engines x TP${ENGINE_TP}, kv/engine ${ENGINE_KV_TOKENS}, avg ctx ${AVG_CTX} -> kv cap ${KV_CAP}; sandbox cap ${SANDBOX_CAP})"
+echo "[driver] session cap ${SESSION_CAP} (${N_ENGINES} engines x TP${ENGINE_TP}, kv/engine ${ENGINE_KV_TOKENS}, avg ctx ${AVG_CTX} -> kv cap ${KV_CAP}; sandbox cap ${SANDBOX_CAP})${ASYNC_CONCURRENCY:+; in flight = ASYNC_CONCURRENCY ${ASYNC_CONCURRENCY} (config)}"
 if [ "${ASYNC}" = 1 ]; then
     # Fully async: the engines keep SESSION_CAP trajectories in flight across weight updates;
     # the trainer drains RBS groups per step; groups may be up to MAX_STALENESS versions old.
@@ -154,7 +156,7 @@ else
     # Sync: one step's groups run together; oversubscribing the engines thrashes the cache too.
     [ $(( RBS * NS )) -le "${SESSION_CAP}" ] || echo "[driver] WARNING: RBS x NS = $(( RBS * NS )) > session cap ${SESSION_CAP}"
 fi
-[ "${DROP_ZERO_STD:-0}" = 1 ] && args+=(--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter)
+[ "${DROP_ZERO_STD:-1}" = 1 ] && args+=(--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter)
 # Periodic eval on the same harness/sampling (no dynamic filter): EVAL_INTERVAL steps, EVAL_N attempts per task,
 # EVAL_DATA (default: the training prompts = optimization check on the full training set).
 # The default eval set is a copy of the training prompts tagged metadata.hm_split=eval, so HM_TRIAL_LOG rows tell eval
@@ -235,7 +237,7 @@ fi
 if [ "${ARM}" = lora ]; then
     args+=(--lora-rank "${LORA_RANK}" --lora-alpha "${LORA_ALPHA}" --lora-dropout 0.0
            --target-modules "${LORA_TARGETS}" --no-gradient-accumulation-fusion)
-    if [ "${LORA_SERVE:-adapter}" = merged ]; then
+    if [ "${LORA_SERVE:-merged}" = merged ]; then
         # Train LoRA, serve merged (STACK §10, patch set miles_runtime/patches/lora-serve-merged, added by
         # node_entry): each sync pushes W + (alpha/r)BA as full weights; SGLang runs a plain model (no LoRA
         # kernels, no lora_path), ~26% faster rollout. No LoRA serving flags.
@@ -250,6 +252,9 @@ fi
 # W&B reads WANDB_API_KEY from the environment (never on the command line: args are logged to RUN_DIR/args-*.txt).
 [ -n "${WANDB_API_KEY:-}" ] && [ -n "${WANDB_PROJECT:-}" ] && args+=(--use-wandb --wandb-project "${WANDB_PROJECT}"
     --wandb-group "${RUN_NAME}")
+# Trainer-only CUDA allocator setting (derived: expandable_segments:True at caps >= 96k; STACK §13), set by Miles in the
+# trainer workers' runtime env at process start (before CUDA init). The SGLang engines do not get it.
+[ -n "${TRAIN_ALLOC_CONF:-}" ] && args+=(--train-env-vars "{\"PYTORCH_CUDA_ALLOC_CONF\":\"${TRAIN_ALLOC_CONF}\"}")
 # shellcheck disable=SC2206
 args+=(${EXTRA})
 
@@ -258,7 +263,7 @@ echo "[driver] ${ARM}/${LAYOUT} async=${ASYNC} nodes=${MILES_NUM_NODES} TP${TP} 
 ( while true; do nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv,noheader,nounits; sleep 15; done ) \
     > "${RUN_DIR}/gpu-${SLURM_JOB_ID:-local}.csv" 2>/dev/null & sampler=$!
 trap 'kill ${sampler} 2>/dev/null || true' EXIT
-cd /root/miles
+cd "${MILES_DIR:-/root/miles}"
 if [ "${ASYNC}" = 1 ]; then train_cmd=(python3 train_async.py --fully-async "${args[@]}"); else train_cmd=(python3 train.py "${args[@]}"); fi
 if [ "${EVAL_ONLY:-0}" = 1 ]; then
     # Rollout-only measurement (base pass rates, session lengths, overflow at a cap): the eval set (EVAL_DATA x EVAL_N,

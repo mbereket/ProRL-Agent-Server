@@ -9,7 +9,13 @@ The example directory is the slurm-compose package (uploaded with every
 submission, so no git push is needed to iterate); the command runs once per
 node (ntasks_per_node=1) as ``bash $SCOMPOSE_PKGS/harbor_miles/<script> args``
 with CLUSTER, JOB_NAME and any ``--env K=V`` set. Job logs land in
-``<HM_ROOT>/joblogs/%j-<project>-<name>.log`` (+ per-step ``%j.%s-<name>.log``).
+``<user root>/miles/joblogs/%j-<project>-<name>.log`` (+ per-step ``%j.%s-<name>.log``); run dirs in
+``<user root>/miles/runs/<RUN_NAME>/`` (cluster/clusters.sh HM_RUNS_ROOT). HM_ROOT (setup: Harbor venv, toolchains, caches)
+stays per cluster (ROOTS below).
+
+For ``launch/node_entry.sh CONFIG`` submissions the config is dry-rendered first (tools/dry_render.sh with this cluster and
+--nodes): a config that fails its layout checks (node count, cap vs trainer fit, single-node cluster) is never queued.
+``--no-render`` skips that.
 """
 
 from __future__ import annotations
@@ -38,6 +44,15 @@ ROOTS = {
     "aws-iad": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm",
     "ord": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm",
     "draco": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm",
+}
+
+# <user root> per cluster: run dirs (<user root>/miles/runs) and job logs (<user root>/miles/joblogs) for every run.
+USER_ROOTS = {
+    "hel": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_math/users/mbereket",
+    "dfw": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket",
+    "aws-iad": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket",
+    "ord": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket",
+    "draco": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket",
 }
 
 TEMPLATE = """\
@@ -95,12 +110,14 @@ def main() -> int:
     p.add_argument("--extra-pkg", action="append", default=[],
                    help="extra local dir uploaded as a package ($SCOMPOSE_PKGS/<basename>), e.g. miles_runtime")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-render", action="store_true", help="skip the local dry render of a node_entry.sh config")
     p.add_argument("script")
     p.add_argument("args", nargs=argparse.REMAINDER)
     a = p.parse_args()
     args = [x for x in a.args if x != "--"]
 
-    root = ROOTS[a.cluster]
+    root = os.environ.get("HM_SUBMIT_ROOT") or ROOTS[a.cluster]   # HM_ROOT: setup root (Harbor venv, toolchains, caches)
+    joblogs = f"{USER_ROOTS[a.cluster]}/miles/joblogs"
     env = {"CLUSTER": a.cluster, "JOB_NAME": a.name, "HM_ROOT": root}
     for kv in a.env:
         k, _, v = kv.partition("=")
@@ -113,6 +130,18 @@ def main() -> int:
         pkg=EXAMPLE.name, script=a.script, args=" ".join(shlex.quote(x) for x in args),
         extra_pkgs="".join(f"  - {Path(d).resolve()}\n" for d in a.extra_pkg),
     )
+    if a.script.endswith("node_entry.sh") and args and not a.no_render:
+        extra = [kv for kv in a.env if not kv.startswith("HM_ROOT=")]
+        hmr = [kv.split("=", 1)[1] for kv in a.env if kv.startswith("HM_ROOT=")]
+        cmd = ["bash", str(EXAMPLE / "tools/dry_render.sh"), "--cluster", a.cluster, "--nodes", str(a.nodes),
+               *(["--hm-root", hmr[-1]] if hmr else []), args[0], *extra]
+        r = subprocess.run(cmd, cwd=EXAMPLE, capture_output=True, text=True)
+        print(r.stdout.strip())
+        if r.returncode != 0:
+            print("\n".join(l for l in r.stderr.splitlines() if "hm_derive_config" in l or "FATAL" in l or "hm_load_config" in l)
+                  or r.stderr.strip()[-2000:])
+            print("NOT submitted: the config does not render for this cluster / node count (see above; --no-render skips)")
+            return 1
     rendered = HERE / "rendered"
     rendered.mkdir(exist_ok=True)
     yml_path = rendered / f"{a.name}.yml"
@@ -122,21 +151,21 @@ def main() -> int:
            "--export-dir", str(EXPORT_ROOT)]
     senv = dict(os.environ)
     senv["SCOMPOSE_CONFIG_HOME"] = str(HERE / "sc-config")
-    senv["SCOMPOSE_SBATCH_OUTPUT"] = f"{root}/joblogs/%j-%x.log"
-    senv["SCOMPOSE_SRUN_OUTPUT"] = f"{root}/joblogs/%j.%s-${{STEP_NAME}}.log"
+    senv["SCOMPOSE_SBATCH_OUTPUT"] = f"{joblogs}/%j-%x.log"
+    senv["SCOMPOSE_SRUN_OUTPUT"] = f"{joblogs}/%j.%s-${{STEP_NAME}}.log"
     senv["SCOMPOSE_PROJECT_NAME"] = PROJECT
     print("$", " ".join(shlex.quote(c) for c in cmd))
     if a.dry_run:
         print(yml)
         return 0
-    ensure_remote_dirs(a.cluster, f"{root}/joblogs", f"{root}/.slurm-compose/exports")
+    ensure_remote_dirs(a.cluster, joblogs, f"{USER_ROOTS[a.cluster]}/miles/runs", f"{root}/.slurm-compose/exports")
     r = subprocess.run(cmd, cwd=HERE, env=senv, capture_output=True, text=True)
     text = r.stdout + r.stderr
     mm = re.search(r"sbatch job (\d+) submitted", text)
     if not mm:
         print(text[-4000:])
         return 1
-    print(f"submitted {a.cluster} job {mm.group(1)} ({a.name}); logs: {root}/joblogs/{mm.group(1)}-{PROJECT}-{a.name}.log")
+    print(f"submitted {a.cluster} job {mm.group(1)} ({a.name}); logs: {joblogs}/{mm.group(1)}-{PROJECT}-{a.name}.log")
     return 0
 
 

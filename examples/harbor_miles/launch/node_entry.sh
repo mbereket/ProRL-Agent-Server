@@ -5,7 +5,7 @@
 # Miles SIF, the other nodes join Ray. Sandboxes therefore run on every node, next to
 # (not inside) the containerized trainer.
 #
-#   node_entry.sh <config.env>      (config: see configs/*.env; sourced on every node)
+#   node_entry.sh <experiment.env>  (configs/README.md: recipe > layout > dataset > experiment layers, hm_load_config)
 #
 # Needs MILES_RUNTIME_DIR = the miles_runtime package dir (uploaded next to this one).
 set -euo pipefail
@@ -13,16 +13,21 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${HERE}/../setup/common.sh"
 CFG="${1:?config.env}"
 [ -f "${CFG}" ] || CFG="${HM_EXAMPLE_DIR}/${CFG}"
-set -a; source "${CFG}"; set +a
+hm_load_config "${CFG}" || hm_die "config ${CFG}: see the message above"
 : "${RUN_NAME:?config must set RUN_NAME}" "${HARBOR_TASKS_DIR:?config must set HARBOR_TASKS_DIR}"
-export RUN_DIR="${HM_ROOT}/runs/${RUN_NAME}"
+export RUN_DIR="${HM_RUNS_ROOT}/${RUN_NAME}"
 mkdir -p "${RUN_DIR}"
+hm_log "$(hm_config_summary)"
 # Run-dir lock: a run never executes twice at once (chained resubmits, dual-cluster twins sharing a
 # filesystem). Held by the head node for the job's lifetime (fd survives the exec below).
 if [ "${SLURM_NODEID:-0}" = 0 ]; then
     exec 9>"${RUN_DIR}/run.lock"
     flock -n 9 || hm_die "run ${RUN_NAME} is already running (lock ${RUN_DIR}/run.lock held)"
     echo "${SLURM_JOB_ID} $(hostname -s) $(date +%s)" > "${RUN_DIR}/run.owner"
+    # jobs.log: one line per job of this run (cluster, nodes, Slurm log, config layers) -> where to look for what.
+    _joblog="$(scontrol show job "${SLURM_JOB_ID}" 2>/dev/null | sed -n 's/^ *StdOut=//p' | head -1)"
+    echo "$(date '+%F %T') job=${SLURM_JOB_ID} cluster=${CLUSTER} nodes=${SLURM_NNODES:-1} chain=${HM_CHAIN_INDEX:-1}/${HM_CHAIN_MAX:-0} log=${_joblog:--} config=${HM_CONFIG_LAYERS:-${CFG}}" >> "${RUN_DIR}/jobs.log"
+    hm_config_summary > "${RUN_DIR}/config-${SLURM_JOB_ID}.txt"
     # Cluster-side chaining (HM_CHAIN_MAX): queue the successor chunk now (launch/chain.sh).
     source "${HM_EXAMPLE_DIR}/launch/chain.sh"
     hm_chain
@@ -73,11 +78,12 @@ export MILES_PATCH_DIR="${MILES_PATCH_DIR:-${HM_EXAMPLE_DIR}/miles_patches}"
 # at the context window, which the session adapter reports to the agent as context_length_exceeded (overlong).
 export MILES_RESPONSES_DEFAULT_MAX_TOKENS="${MILES_RESPONSES_DEFAULT_MAX_TOKENS:-0}"
 export AGENT_TRIAL_TIMEOUT="${AGENT_TRIAL_TIMEOUT:-$(( ${HM_AGENT_TIMEOUT:-3600} + 1800 ))}"
-# LORA_SERVE=merged: STACK's train-LoRA/serve-merged patch set goes before ours.
-[ "${LORA_SERVE:-adapter}" = merged ] && MERGED_PATCHES="${MILES_RUNTIME_DIR}/patches/lora-serve-merged" || MERGED_PATCHES=""
-# NO_MTP (DEFAULT 1 since 2026-10-01 ~05:55, coordinator; STACK A/B aws-iad 7598313 clean on 9B): STACK's patches/no-mtp
-# drops the bridge-built MTP layer unless trained. That removes an unweighted 0.2 next-token loss from the LoRA gradient and
-# the fp32 MTP logits that OOM 27B at 128k. NO_MTP=0 restores the old behaviour (runs before this date had MTP ON).
+# LORA_SERVE=merged (recipe default): STACK's train-LoRA/serve-merged patch set goes before ours.
+[ "${LORA_SERVE:-merged}" = merged ] && MERGED_PATCHES="${MILES_RUNTIME_DIR}/patches/lora-serve-merged" || MERGED_PATCHES=""
+# NO_MTP (DEFAULT 1): the bridge-built MTP layer is dropped unless trained. That removes an unweighted 0.2 next-token loss
+# from the LoRA gradient and the fp32 MTP logits that OOM 27B at 128k (FINDINGS "MTP loss"). Since miles-stack a49a88ab the
+# drop is base patch 0004 (always on) and patches/no-mtp is an empty alias kept for older runtimes; with the current runtime
+# MTP comes back only with EXTRA=--enable-mtp-training. Runs before 2026-10-01 ~06:00 had the MTP loss ON.
 [ "${NO_MTP:-1}" = 1 ] && MERGED_PATCHES="${MERGED_PATCHES:+${MERGED_PATCHES}:}${MILES_RUNTIME_DIR}/patches/no-mtp"
 hm_log "patch sets: ${MERGED_PATCHES:-none} + ${MILES_PATCH_DIR:-none} (NO_MTP=${NO_MTP:-1})"
 exec bash "${MILES_RUNTIME_DIR}/ray_node.sh" \

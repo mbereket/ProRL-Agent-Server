@@ -1,7 +1,12 @@
 # shellcheck shell=bash
 # Per-cluster paths for the harbor_miles example (sourced in jobs with CLUSTER set).
 #
-#   HM_ROOT         this example's writable work root on the cluster (venvs, runs, caches)
+#   HM_ROOT         this example's writable SETUP root on the cluster (Harbor checkout + venv, agent toolchains, uv,
+#                   sif_cache, caches). Kept where the first jobs built it (hel/dfw: miles/path-b; aws-iad/ord/draco:
+#                   miles/shared/hm) so no job rebuilds it. Run outputs do NOT go here any more (HM_RUNS_ROOT).
+#   HM_RUNS_ROOT    ONE shared run root per cluster: <user root>/miles/runs/<RUN_NAME>/ (run dirs) and
+#                   <user root>/miles/joblogs/ (Slurm logs; cluster/submit.py). Older runs stay where they ran
+#                   (miles/path-b/runs, miles/qwen27b/runs, miles/shared/hm/runs); tools/analysis/hmruns.py finds both.
 #   HM_SHARED       the polar-slime work root; used READ-ONLY here (SIFs, apptainer, uv,
 #                   model snapshots, task packages). Nothing under it is ever written.
 #   HM_SIF_DIRS     colon-separated read-only SIF directories searched before any pull
@@ -27,15 +32,19 @@ case "${CLUSTER}" in
         export HM_ROOT="${HM_ROOT:-${_user_root}/miles/shared/hm}"
         export HM_APPTAINER="${HM_APPTAINER:-${_user_root}/miles/stack/apptainer/1.5.3}"
         export HM_UV="${HM_UV:-${_user_root}/miles/shared/bin/uv}"
+        # Single-node only: aws-iad has EFA (no cross-node NCCL in the image); ord/draco partitions are single-node.
+        export HM_CLUSTER_MAX_NODES=1
         # ord/draco are A100 (sm80): Transformer Engine must not use FlashAttention 4 there (miles_runtime/patches/a100);
         # mrun layers MILES_PATCHES dirs on top of patches/base.
         case "${CLUSTER}" in ord|draco)
+            export HM_CLUSTER_MAX_SANDBOXES="${HM_CLUSTER_MAX_SANDBOXES:-32}"   # A100 hosts: FLEET ran 32 (ord) / 48 (draco)
             [ -n "${SCOMPOSE_PKGS:-}" ] && export MILES_PATCHES="${MILES_PATCHES:+${MILES_PATCHES}:}${SCOMPOSE_PKGS}/miles_runtime/patches/a100" ;;
         esac
         ;;
     *) echo "clusters.sh: unknown cluster ${CLUSTER}" >&2; return 2 ;;
 esac
 export HM_USER_ROOT="${_user_root}"
+export HM_RUNS_ROOT="${HM_RUNS_ROOT:-${_user_root}/miles/runs}"
 export HM_ROOT="${HM_ROOT:-${_user_root}/miles/path-b}"
 export HM_SHARED="${HM_SHARED:-${_user_root}/prorl-harbor}"
 export HM_SIF_DIRS="${HM_SIF_DIRS:-${_user_root}/miles/shared/harbor_sif_images:${_user_root}/bio-synth/cache/apptainer/harbor:${HM_SHARED}/harbor_sif_images}"
