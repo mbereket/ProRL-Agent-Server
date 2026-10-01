@@ -107,7 +107,7 @@ args=(
 # and never more than the sandbox slots. ENGINE_KV_TOKENS = SGLang's max_total_num_tokens per
 # engine (logged at engine start; hel TP1 @ mem 0.8 = 773763; TP2 ~ 2x).
 if [ "${LAYOUT}" = colocate ]; then N_ENGINES=$(( TOTAL_GPUS / ENGINE_TP )); else N_ENGINES=$(( (TOTAL_GPUS - TRAIN_GPUS) / ENGINE_TP )); fi
-ENGINE_KV_TOKENS="${ENGINE_KV_TOKENS:-$(( 773763 * ENGINE_TP ))}"
+ENGINE_KV_TOKENS="${ENGINE_KV_TOKENS:-$(( ENGINE_TP == 1 ? 773763 : 913457 * ENGINE_TP ))}"   # measured on hel/dfw @ mem 0.8: TP1 773,763; TP2 1,826,914
 AVG_CTX="${AVG_CTX:-$(( MAX_SEQ_LEN * 3 / 4 ))}"
 KV_CAP=$(( N_ENGINES * ENGINE_KV_TOKENS * ${KV_FRACTION_PCT:-80} / 100 / AVG_CTX ))
 SANDBOX_CAP=$(( ${HM_SANDBOXES_PER_NODE:-32} * MILES_NUM_NODES ))
