@@ -9,7 +9,7 @@ source "${MR}/lib.sh"
 SUITE="${1:?suite}"; MODEL="${2:-${MILES_STACK_ROOT}/models/Qwen3.5-9B}"
 OUT="${MILES_STACK_ROOT}/bench/${SUITE}"; mkdir -p "${OUT}"
 SESSIONS="${SESSIONS:-48 96 160}"; TURNS="${TURNS:-16}"; MEMF="${MEMF:-0.85}"
-EXTRA_SGL="${EXTRA_SGL:-}"
+EXTRA_SGL="${EXTRA_SGL:-}"; SIM_ARGS="${SIM_ARGS:-}"   # e.g. "--base 8000 --tool 560 --gen 960"
 "${MR}/mrun" --no-nv -- bash "${MR}/bench/prepare.sh" > "${OUT}/prepare.log" 2>&1
 BASE_PORT=$((40000 + (${SLURM_JOB_ID:-0} % 100) * 20))
 pids=()
@@ -30,10 +30,10 @@ tp1_urls="$(for i in 0 1 2 3; do printf 'http://127.0.0.1:%d,' $((BASE_PORT + i)
 tp2_urls="http://127.0.0.1:$((BASE_PORT + 4)),http://127.0.0.1:$((BASE_PORT + 5))"
 for s in ${SESSIONS}; do
     mr_log "sessions=${s}"
-    "${MR}/mrun" --no-nv -- python3 "${MR}/bench/agent_sim.py" --urls "${tp1_urls}" --sessions "${s}" --turns "${TURNS}" \
+    "${MR}/mrun" --no-nv -- python3 "${MR}/bench/agent_sim.py" --urls "${tp1_urls}" --sessions "${s}" --turns "${TURNS}" ${SIM_ARGS} \
         --name "4xTP1-s${s}" --out "${OUT}" > "${OUT}/client-4xTP1-s${s}.log" 2>&1 &
     c1=$!
-    "${MR}/mrun" --no-nv -- python3 "${MR}/bench/agent_sim.py" --urls "${tp2_urls}" --sessions "${s}" --turns "${TURNS}" \
+    "${MR}/mrun" --no-nv -- python3 "${MR}/bench/agent_sim.py" --urls "${tp2_urls}" --sessions "${s}" --turns "${TURNS}" ${SIM_ARGS} \
         --name "2xTP2-s${s}" --out "${OUT}" > "${OUT}/client-2xTP2-s${s}.log" 2>&1 &
     c2=$!
     wait "${c1}" "${c2}"
