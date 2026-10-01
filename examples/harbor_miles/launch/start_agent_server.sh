@@ -52,6 +52,13 @@ export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 
 mkdir -p "${RUN_DIR}/agent_servers" "${RUN_DIR}/trials/${HOST}"
 LOG="${RUN_DIR}/agent_servers/${HOST}.log"
+# Verifier env templates (task.toml [verifier.env] "${VAR}", e.g. an LLM judge's API key) resolve from THIS process's
+# environment (~/.secrets via common.sh); a missing one fails every verifier. HM_REQUIRE_ENV="VAR ..." checks them up
+# front (names only are logged, never values).
+for _v in ${HM_REQUIRE_ENV:-}; do
+    [ -n "${!_v:-}" ] || hm_die "required verifier env ${_v} is not set (add it to the cluster-side ~/.secrets)"
+    hm_log "verifier env ${_v}: set"
+done
 hm_log "agent server on ${NODE_IP}:${PORT} (max ${MAXC} sandboxes), harbor ${HARBOR_DIR}"
 (
     cd "${HARBOR_DIR}"

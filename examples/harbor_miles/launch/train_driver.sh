@@ -49,7 +49,8 @@ fi
 mkdir -p "${RUN_DIR}/data" "${RUN_DIR}/ckpt" "${RUN_DIR}/dumps"
 # ---- prompts: one row per task (metadata selects the Harbor task + agent)
 DATA="${RUN_DIR}/data/train.jsonl"
-# Harness = Harbor agent (HARNESS) + optional custom class (AGENT_IMPORT_PATH) + kwargs.
+# Harness = Harbor agent (HARNESS) + optional custom class (AGENT_IMPORT_PATH) + kwargs + AGENT_ENV (JSON, agent process env;
+# e.g. BLAS/OpenMP thread caps for data-analysis tasks).
 HARNESS="${HARNESS:-mini-swe-agent}"
 case "${HARNESS}" in
     mini-swe-agent)
@@ -69,7 +70,8 @@ if [ ! -s "${DATA}" ]; then
     python3 "$(dirname "$0")/../tools/prepare_data.py" --tasks-dir "${HARBOR_TASKS_DIR}" --out "${_tmp}" \
         ${TASK_IDS_FILE:+--ids-file "${TASK_IDS_FILE}"} --agent "${HARNESS}" \
         ${AGENT_IMPORT_PATH:+--agent-import-path "${AGENT_IMPORT_PATH}"} \
-        ${AGENT_KWARGS:+--agent-kwargs "${AGENT_KWARGS}"} ${OPENCODE_CONFIG:+--opencode-config "${OPENCODE_CONFIG}"}
+        ${AGENT_KWARGS:+--agent-kwargs "${AGENT_KWARGS}"} ${OPENCODE_CONFIG:+--opencode-config "${OPENCODE_CONFIG}"} \
+        ${AGENT_ENV:+--agent-env "${AGENT_ENV}"}
     mv -f "${_tmp}" "${DATA}"
 fi
 

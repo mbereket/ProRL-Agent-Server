@@ -3,7 +3,8 @@
     python prepare_data.py --tasks-dir <root>/harbor --out train.jsonl \
         [--ids-file ids.txt] [--agent opencode] \
         [--agent-import-path harbor_miles_agents.opencode_agents:BbhOpenCode] \
-        [--opencode-config '{"compaction": {"auto": false}, "permission": {"task": "deny"}}']
+        [--opencode-config '{"compaction": {"auto": false}, "permission": {"task": "deny"}}'] \
+        [--agent-env '{"OMP_NUM_THREADS": "4"}']
 
 One row per task: {"prompt": [{"role": "user", "content": <instruction.md>}],
 "metadata": {"instance_id": <task dir name>, "agent_name": ..., ...}}. The
@@ -29,6 +30,7 @@ def main() -> None:
     p.add_argument("--agent-import-path", default="")
     p.add_argument("--opencode-config", default="")
     p.add_argument("--agent-kwargs", default="", help="JSON merged into metadata.agent_kwargs")
+    p.add_argument("--agent-env", default="", help="JSON {VAR: value}: extra env for the agent process (metadata.agent_env)")
     p.add_argument("--repeat", type=int, default=1, help="repeat the task list (small overfit sets)")
     a = p.parse_args()
 
@@ -50,6 +52,8 @@ def main() -> None:
             kwargs["opencode_config"] = json.loads(a.opencode_config)
         if kwargs:
             md["agent_kwargs"] = kwargs
+        if a.agent_env:
+            md["agent_env"] = {k: str(v) for k, v in json.loads(a.agent_env).items()}
         instruction = (task / "instruction.md").read_text()
         rows.append({"prompt": [{"role": "user", "content": instruction}], "metadata": md})
     with open(a.out, "w") as f:

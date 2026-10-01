@@ -91,7 +91,7 @@ index 04f9644..6e72db5 100644
      try:
          setup_apt_sources()
 diff --git a/src/harbor/environments/singularity/singularity.py b/src/harbor/environments/singularity/singularity.py
-index c728d73..ea4633f 100644
+index c728d73..a10c0e7 100644
 --- a/src/harbor/environments/singularity/singularity.py
 +++ b/src/harbor/environments/singularity/singularity.py
 @@ -21,6 +21,8 @@ runs a FastAPI server inside the container to handle command execution.
@@ -229,7 +229,35 @@ index c728d73..ea4633f 100644
  
          memory_mb = self._effective_memory_mb
          self._memory_limit_bytes = (
-@@ -170,7 +277,10 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -129,7 +236,26 @@ class SingularityEnvironment(BaseEnvironment):
+     @property
+     @override
+     def capabilities(self) -> EnvironmentCapabilities:
+-        return EnvironmentCapabilities(mounted=True)
++        # Singularity shares the host network namespace and cannot restrict egress. Unless
++        # HARBOR_SINGULARITY_ENFORCE_NETWORK=1, hostname allowlists and runtime policy switches are
++        # accepted but NOT enforced (logged per trial), so tasks whose verifier phase declares an
++        # allowlist (LLM-judged verifiers calling one inference gateway) can run at all; without
++        # this every such trial fails at start ("network_mode='allowlist' is not supported").
++        if _env_str("HARBOR_SINGULARITY_ENFORCE_NETWORK") == "1":
++            return EnvironmentCapabilities(mounted=True)
++        return EnvironmentCapabilities(
++            mounted=True,
++            network_allowlist=True,
++            network_allowlist_hostnames=True,
++            network_allowlist_wildcard_hostnames=True,
++            dynamic_network_policy=True,
++        )
++
++    async def _apply_network_policy(self, network_policy) -> None:
++        self.logger.info(
++            f"network policy {network_policy.network_mode.value} requested; singularity shares the "
++            "host network, so it is not enforced"
++        )
+ 
+     @property
+     def _docker_image(self) -> str | None:
+@@ -170,7 +296,10 @@ class SingularityEnvironment(BaseEnvironment):
              self.logger.debug(f"Using pre-built .sif image: {sif_path}")
  
      def _resolve_workdir(self) -> str:
@@ -241,7 +269,7 @@ index c728d73..ea4633f 100644
          if self._dockerfile_path.exists():
              workdir = "/app"
              try:
-@@ -206,6 +316,13 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -206,6 +335,13 @@ class SingularityEnvironment(BaseEnvironment):
          Uses file locking to prevent race conditions when multiple concurrent
          tasks try to convert the same image simultaneously.
          """
@@ -255,7 +283,7 @@ index c728d73..ea4633f 100644
          if ":" not in docker_image:
              docker_image = f"{docker_image}:latest"
  
-@@ -248,7 +365,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -248,7 +384,7 @@ class SingularityEnvironment(BaseEnvironment):
              )
  
              cmd = [
@@ -264,7 +292,7 @@ index c728d73..ea4633f 100644
                  "pull",
                  str(tmp_sif_path),
                  f"docker://{docker_image}",
-@@ -327,13 +444,23 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -327,13 +463,23 @@ class SingularityEnvironment(BaseEnvironment):
          staging_server = self._staging_dir / "_hbexec.py"
          shutil.copy(server_script, staging_server)
  
@@ -289,7 +317,7 @@ index c728d73..ea4633f 100644
  
          for port_attempt in range(max_port_retries):
              reserved_socket, port = self._reserve_port()
-@@ -350,9 +477,34 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -350,9 +496,34 @@ class SingularityEnvironment(BaseEnvironment):
              ]
              for mount in self._mounts:
                  if mount.get("type") == "bind":
@@ -326,7 +354,7 @@ index c728d73..ea4633f 100644
  
              no_mount_args: list[str] = []
              singularity_no_mount = self._singularity_no_mount
-@@ -377,15 +529,18 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -377,15 +548,18 @@ class SingularityEnvironment(BaseEnvironment):
                  self._workdir,
              ]
              cmd = [
@@ -349,7 +377,7 @@ index c728d73..ea4633f 100644
                  *bind_mounts,
                  str(self._sif_path),
                  *bootstrap_cmd,
-@@ -409,7 +564,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -409,7 +583,7 @@ class SingularityEnvironment(BaseEnvironment):
              self._http_client = httpx.AsyncClient(timeout=30.0)
              server_ready = False
  
@@ -358,7 +386,7 @@ index c728d73..ea4633f 100644
                  try:
                      response = await self._http_client.get(
                          f"http://localhost:{self._server_port}/health"
-@@ -429,7 +584,12 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -429,7 +603,12 @@ class SingularityEnvironment(BaseEnvironment):
                                  f"- port {self._server_port} collision"
                              )
                              break
@@ -372,7 +400,7 @@ index c728d73..ea4633f 100644
                          if self._memory_limit_bytes is not None:
                              self._memory_watchdog_task = asyncio.create_task(
                                  self._memory_watchdog()
-@@ -481,13 +641,47 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -481,13 +660,47 @@ class SingularityEnvironment(BaseEnvironment):
          if not self._server_process or not self._server_process.stdout:
              return
  
@@ -420,7 +448,7 @@ index c728d73..ea4633f 100644
  
      def _get_process_tree_memory(self, pid: int) -> int:
          """Get total PSS memory of a process and all its descendants.
-@@ -679,9 +873,21 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -679,9 +892,21 @@ class SingularityEnvironment(BaseEnvironment):
  
          if self._server_process and self._server_process.returncode is None:
              pid = self._server_process.pid
@@ -444,7 +472,7 @@ index c728d73..ea4633f 100644
  
              try:
                  await asyncio.wait_for(self._server_process.wait(), timeout=5.0)
-@@ -690,14 +896,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -690,14 +915,7 @@ class SingularityEnvironment(BaseEnvironment):
                  self._server_process.kill()
                  await self._server_process.wait()
  
@@ -460,7 +488,7 @@ index c728d73..ea4633f 100644
  
          if hasattr(self, "_stream_task") and self._stream_task:
              self._stream_task.cancel()
-@@ -709,6 +908,10 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -709,6 +927,10 @@ class SingularityEnvironment(BaseEnvironment):
          if self._staging_dir and self._staging_dir.exists():
              shutil.rmtree(self._staging_dir, ignore_errors=True)
  
