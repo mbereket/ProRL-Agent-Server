@@ -146,6 +146,7 @@ if [ "${DRY_RUN}" = 0 ]; then
     setup_lock_release
 fi
 
+[ "${SETUP_ONLY}" = 0 ] || { echo "setup done (--setup-only): ${RUN_DIR}"; exit 0; }
 log "render"
 export GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')}"
 [ "${GPUS_PER_NODE}" -ge 1 ] 2>/dev/null || export GPUS_PER_NODE=8
@@ -156,6 +157,5 @@ if [ "${DRY_RUN}" = 1 ]; then
     echo "--- ${RUN_DIR}/train_args.sh ---"; cat "${RUN_DIR}/train_args.sh"
     exit 0
 fi
-[ "${SETUP_ONLY}" = 0 ] || { echo "setup done (--setup-only): ${RUN_DIR}"; exit 0; }
 log "run.sh"
 exec bash "${HERE}/internal/run.sh"
