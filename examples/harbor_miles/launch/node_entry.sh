@@ -22,8 +22,14 @@ mkdir -p "${RUN_DIR}"
 MILES_RUNTIME_DIR="${MILES_RUNTIME_DIR:-${SCOMPOSE_PKGS:-}/miles_runtime}"
 [ -x "${MILES_RUNTIME_DIR}/ray_node.sh" ] || hm_die "miles_runtime not found at ${MILES_RUNTIME_DIR}"
 
+# Idle-GPU reaper exemption (hel): trainer GPUs idle while long agent rollouts run.
+if [ -n "${HM_REAPER_EXEMPT_MINS:-}" ] && [ "${SLURM_NODEID:-0}" = 0 ] && command -v scontrol >/dev/null; then
+    scontrol update JobId="${SLURM_JOB_ID}" Comment="{\"OccupiedIdleGPUsJobReaper\":{\"exemptIdleTimeMins\":\"${HM_REAPER_EXEMPT_MINS}\",\"reason\":\"other\",\"description\":\"asynchronous agentic RL: trainer GPUs idle while sandboxed agent rollouts run\"}}" \
+        && hm_log "reaper exemption ${HM_REAPER_EXEMPT_MINS} min" || hm_log "WARNING: could not set reaper exemption"
+fi
+
 # Host side: this node's sandboxes.
-HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" HM_OVERLAY_BASE="${HM_OVERLAY_BASE:-/raid}" \
+HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" \
     bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${RUN_DIR}" "${HM_AGENT_SERVER_PORT:-18300}" \
     "${HM_SANDBOXES_PER_NODE:-32}"
 

@@ -27,11 +27,14 @@ SESSION_WORKERS="${SESSION_WORKERS:-32}"; SESSION_PORT="${SESSION_PORT:-30000}"
 mkdir -p "${RUN_DIR}/data" "${RUN_DIR}/ckpt" "${RUN_DIR}/dumps"
 # ---- prompts: one row per task (metadata selects the Harbor task + agent)
 DATA="${RUN_DIR}/data/train.jsonl"
+# opencode: no compaction (the trajectory must stay one linear session), no sub-agents,
+# no title-generation side calls.
+DEFAULT_OPENCODE_CONFIG='{"compaction": {"auto": false}, "permission": {"task": "deny"}, "agent": {"title": {"disable": true}}}'
 if [ ! -s "${DATA}" ]; then
     python3 "$(dirname "$0")/../tools/prepare_data.py" --tasks-dir "${HARBOR_TASKS_DIR}" --out "${DATA}" \
         ${TASK_IDS_FILE:+--ids-file "${TASK_IDS_FILE}"} --agent opencode \
         ${AGENT_IMPORT_PATH:+--agent-import-path "${AGENT_IMPORT_PATH}"} \
-        --opencode-config "${OPENCODE_CONFIG:-{\"compaction\": {\"auto\": false}, \"permission\": {\"task\": \"deny\"}, \"agent\": {\"title\": {\"disable\": true}}}}"
+        --opencode-config "${OPENCODE_CONFIG:-${DEFAULT_OPENCODE_CONFIG}}"
 fi
 
 # ---- wait for every node's Harbor agent server
@@ -66,16 +69,16 @@ args=(
     --num-gpus-per-node "${GPUS_PER_NODE}"
     # agentic: TITO session server + Harbor trials on per-node agent servers
     --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
-    --custom-agent-function-path agent_function.run
-    --custom-rm-path rollout.reward_func
-    --custom-reward-post-process-path rollout.post_process_rewards
+    --custom-agent-function-path hm_agent.run
+    --custom-rm-path hm_rollout.reward_func
+    --custom-reward-post-process-path hm_rollout.post_process_rewards
     --tito-model qwen35 --use-session-server
     --session-server-port "${SESSION_PORT}" --session-server-workers "${SESSION_WORKERS}"
     --session-message-matcher "${SESSION_MATCHER:-loose_tool_call}"
     --rollout-num-gpus-per-engine "${ENGINE_TP}" --sglang-mem-fraction-static "${MEMF}"
     --sglang-context-length "${MAX_SEQ_LEN}"
 )
-[ "${ASYNC}" = 1 ] || args+=(--rollout-function-path rollout.RolloutFn)
+[ "${ASYNC}" = 1 ] || args+=(--rollout-function-path hm_rollout.RolloutFn)
 [ "${ENGINE_TP}" -gt 1 ] && args+=(--sglang-disable-custom-all-reduce)   # broken on hel
 [ "${OFFLOAD}" = 1 ] && args+=(--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
 if [ "${LAYOUT}" = colocate ]; then

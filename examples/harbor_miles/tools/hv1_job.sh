@@ -51,7 +51,7 @@ export HARBOR_AGENT_SERVERS_FILE="${RUN}/agent_servers.txt"
 NODE_IP="$(hm_node_ip)"
 V=("${HARBOR_DIR}/.venv/bin/python" "${HM_EXAMPLE_DIR}/tools/validate_harbor.py")
 
-snapshot_procs() { ps -u "${USER}" -o pid,pgid,etimes,args | grep -E 'starter|apptainer|singularity|_hbexec|opencode' | grep -v grep || true; }
+snapshot_procs() { ps -u "${USER}" -o pid,ppid,pgid,etimes,args | grep -E 'starter|apptainer|singularity|_hbexec|opencode|faked' | grep -v grep || true; }
 
 # ---- 1) nop wave: sandbox start/stop overhead at concurrency
 hm_log "nop wave n=${NOP_N}"
@@ -71,7 +71,7 @@ if [ "${FLUSH_N}" -gt 0 ]; then
     # NOTE flush_all cancels EVERY in-flight trial on the server, including the real
     # ones above; run it on a second server so the trial wave is unaffected.
     FLUSH_RUN="${RUN}/flushsrv"; mkdir -p "${FLUSH_RUN}"
-    bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${FLUSH_RUN}" 18301 8
+    HARBOR_AGENT_SERVERS_FILE="${FLUSH_RUN}/agent_servers.txt" bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${FLUSH_RUN}" 18301 8
     HARBOR_AGENT_SERVERS_FILE="${FLUSH_RUN}/agent_servers.txt" "${V[@]}" flush --tasks-dir "${TASKS}" \
         --task-ids "$(ls "${TASKS}" | head -1)" --n "${FLUSH_N}" --after 240 \
         --base-url "http://${NODE_IP}:30600/v1" --model openai/qwen35-9b --out "${RUN}/flush.jsonl" || true

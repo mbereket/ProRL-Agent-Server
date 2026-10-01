@@ -1,10 +1,10 @@
 """Reward, reward post-process and rollout metrics for Harbor trials under Miles.
 
-  --custom-rm-path rollout.reward_func
-  --custom-reward-post-process-path rollout.post_process_rewards
-  --rollout-function-path rollout.RolloutFn          (sync training; logs agent metrics)
+  --custom-rm-path hm_rollout.reward_func
+  --custom-reward-post-process-path hm_rollout.post_process_rewards
+  --rollout-function-path hm_rollout.RolloutFn          (sync training; logs agent metrics)
 
-Rewards come from the Harbor verifier via agent_function.run (sample.metadata).
+Rewards come from the Harbor verifier via hm_agent.run (sample.metadata).
 
 Policies (env, read in the rollout process):
   HM_OVERLONG_REWARD  "zero" (default) | "verifier": reward of a trial that ran out of
@@ -26,11 +26,10 @@ the prompt group; optional std with --grpo-std-normalization).
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import Counter
 from typing import Any
-
-import torch
 
 from miles.ray.rollout.train_data_conversion import _reward_group_segments
 from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
@@ -89,13 +88,13 @@ def post_process_rewards(args, samples: list[Sample] | list[list[Sample]]) -> tu
             valid_rewards.append(raw[rows[0]])
         if not valid_rewards:
             continue
-        r = torch.tensor(valid_rewards, dtype=torch.float)
-        adv = r - r.mean()
-        if args.advantage_estimator in ("grpo", "gspo") and args.grpo_std_normalization and len(r) > 1:
-            std = r.std()
+        mean = sum(valid_rewards) / len(valid_rewards)
+        adv = [r - mean for r in valid_rewards]
+        if args.advantage_estimator in ("grpo", "gspo") and args.grpo_std_normalization and len(adv) > 1:
+            std = math.sqrt(sum(a * a for a in adv) / (len(adv) - 1))  # unbiased, as torch.std
             if std > 0:
-                adv = adv / (std + 1e-6)
-        for key, a in zip(valid_keys, adv.tolist(), strict=True):
+                adv = [a / (std + 1e-6) for a in adv]
+        for key, a in zip(valid_keys, adv, strict=True):
             for i in by_rollout[key]:
                 normalized[i] = a
     return raw, normalized

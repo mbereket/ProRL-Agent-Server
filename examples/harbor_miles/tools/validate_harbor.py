@@ -6,7 +6,7 @@
     python validate_harbor.py flush --tasks-dir D --task-ids a --n 2 --after 120 ...
 
 Servers come from HARBOR_AGENT_SERVERS / HARBOR_AGENT_SERVERS_FILE (see
-miles_side/harbor_dispatch.py), exactly as in training.
+miles_side/hm_dispatch.py), exactly as in training.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from miles_side.harbor_dispatch import POOL  # noqa: E402
+from miles_side.hm_dispatch import POOL  # noqa: E402
 
 
 def _task_ids(a: argparse.Namespace) -> list[str]:
@@ -37,10 +37,15 @@ def _request(a: argparse.Namespace, task_id: str, agent: str) -> dict:
         "agent_name": agent,
         "max_seq_len": a.max_seq_len,
     }
-    if agent == "opencode" and a.agent_import_path:
+    if agent == "sleep":
+        req["agent_name"] = "nop"
+        req["agent_import_path"] = "harbor_miles_agents.test_agents:SleepAgent"
+        req["agent_kwargs"] = {"sleep_sec": 900}
+    elif agent == "opencode" and a.agent_import_path:
         req["agent_import_path"] = a.agent_import_path
         req["agent_kwargs"] = {
-            "opencode_config": {"compaction": {"auto": False}, "permission": {"task": "deny"}},
+            "opencode_config": {"compaction": {"auto": False}, "permission": {"task": "deny"},
+                                "agent": {"title": {"disable": True}}},
         }
     return req
 
@@ -66,10 +71,12 @@ async def main_async(a: argparse.Namespace) -> None:
         jobs = [(t, "opencode") for t in ids for _ in range(a.attempts)]
     elif a.mode == "nop":
         jobs = [(ids[i % len(ids)], "nop") for i in range(a.n)]
+    elif a.mode == "sleepflush":  # sandboxes that just sleep; flush_all after --after s
+        jobs = [(ids[i % len(ids)], "sleep") for i in range(a.n)]
     else:  # flush: start real trials, flush_all after --after s, verify they return
         jobs = [(ids[i % len(ids)], "opencode") for i in range(a.n)]
     tasks = [asyncio.create_task(_one(a, t, ag, a.out, i)) for i, (t, ag) in enumerate(jobs)]
-    if a.mode == "flush":
+    if a.mode in ("flush", "sleepflush"):
         await asyncio.sleep(a.after)
         print("flush_all ->", await POOL.broadcast("/flush_all", {}), flush=True)
     await asyncio.gather(*tasks)
@@ -78,7 +85,7 @@ async def main_async(a: argparse.Namespace) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("mode", choices=["trials", "nop", "flush"])
+    p.add_argument("mode", choices=["trials", "nop", "flush", "sleepflush"])
     p.add_argument("--tasks-dir", required=True)
     p.add_argument("--task-ids", default="")
     p.add_argument("--attempts", type=int, default=1)

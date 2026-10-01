@@ -1,6 +1,6 @@
 """Miles agent function: one Harbor trial per rollout, on the least-loaded node.
 
-Wired as ``--custom-agent-function-path agent_function.run`` under
+Wired as ``--custom-agent-function-path hm_agent.run`` under
 ``miles.rollout.generate_hub.agentic_tool_call.generate`` (TITO session
 server). The agent inside the sandbox talks to the session URL; Miles records
 the exact tokens/logprobs there, so this function only has to run the trial
@@ -13,7 +13,7 @@ Per-sample metadata (from the prompt JSONL, see tools/prepare_data.py):
   agent_kwargs       optional kwargs merged into the agent's (e.g. opencode_config)
 
 Environment (rollout worker):
-  HARBOR_AGENT_SERVERS / HARBOR_AGENT_SERVERS_FILE   see harbor_dispatch.py
+  HARBOR_AGENT_SERVERS / HARBOR_AGENT_SERVERS_FILE   see hm_dispatch.py
   AGENT_MODEL_NAME       served model id the agent requests (default: model)
   AGENT_TRIAL_TIMEOUT    client-side ceiling per trial, s (default 7200; keep above the
                          servers' --agent-timeout so the server ends trials first)
@@ -37,7 +37,7 @@ from urllib.parse import urlsplit
 
 from miles.rollout.agentic.session import openai_session_url
 
-from harbor_dispatch import POOL
+from hm_dispatch import POOL
 
 logger = logging.getLogger(__name__)
 

@@ -35,7 +35,7 @@ index 33fb9bf..0fe6a26 100644
      # where trial outputs are written, and the agent run/setup timeout overrides
      # (``None`` = use Harbor's per-task defaults).
 diff --git a/agent_server/teardown.py b/agent_server/teardown.py
-index 5b92059..c061fbd 100644
+index 5b92059..d2e4c85 100644
 --- a/agent_server/teardown.py
 +++ b/agent_server/teardown.py
 @@ -26,6 +26,15 @@ def _cancel_all_inflight() -> int:
@@ -46,7 +46,7 @@ index 5b92059..c061fbd 100644
 +
 +    if env_type() != "docker":
 +        # Singularity sandboxes live in their trial worker's process group.
-+        return {"killed_trial_groups": kill_all_trial_groups(), "errors": []}
++        return {"killed_trial_groups": await kill_all_trial_groups(), "errors": []}
 +    return await _kill_compose_projects()
 +
 +
@@ -55,7 +55,7 @@ index 5b92059..c061fbd 100644
  
      Matches each live compose project against this server's registered project
 diff --git a/agent_server/trial_runner.py b/agent_server/trial_runner.py
-index cd7eb6e..63878de 100644
+index cd7eb6e..89f77db 100644
 --- a/agent_server/trial_runner.py
 +++ b/agent_server/trial_runner.py
 @@ -12,6 +12,7 @@ import json
@@ -209,42 +209,76 @@ index cd7eb6e..63878de 100644
      for line in reversed(out.decode(errors="replace").splitlines()):
          if line.startswith(_WORKER_RESULT_MARKER):
              result = json.loads(line[len(_WORKER_RESULT_MARKER):])
-@@ -481,6 +553,51 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
+@@ -481,6 +553,85 @@ async def run_trial_in_subprocess(request: RunRequest) -> dict[str, Any]:
      return _error_response("Error: NoResult")
  
  
-+async def kill_process_group(proc: asyncio.subprocess.Process, grace_sec: float = 5.0) -> None:
-+    """SIGTERM the worker's process group, SIGKILL after ``grace_sec``, reap."""
-+    for sig in (signal.SIGTERM, signal.SIGKILL):
++_GRACE_SEC = float(os.getenv("HARBOR_TRIAL_STOP_GRACE_SEC", "45"))
++
++
++def _descendants(root_pid: int) -> set[int]:
++    seen: set[int] = set()
++    todo = [root_pid]
++    while todo:
++        pid = todo.pop()
 +        try:
-+            os.killpg(proc.pid, sig)
-+        except ProcessLookupError:
-+            break
-+        except PermissionError:
-+            proc.kill()
-+        if sig == signal.SIGTERM:
-+            try:
-+                await asyncio.wait_for(proc.wait(), timeout=grace_sec)
-+            except asyncio.TimeoutError:
-+                continue
-+            # The leader exited; the group may still hold sandbox processes.
-+            try:
-+                os.killpg(proc.pid, signal.SIGKILL)
-+            except ProcessLookupError:
-+                pass
-+            break
++            for task in Path(f"/proc/{pid}/task").iterdir():
++                try:
++                    for child in (task / "children").read_text().split():
++                        c = int(child)
++                        if c not in seen:
++                            seen.add(c)
++                            todo.append(c)
++                except (OSError, ValueError):
++                    pass
++        except OSError:
++            pass
++    return seen
++
++
++def _sigkill_group_and_tree(pgid: int, tree: set[int]) -> None:
++    try:
++        os.killpg(pgid, signal.SIGKILL)
++    except (ProcessLookupError, PermissionError):
++        pass
++    for pid in tree:
++        try:
++            os.kill(pid, signal.SIGKILL)
++        except (ProcessLookupError, PermissionError):
++            pass
++
++
++async def kill_process_group(proc: asyncio.subprocess.Process, grace_sec: float = _GRACE_SEC) -> None:
++    """Stop a trial worker: graceful first, forceful after ``grace_sec``.
++
++    SIGTERM goes to the worker only; it cancels its trial, whose teardown stops
++    the sandbox properly (apptainer then also unmounts its FUSE helpers and
++    removes the overlay). Whatever is still alive after the grace period (the
++    worker's group and every process that was in its tree) is SIGKILLed.
++    """
++    tree = _descendants(proc.pid)
++    try:
++        proc.send_signal(signal.SIGTERM)
++    except ProcessLookupError:
++        pass
++    try:
++        await asyncio.wait_for(proc.wait(), timeout=grace_sec)
++    except asyncio.TimeoutError:
++        pass
++    _sigkill_group_and_tree(proc.pid, tree | _descendants(proc.pid))
 +    await proc.wait()
 +
 +
-+def kill_all_trial_groups() -> int:
-+    """SIGKILL every live trial process group (flush_all). Returns count."""
++async def kill_all_trial_groups(grace_sec: float = _GRACE_SEC) -> int:
++    """flush_all for process-based sandboxes: wait for the cancelled trials to tear
++    down gracefully (their /run tasks were just cancelled), then SIGKILL leftovers."""
++    deadline = asyncio.get_running_loop().time() + grace_sec + 5
++    while _state.trial_pgids and asyncio.get_running_loop().time() < deadline:
++        await asyncio.sleep(0.5)
 +    killed = 0
 +    for pgid in list(_state.trial_pgids):
-+        try:
-+            os.killpg(pgid, signal.SIGKILL)
-+            killed += 1
-+        except ProcessLookupError:
-+            pass
++        _sigkill_group_and_tree(pgid, _descendants(pgid))
++        killed += 1
 +        _state.trial_pgids.discard(pgid)
 +    return killed
 +
@@ -261,6 +295,25 @@ index cd7eb6e..63878de 100644
  def _worker_main() -> None:
      """Entrypoint for the per-trial worker process."""
      data = json.loads(sys.stdin.read())
+@@ -489,7 +640,17 @@ def _worker_main() -> None:
+     _state.agent_timeout_sec = data.get("agent_timeout_sec")
+     _state.agent_setup_timeout_sec = data.get("agent_setup_timeout_sec")
+     logging.basicConfig(level=logging.INFO)
+-    result = asyncio.run(_run_trial(RunRequest(**data["request"])))
++
++    async def _main() -> dict[str, Any]:
++        # SIGTERM (flush) cancels the trial so its teardown stops the sandbox.
++        task = asyncio.current_task()
++        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
++        return await _run_trial(RunRequest(**data["request"]))
++
++    try:
++        result = asyncio.run(_main())
++    except (asyncio.CancelledError, KeyboardInterrupt):
++        result = _error_response("Flushed")
+     print(_WORKER_RESULT_MARKER + json.dumps(result, default=str), flush=True)
+ 
+ 
 diff --git a/miles_agent_server.py b/miles_agent_server.py
 index 687526d..604c2ad 100644
 --- a/miles_agent_server.py

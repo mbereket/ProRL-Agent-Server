@@ -4,8 +4,8 @@
 #
 #   start_agent_server.sh <run_dir> [port] [max_concurrent]
 #
-# Appends "http://<node-ip>:<port> <max_concurrent>" to <run_dir>/agent_servers.txt
-# once /health answers. Logs: <run_dir>/agent_servers/<host>.log; trials under
+# Appends "http://<node-ip>:<port> <max_concurrent>" to $HARBOR_AGENT_SERVERS_FILE
+# (default <run_dir>/agent_servers.txt) once /health answers. Logs: <run_dir>/agent_servers/<host>.log; trials under
 # <run_dir>/trials/<host>/. Sandbox overlays live on node-local disk.
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -26,9 +26,17 @@ export HARBOR_SINGULARITY_RUNTIME_DIR="$(cd "$(dirname "${SERVER_PY}")/.." && pw
 export HARBOR_SINGULARITY_SIF_DIRS="${HM_SIF_DIRS}"
 export HARBOR_SINGULARITY_CACHE_DIR="${HM_ROOT}/sif_cache"
 export HARBOR_SINGULARITY_START_TIMEOUT_SEC="${HARBOR_SINGULARITY_START_TIMEOUT_SEC:-600}"
-# Per-trial writable overlays on node-local disk (--writable-tmpfs is 64 MB).
-export HARBOR_SINGULARITY_OVERLAY_DIR="${HM_OVERLAY_BASE:-/tmp}/hm-overlay-${USER}-${SLURM_JOB_ID:-local}"
-mkdir -p "${HARBOR_SINGULARITY_OVERLAY_DIR}" "${HARBOR_SINGULARITY_CACHE_DIR}"
+# Per-trial writable overlays on node-local disk (--writable-tmpfs is 64 MB): the first
+# writable of HM_OVERLAY_BASE, /local, /tmp.
+for base in ${HM_OVERLAY_BASE:-} /local /tmp; do
+    if mkdir -p "${base}/hm-overlay-${USER}-${SLURM_JOB_ID:-local}" 2>/dev/null; then
+        export HARBOR_SINGULARITY_OVERLAY_DIR="${base}/hm-overlay-${USER}-${SLURM_JOB_ID:-local}"
+        break
+    fi
+done
+[ -n "${HARBOR_SINGULARITY_OVERLAY_DIR:-}" ] || hm_die "no writable node-local dir for sandbox overlays"
+hm_log "sandbox overlays under ${HARBOR_SINGULARITY_OVERLAY_DIR} ($(df -h "${HARBOR_SINGULARITY_OVERLAY_DIR}" | awk 'NR==2{print $4}') free)"
+mkdir -p "${HARBOR_SINGULARITY_CACHE_DIR}"
 export PYTHONPATH="${HM_EXAMPLE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 
@@ -46,7 +54,7 @@ hm_log "agent server on ${NODE_IP}:${PORT} (max ${MAXC} sandboxes), harbor ${HAR
 echo $! > "${RUN_DIR}/agent_servers/${HOST}.pid"
 for _ in $(seq 1 180); do
     if curl -fs "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-        echo "http://${NODE_IP}:${PORT} ${MAXC}" >> "${RUN_DIR}/agent_servers.txt"
+        echo "http://${NODE_IP}:${PORT} ${MAXC}" >> "${HARBOR_AGENT_SERVERS_FILE:-${RUN_DIR}/agent_servers.txt}"
         hm_log "agent server ready: http://${NODE_IP}:${PORT}"
         exit 0
     fi
