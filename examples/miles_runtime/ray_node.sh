@@ -33,9 +33,9 @@ HEAD_IP="$(getent ahostsv4 "${HEAD_HOST}" | awk 'NR==1{print $1}')"
 GPUS="$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')"
 # Job-unique port block: partial-node jobs share nodes with other Ray clusters (ours and other
 # users'); Ray's defaults (6379, 8265, agent ports) collide and the raylet dies at startup.
-# Above the ephemeral range (32768-60999 on our nodes; outbound sockets grab random ports there) and
-# away from Miles' dynamic SGLang ports (20000+).
-PORT_BASE="${RAY_PORT_BASE:-$((61000 + (SLURM_JOB_ID % 110) * 40))}"
+# Above the ephemeral range (dfw: ip_local_port_range = 9000-65000; outbound sockets grab random ports
+# anywhere in it) and away from Miles' dynamic SGLang ports (20000+): 65010..65498.
+PORT_BASE="${RAY_PORT_BASE:-$((65010 + (SLURM_JOB_ID % 12) * 40))}"
 RAY_GCS_PORT="${RAY_GCS_PORT:-${PORT_BASE}}"; RAY_DASHBOARD_PORT="${RAY_DASHBOARD_PORT:-$((PORT_BASE + 1))}"
 node_ports=(--node-manager-port "$((PORT_BASE + 3))" --object-manager-port "$((PORT_BASE + 4))"
             --dashboard-agent-listen-port "$((PORT_BASE + 5))" --dashboard-agent-grpc-port "$((PORT_BASE + 6))"

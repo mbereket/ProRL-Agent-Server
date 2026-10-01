@@ -1,0 +1,17 @@
+--- a/miles_plugins/models/qwen3_vl.py	2026-09-30 17:37:38
++++ b/miles_plugins/models/qwen3_vl.py	2026-09-30 17:37:40
+@@ -118,6 +118,14 @@
+         ctx = _prepare_cp_local_context(parsed)
+         if packed is not None:
+             _tls.packed_positions = packed
++            if parsed is not None and parsed.cp_size > 1:
++                # Megatron-Bridge >= 8cd3466 rejects pre-sharded packed CP inputs unless rank-local 3D MRoPE
++                # position_ids are passed explicitly (the get_rope_index hook above runs too late). Hand the
++                # rank-local positions we just built to forward(); ordinary 2D ids are discarded by the bridge.
++                if len(args) > 1:
++                    args = (args[0], packed, *args[2:])
++                else:
++                    kwargs["position_ids"] = packed
+         if ctx is not None:
+             _tls.cp_local = ctx
+         try:
