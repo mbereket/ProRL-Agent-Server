@@ -7,3 +7,6 @@ a-r4-tp2cp2-hw     ARM=lora GPUS=4 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@
 # H100 best (STACK.md section 11): TP4 no CP (DP2) 22.2 s/step.
 a-r8-tp4           ARM=lora GPUS=8 TP=4 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
 a-r4-tp4           ARM=lora GPUS=4 TP=4 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
+# Real 4-trainer-GPU arms (before ray_node.sh fix 'MR_NODE_GPUS', GPUS=4 was overwritten with the node's GPU count -> the a-r4-* arms above ran on 8 GPUs).
+a-r4b-tp4          ARM=lora GPUS=4 TP=4 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
+a-r4b-tp2cp2-hw    ARM=lora GPUS=4 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise

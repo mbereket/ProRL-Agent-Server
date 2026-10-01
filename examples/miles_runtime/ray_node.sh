@@ -30,7 +30,7 @@ NUM_NODES="${#nodes[@]}"
 HEAD_HOST="${nodes[0]}"
 HEAD_IP="$(getent ahostsv4 "${HEAD_HOST}" | awk 'NR==1{print $1}')"
 [ -n "${HEAD_IP}" ] || mr_die "cannot resolve ${HEAD_HOST}"
-GPUS="$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')"
+MR_NODE_GPUS="$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')"
 # Job-unique port block: partial-node jobs share nodes with other Ray clusters (ours and other
 # users'); Ray's defaults (6379, 8265, agent ports) collide and the raylet dies at startup.
 # Above the ephemeral range (dfw: ip_local_port_range = 9000-65000; outbound sockets grab random ports
@@ -65,16 +65,16 @@ if [ "${role}" = worker ]; then
     for _ in $(seq 1 600); do (echo > "/dev/tcp/${HEAD_IP}/${RAY_GCS_PORT}") 2>/dev/null && break; sleep 2; done
     mr_jit_seed
     exec "${MR}/mrun" "${mrun_opts[@]}" -- ray start --address="${RAY_ADDRESS}" --node-ip-address "$(getent ahostsv4 "${me}" | awk 'NR==1{print $1}')" \
-        --num-gpus "${GPUS}" "${node_ports[@]}" --disable-usage-stats --block
+        --num-gpus "${MR_NODE_GPUS}" "${node_ports[@]}" --disable-usage-stats --block
 fi
 
-mr_log "head ${me} (${HEAD_IP}): ${NUM_NODES} node(s) x ${GPUS} GPU"
+mr_log "head ${me} (${HEAD_IP}): ${NUM_NODES} node(s) x ${MR_NODE_GPUS} GPU"
 mr_jit_seed
 worker_pids=()
 if [ "${NUM_NODES}" -gt 1 ] && [ "${SLURM_STEP_NUM_TASKS:-1}" -le 1 ]; then
     wlog_dir="${MILES_OWNER_ROOT:-${MILES_STACK_ROOT}}/joblogs"; mkdir -p "${wlog_dir}"
     for w in "${nodes[@]:1}"; do
-        MR_RAY_ROLE=worker srun --overlap --nodes=1 --ntasks=1 -w "${w}" --gpus-per-node="${GPUS}" \
+        MR_RAY_ROLE=worker srun --overlap --nodes=1 --ntasks=1 -w "${w}" --gpus-per-node="${MR_NODE_GPUS}" \
             --cpus-per-task="${SLURM_CPUS_PER_TASK:-16}" --kill-on-bad-exit=0 \
             bash "${MR}/ray_node.sh" "${self_args[@]}" > "${wlog_dir}/ray-worker-${SLURM_JOB_ID}-${w}.log" 2>&1 &
         worker_pids+=($!)
@@ -96,7 +96,7 @@ set -uo pipefail
 # Dashboard on by default (needs patches/base opentelemetry fix): ray.util.state, ray job submit and
 # Miles --pin-rollout-manager-to-head use it. RAY_DASHBOARD=0 to disable.
 if [ \"\${RAY_DASHBOARD:-1}\" = 1 ]; then dash=(--dashboard-host 0.0.0.0); else dash=(--include-dashboard=false); fi
-ray start --head --node-ip-address '${HEAD_IP}' --port '${RAY_GCS_PORT}' --num-gpus '${GPUS}' \
+ray start --head --node-ip-address '${HEAD_IP}' --port '${RAY_GCS_PORT}' --num-gpus '${MR_NODE_GPUS}' \
     --dashboard-port '${RAY_DASHBOARD_PORT}' --ray-client-server-port '$((PORT_BASE + 2))' ${node_ports[*]} \
     \"\${dash[@]}\" --disable-usage-stats >/dev/null || { echo 'ray start failed; raylet/agent logs:' >&2;
     tail -n 30 \${RAY_TMPDIR}/ray/session_latest/logs/{raylet.err,dashboard_agent.log,gcs_server.err} >&2 2>/dev/null; exit 1; }
