@@ -97,8 +97,23 @@ entry=train.py
 if [ "${ASYNC:-0}" = 1 ]; then entry=train_async.py; args+=(--fully-async); fi   # needs LAYOUT=disagg
 t0=${SECONDS}
 set +e
-python3 "${entry}" "${args[@]}" 2>&1 | tee "${OUT}/train.log"
-rc=${PIPESTATUS[0]}
+python3 "${entry}" "${args[@]}" > >(tee "${OUT}/train.log") 2>&1 &
+train_pid=$!
+# Stall watchdog: a hung arm (e.g. an engine that never comes up while Miles retries) must not hold the node.
+# First metrics line may take FIRST_STALL_S (JIT compile + engine start); later ones STEP_STALL_S each.
+( last=0; since=${SECONDS}; limit=${FIRST_STALL_S:-1800}
+  while kill -0 "${train_pid}" 2>/dev/null; do
+      sleep 30
+      n=$(grep -c 'perf [0-9]*:' "${OUT}/train.log" 2>/dev/null || echo 0)
+      if [ "${n}" -gt "${last}" ]; then last=${n}; since=${SECONDS}; limit=${STEP_STALL_S:-1200}; fi
+      if [ $((SECONDS - since)) -gt "${limit}" ]; then
+          echo "[grpo] STALL: no progress for $((SECONDS - since)) s (${n} perf lines) -> killing" | tee -a "${OUT}/train.log"
+          pkill -TERM -P "${train_pid}" 2>/dev/null; kill -TERM "${train_pid}" 2>/dev/null; sleep 20
+          pkill -KILL -P "${train_pid}" 2>/dev/null; kill -KILL "${train_pid}" 2>/dev/null; break
+      fi
+  done ) & watchdog=$!
+wait "${train_pid}"; rc=$?
+kill "${watchdog}" 2>/dev/null
 set -e
 echo "[grpo] exit ${rc} after $((SECONDS - t0)) s"
 python3 "$(dirname "$0")/parse_metrics.py" "${OUT}" || true
