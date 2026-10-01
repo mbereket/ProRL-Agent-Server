@@ -1,0 +1,5 @@
+# Does a real run stay JIT-cold? Fresh composition (seed 7: subsets/packings not seen by any earlier arm), 6 distinct steps,
+# REAL 96k on 4 GPUs (TP4 + expandable segments), Triton autotune events logged. Warm-steady -> tok/s rises to ~7.3k within
+# a few steps; per-shape keys -> it stays ~4.4k and the log shows re-tuning on every step. Path: dfw DIAG dumps in place.
+!compose diag96k-s7 @path-b/runs/diag-workload9b-96k/dumps 6 --max-samples 16 --seed 7
+d-r96k-tp4-exp-6step    ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only ROLLOUT_LOGPROBS=1 RBS=8 NS=2 NUM_ROLLOUT=6 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k-s7 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TRITON_PRINT_AUTOTUNING=1 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
