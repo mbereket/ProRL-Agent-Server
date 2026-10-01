@@ -25,3 +25,42 @@ account = "nemotron_reason_science"
 gpus_per_node = 8
 partitions.gpu = {partition = "interactive", time = "04:00:00"}
 partitions.gpu_interactive = {partition = "interactive", time = "04:00:00"}
+
+[aws-iad]
+type = "ssh"
+hostname = "aws-iad-cs-002-login-02.nvidia.com"
+user = "mbereket"
+home_dir = "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm/.slurm-compose"
+
+[aws-iad.sbatch]
+bin = "/cm/shared/apps/slurm/current/bin/sbatch"
+account = "nemotron_reason_science"
+gpus_per_node = 8
+partitions.gpu = {partition = "interactive", time = "04:00:00"}
+partitions.gpu_interactive = {partition = "interactive", time = "04:00:00"}
+
+[ord]
+type = "ssh"
+hostname = "cs-oci-ord-login-02.nvidia.com"
+user = "mbereket"
+home_dir = "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm/.slurm-compose"
+
+[ord.sbatch]
+bin = "sbatch"
+account = "nemotron_reason_science"
+gpus_per_node = 8
+partitions.gpu = {partition = "interactive_singlenode", time = "04:00:00"}
+partitions.gpu_interactive = {partition = "interactive_singlenode", time = "04:00:00"}
+
+[draco]
+type = "ssh"
+hostname = "draco-oci-login-03.draco-oci-iad.nvidia.com"
+user = "mbereket"
+home_dir = "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm/.slurm-compose"
+
+[draco.sbatch]
+bin = "sbatch"
+account = "nemotron_reason_science"
+gpus_per_node = 8
+partitions.gpu = {partition = "interactive", time = "04:00:00"}
+partitions.gpu_interactive = {partition = "interactive", time = "04:00:00"}

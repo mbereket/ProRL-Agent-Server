@@ -32,6 +32,12 @@ EXPORT_ROOT = Path(os.environ.get("HM_EXPORT_ROOT", Path.home() / ".cache/harbor
 ROOTS = {
     "hel": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_math/users/mbereket/miles/path-b",
     "dfw": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/path-b",
+    # FLEET-staged clusters: shared writable root next to miles/shared. aws-iad: interactive only (2 submitted jobs/user,
+    # 9 h), --mem <= 1700G. OCI clusters (ord, draco; A100): <= 30 cpus/GPU and < node_total/8 mem per GPU -> --cpus 240
+    # --mem 1680G for 8 GPUs; ord interactive_singlenode / draco interactive allow ONE running job per user.
+    "aws-iad": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm",
+    "ord": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm",
+    "draco": "/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/shared/hm",
 }
 
 TEMPLATE = """\
