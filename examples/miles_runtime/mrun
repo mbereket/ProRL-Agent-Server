@@ -131,14 +131,21 @@ if [ "${MRUN_PRINT_OVERLAY:-0}" = 1 ]; then echo "${MILES_OVERLAY:-}"; exit 0; f
 # ------------------------------------------------------------------ exec
 
 cache_root="${MRUN_CACHE_ROOT:-/tmp/miles-${USER}-${SLURM_JOB_ID:-local}}"
-mkdir -p "${cache_root}/home-cache"
-# ~/.cache takes JIT/workspace writes that ignore XDG (flashinfer/sglang write ~/.cache/sglang); $HOME is
-# full on dfw and over quota on aws-iad. Redirect it to node-local scratch; keep the rest of $HOME visible.
-if [ -d "${HOME}/.cache" ]; then
-    home_binds=(--bind "${cache_root}/home-cache:${HOME}/.cache")
-else
+mkdir -p "${cache_root}"
+# $HOME inside the container is a node-local scratch dir: JIT/kernel caches write to ~/.cache, ~/.tilelang,
+# ~/.triton, ~/.nv, ~/.apptainer ... and $HOME is full on dfw / over quota on aws-iad (ENOSPC crashes).
+# Credentials/config files from the real home are bound read-only. MRUN_REAL_HOME=1 keeps the real $HOME.
+home_binds=()
+if [ "${MRUN_REAL_HOME:-0}" != 1 ]; then
     mkdir -p "${cache_root}/home"
     home_binds=(--home "${cache_root}/home:${HOME}")
+    for f in .netrc .secrets .gitconfig .config/wandb .huggingface .cache/huggingface/token; do
+        [ -e "${HOME}/${f}" ] || continue
+        # nested bind targets must exist inside the scratch home
+        if [ -d "${HOME}/${f}" ]; then mkdir -p "${cache_root}/home/${f}"
+        else mkdir -p "$(dirname "${cache_root}/home/${f}")"; [ -e "${cache_root}/home/${f}" ] || : > "${cache_root}/home/${f}"; fi
+        home_binds+=(--bind "${HOME}/${f}:${HOME}/${f}:ro")
+    done
 fi
 pp=""
 for p in "${pypaths[@]}" ${overlay_pypath:+"${overlay_pypath}"}; do pp="${pp:+${pp}:}${p}"; done
@@ -152,6 +159,7 @@ env_args=(
     --env "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${cache_root}/inductor}"
     --env "XDG_CACHE_HOME=${MRUN_XDG_CACHE_HOME:-${cache_root}/xdg}"
     --env "CUDA_CACHE_PATH=${CUDA_CACHE_PATH:-${cache_root}/nv-compute-cache}"
+    --env "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-${cache_root}/tilelang}"
     --env "APPTAINER_CONFIGDIR=${APPTAINER_CONFIGDIR:-${cache_root}/apptainer-config}"
     --env "CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
     --env "PYTHONUNBUFFERED=1"
