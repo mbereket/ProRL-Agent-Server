@@ -126,8 +126,19 @@ fi
 [ "${DROP_ZERO_STD:-0}" = 1 ] && args+=(--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter)
 # Periodic eval on the same harness/sampling (no dynamic filter): EVAL_INTERVAL steps, EVAL_N attempts per task,
 # EVAL_DATA (default: the training prompts = optimization check on the full training set).
+# The default eval set is a copy of the training prompts tagged metadata.hm_split=eval, so HM_TRIAL_LOG rows tell eval
+# trials from training trials (eval runs while the async producer keeps generating training groups).
+if [ -n "${EVAL_INTERVAL:-}" ] && [ -z "${EVAL_DATA:-}" ]; then
+    EVAL_DATA="${RUN_DIR}/data/eval.jsonl"
+    [ -s "${EVAL_DATA}" ] || python3 -c 'import json, sys
+with open(sys.argv[2], "w") as out:
+    for line in open(sys.argv[1]):
+        if line.strip():
+            row = json.loads(line); row.setdefault("metadata", {})["hm_split"] = "eval"; out.write(json.dumps(row) + "\n")' \
+        "${DATA}" "${EVAL_DATA}.tmp" && mv "${EVAL_DATA}.tmp" "${EVAL_DATA}"
+fi
 if [ -n "${EVAL_INTERVAL:-}" ]; then
-    args+=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${EVAL_DATA:-${DATA}}"
+    args+=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${EVAL_DATA}"
            --n-samples-per-eval-prompt "${EVAL_N:-2}")
     [ "${EVAL_BEFORE_TRAIN:-0}" = 1 ] || args+=(--skip-eval-before-train)
 fi

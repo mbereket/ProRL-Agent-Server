@@ -18,8 +18,8 @@ Environment (rollout worker):
   AGENT_TRIAL_TIMEOUT    client-side ceiling per trial, s (default 7200; keep above the
                          servers' --agent-timeout so the server ends trials first)
   HARBOR_INFRA_RETRIES   re-dispatches of a trial that failed before the agent ran (default 2)
-  HM_TRIAL_LOG           optional JSONL path: one line per finished trial (reward, exit status,
-                         timings, server, wall clock). Works the same under train.py and
+  HM_TRIAL_LOG           optional JSONL path: one line per finished trial (split train|eval from
+                         metadata.hm_split, reward, exit status, timings, server, wall clock). Works the same under train.py and
                          train_async.py --fully-async (where the sync RolloutFn metrics do not run).
 
 Failure attribution. A trial whose agent never started (sandbox start, agent
@@ -141,11 +141,11 @@ async def run(
         "agent_metrics": agent_metrics,
         "infra_failure": bool(infra),
     }
-    _log_trial(request["instance_id"], out, t_start)
+    _log_trial(request["instance_id"], out, t_start, split=str(metadata.get("hm_split") or "train"))
     return out
 
 
-def _log_trial(instance_id: str, out: dict[str, Any], t_start: float) -> None:
+def _log_trial(instance_id: str, out: dict[str, Any], t_start: float, split: str = "train") -> None:
     path = os.environ.get("HM_TRIAL_LOG")
     if not path:
         return
@@ -154,6 +154,7 @@ def _log_trial(instance_id: str, out: dict[str, Any], t_start: float) -> None:
         "t_end": time.time(),
         "wall_s": round(time.time() - t_start, 1),
         "instance_id": instance_id,
+        "split": split,
         "reward": out["reward"],
         "exit_status": out["exit_status"],
         "infra_failure": out["infra_failure"],
