@@ -1,0 +1,1 @@
+lora-hot-ctrl    ARM=lora LAYOUT=colocate LR=1e-4 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096 LORA_ROLLOUT=0
