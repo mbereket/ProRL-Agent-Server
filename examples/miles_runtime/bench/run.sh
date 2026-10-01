@@ -7,6 +7,7 @@
 # ARMS_FILE: one arm per line, `<name> KEY=VALUE ...` (knobs of bench/grpo.sh; `#` comments).
 # An arm with a DONE marker (written on rc 0) is skipped, so a resubmitted job resumes the suite.
 # `REPLAY=@<arm>` points a train_only arm at another arm's rollout dump.
+# `MODEL_PATH=@<path>` is relative to the cluster's miles root (the parent of MILES_STACK_ROOT), e.g. @models/Qwen3.8-27B.
 # `!synth <name> <seq_len> <samples> <rollouts>` writes fixed-length synthetic dumps to <name>/rollout_data.
 # `!compose <name> <dir> <steps>` merges real dumps <dir>/*.pt into <steps> bigger replay steps (compose_replay.py).
 set -uo pipefail
@@ -54,6 +55,7 @@ while read -r name rest; do
     mkdir -p "${out}"
     kv=(); for x in ${rest}; do
         if [[ "${x}" == REPLAY=@* ]]; then x="REPLAY=${ROOT}/${x#REPLAY=@}/rollout_data"; fi
+        if [[ "${x}" == MODEL_PATH=@* ]]; then x="MODEL_PATH=$(dirname "${MILES_STACK_ROOT}")/${x#MODEL_PATH=@}"; fi
         kv+=("${x}")
     done
     mr_log "arm ${name}: ${kv[*]}"
