@@ -1,0 +1,4 @@
+# no-mtp + merged serving end-to-end (run with PATCH_DIR bench/patches:patches/lora-serve-merged:patches/no-mtp).
+# Same shape as merged-move-colo (STACK §10: KL floor 2.2-2.8e-4 after LR 3e-4 updates): a broken merged export
+# without the MTP modules would show up as served-vs-trainer KL jumping after the first update.
+nomtp-merged-move-colo  ARM=lora LORA_SERVE=merged LAYOUT=colocate LR=3e-4 STEPS=2 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096
