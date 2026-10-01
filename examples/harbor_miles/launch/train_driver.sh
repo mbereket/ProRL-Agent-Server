@@ -20,6 +20,21 @@ if [ "${LAYOUT}" = colocate ] && [ "${ASYNC}" = 1 ]; then echo "[driver] LAYOUT=
 # rollout. Leave HM_CHAIN_MAX unset.
 ROLLOUT_ONLY="${ROLLOUT_ONLY:-0}"
 if [ "${ROLLOUT_ONLY}" = 1 ]; then ASYNC=0; LAYOUT=disagg; DROP_ZERO_STD=0; EVAL_INTERVAL=""; fi
+# EVAL_FROM_RUN=<RUN_NAME | run dir> [EVAL_STEP=<N|latest>] [EVAL_WATCH_EVERY=K]: DECOUPLED EVAL of a saved LoRA adapter.
+#   The trainer (same layout as the source run: TRAIN_GPUS/TP/CP; the adapter is saved as per-rank shards) loads
+#   <src>/ckpt/iter_N/adapter via --lora-adapter-path; the startup weight sync pushes W + (alpha/r)BA to plain engines (merged
+#   serving, exactly like training rollouts); the eval set (TASK_IDS_FILE x EVAL_N, same harness/sampling, unfiltered) runs
+#   before any training; the job stops as soon as `eval 0:` lands. Nothing is written into the source run.
+#   Trials: RUN_DIR/trials-<job>.jsonl with split=eval@N; summary: RUN_DIR/eval@N-<job>.json + a row in RUN_DIR/eval_summary.tsv.
+#   EVAL_WATCH_EVERY=K: keep going: evaluate each newer checkpoint >= last+K as it appears (poll 60 s) until none arrives
+#   for EVAL_WATCH_IDLE_MIN (default 90) or the source run has chain.stop.
+#   Fails fast if the adapter does not load (Miles would otherwise continue with a fresh B=0 adapter = the base model).
+if [ -n "${EVAL_FROM_RUN:-}" ]; then
+    case "${EVAL_FROM_RUN}" in /*) SRC_RUN_DIR="${EVAL_FROM_RUN}" ;; *) SRC_RUN_DIR="$(dirname "${RUN_DIR}")/${EVAL_FROM_RUN}" ;; esac
+    [ -d "${SRC_RUN_DIR}/ckpt" ] || { echo "[driver] FATAL: EVAL_FROM_RUN: no ckpt dir in ${SRC_RUN_DIR}" >&2; exit 3; }
+    [ "${SRC_RUN_DIR%/}" != "${RUN_DIR%/}" ] || { echo "[driver] FATAL: EVAL_FROM_RUN must not be this run (give the eval its own RUN_NAME)" >&2; exit 3; }
+    EVAL_ONLY=1; EVAL_BEFORE_TRAIN=1; EVAL_INTERVAL="${EVAL_INTERVAL:-1000}"; HM_CHAIN_MAX=0
+fi
 MODEL_TYPE="${MODEL_TYPE:-qwen3.5-9B}"
 HF_CKPT="${HF_CKPT:?config must set HF_CKPT (HF model dir)}"
 GPUS_PER_NODE="$(nvidia-smi --list-gpus | wc -l | tr -d ' ')"
@@ -159,20 +174,24 @@ fi
 # EVAL_DATA (default: the training prompts = optimization check on the full training set).
 # The default eval set is a copy of the training prompts tagged metadata.hm_split=eval, so HM_TRIAL_LOG rows tell eval
 # trials from training trials (eval runs while the async producer keeps generating training groups).
-if [ -n "${EVAL_INTERVAL:-}" ] && [ -z "${EVAL_DATA:-}" ]; then
-    EVAL_DATA="${RUN_DIR}/data/eval.jsonl"
-    if [ ! -s "${EVAL_DATA}" ]; then   # unique tmp + atomic rename (resumed chunks find it already there)
-        _tmp="${EVAL_DATA}.tmp.$(hostname -s).$$"
+# hm_eval_data <tag> <out>: the training prompts with metadata.hm_split=<tag> (built once; unique tmp + atomic rename).
+hm_eval_data() {
+    if [ ! -s "$2" ]; then
+        local _tmp="$2.tmp.$(hostname -s).$$"
         python3 -c 'import json, sys
 with open(sys.argv[2], "w") as out:
     for line in open(sys.argv[1]):
         if line.strip():
-            row = json.loads(line); row.setdefault("metadata", {})["hm_split"] = "eval"; out.write(json.dumps(row) + "\n")' \
-            "${DATA}" "${_tmp}"
-        mv -f "${_tmp}" "${EVAL_DATA}"
+            row = json.loads(line); row.setdefault("metadata", {})["hm_split"] = sys.argv[3]; out.write(json.dumps(row) + "\n")' \
+            "${DATA}" "${_tmp}" "$1"
+        mv -f "${_tmp}" "$2"
     fi
+}
+if [ -n "${EVAL_INTERVAL:-}" ] && [ -z "${EVAL_DATA:-}" ] && [ -z "${EVAL_FROM_RUN:-}" ]; then
+    EVAL_DATA="${RUN_DIR}/data/eval.jsonl"
+    hm_eval_data eval "${EVAL_DATA}"
 fi
-if [ -n "${EVAL_INTERVAL:-}" ]; then
+if [ -n "${EVAL_INTERVAL:-}" ] && [ -z "${EVAL_FROM_RUN:-}" ]; then   # EVAL_FROM_RUN adds its eval args per checkpoint
     args+=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${EVAL_DATA}"
            --n-samples-per-eval-prompt "${EVAL_N:-2}")
     [ "${EVAL_BEFORE_TRAIN:-0}" = 1 ] || [ "${EVAL_ONLY:-0}" = 1 ] || args+=(--skip-eval-before-train)
@@ -185,7 +204,9 @@ LATEST_ADAPTER=""
 for d in $(ls -d "${RUN_DIR}"/ckpt/iter_*/adapter 2>/dev/null | sort -r); do
     if [ -s "${d}/adapter_megatron_rank0.pt" ] && [ -s "${d}/training_state_rank0.pt" ]; then LATEST_ADAPTER="${d}"; break; fi
 done
-if [ "${ARM}" = lora ] && [ -n "${LATEST_ADAPTER}" ]; then
+if [ -n "${EVAL_FROM_RUN:-}" ]; then
+    :   # decoupled eval: the source run's adapter is passed per checkpoint below; never resume this run's own state
+elif [ "${ARM}" = lora ] && [ -n "${LATEST_ADAPTER}" ]; then
     it="$(basename "$(dirname "${LATEST_ADAPTER}")")"; it=$((10#${it#iter_}))
     args+=(--lora-adapter-path "${LATEST_ADAPTER}" --load "${RUN_DIR}/ckpt" --start-rollout-id $((it + 1)))
     echo "[driver] resuming LoRA from ${LATEST_ADAPTER} (iter ${it}), next rollout $((it + 1))"
@@ -260,22 +281,123 @@ echo "[driver] ${ARM}/${LAYOUT} async=${ASYNC} nodes=${MILES_NUM_NODES} TP${TP} 
 trap 'kill ${sampler} 2>/dev/null || true' EXIT
 cd /root/miles
 if [ "${ASYNC}" = 1 ]; then train_cmd=(python3 train_async.py --fully-async "${args[@]}"); else train_cmd=(python3 train.py "${args[@]}"); fi
+# stop_after_eval <status file>: pass the run's log through; stop the run as soon as `eval 0:` lands (status ok). With an adapter
+# to evaluate, fail fast if it did not load: Miles only warns and would evaluate a fresh B=0 adapter, i.e. the base model.
+stop_after_eval() {
+    local line st="$1"
+    echo running > "${st}"
+    while IFS= read -r line; do
+        printf '%s\n' "${line}"
+        case "${line}" in
+            *"adapter weights could not be loaded"*)
+                echo "[driver] FATAL: the LoRA adapter did not load; stopping (this would have evaluated the base model)"
+                echo adapter_load_failed > "${st}"; pkill -TERM -f "train_async.py|train.py" || true ;;
+            *"Successfully loaded LoRA adapter from"*)
+                echo "[driver] adapter loaded: ${line##*from }" ;;
+            *" - eval 0: {"*)
+                echo "[driver] EVAL_ONLY: eval landed; stopping"
+                [ "$(cat "${st}")" = running ] && echo ok > "${st}"
+                pkill -TERM -f "train_async.py|train.py" || true ;;
+        esac
+    done
+}
+# hm_eval_summary <tag> <source> <status>: per-task + overall results of the trials tagged <tag> (overlong scored per
+# HM_OVERLONG_REWARD) -> RUN_DIR/<tag>-<job>.json and one row in RUN_DIR/eval_summary.tsv; printed to the log too.
+hm_eval_summary() {
+    python3 - "${HM_TRIAL_LOG:-${RUN_DIR}/trials-${SLURM_JOB_ID:-local}.jsonl}" "$1" "$2" "$3" "${RUN_DIR}" "${SLURM_JOB_ID:-local}" \
+        "${HM_OVERLONG_REWARD:-verifier}" <<'PY'
+import collections, json, os, statistics, sys, time
+log, tag, source, status, run_dir, job, ol_policy = sys.argv[1:8]
+rows = [json.loads(l) for l in open(log) if l.strip().startswith("{")] if os.path.exists(log) else []
+rows = [r for r in rows if r.get("split") == tag]
+ok = [r for r in rows if not r.get("infra_failure")]
+overlong = lambda r: r.get("exit_status") == "SequenceLengthLimitExceeded"
+score = lambda r: 0.0 if (ol_policy == "zero" and overlong(r)) else float(r.get("reward") or 0.0)
+per = collections.defaultdict(list)
+for r in ok:
+    per[r["instance_id"]].append(r)
+tasks = {k: {"attempts": len(v), "successes": round(sum(score(r) for r in v), 3),
+             "overlong": sum(map(overlong, v)), "wall_p50_s": round(statistics.median(r["wall_s"] for r in v))}
+         for k, v in sorted(per.items())}
+summ = {"tag": tag, "source": source, "status": status, "job": job, "time": time.strftime("%F %T"),
+        "trials": len(rows), "infra_failures": len(rows) - len(ok), "tasks": len(tasks),
+        "pass": round(statistics.mean(score(r) for r in ok), 4) if ok else None,
+        "raw_verifier_pass": round(statistics.mean(float(r.get("reward") or 0) for r in ok), 4) if ok else None,
+        "overlong_rate": round(sum(map(overlong, ok)) / len(ok), 4) if ok else None,
+        "task_mean_pass": round(statistics.mean(t["successes"] / t["attempts"] for t in tasks.values()), 4) if tasks else None,
+        "per_task": tasks}
+json.dump(summ, open(os.path.join(run_dir, f"{tag}-{job}.json"), "w"), indent=1)
+tsv = os.path.join(run_dir, "eval_summary.tsv")
+new = not os.path.exists(tsv)
+with open(tsv, "a") as f:
+    if new:
+        f.write("time\tjob\ttag\tstatus\ttrials\tinfra\ttasks\tpass\ttask_mean_pass\traw_verifier_pass\toverlong_rate\tsource\n")
+    f.write("\t".join(str(summ[k]) for k in ("time", "job", "tag", "status", "trials", "infra_failures", "tasks", "pass",
+                                             "task_mean_pass", "raw_verifier_pass", "overlong_rate", "source")) + "\n")
+print(f"[driver] eval summary {tag}: " + json.dumps({k: v for k, v in summ.items() if k != "per_task"}))
+PY
+}
+if [ -n "${EVAL_FROM_RUN:-}" ]; then
+    # Decoupled eval of saved adapters (see EVAL_FROM_RUN at the top).
+    hm_iters() { ls -d "${SRC_RUN_DIR}"/ckpt/iter_*/adapter 2>/dev/null | sed -n 's#.*/iter_0*\([0-9][0-9]*\)/adapter$#\1#p' | sort -n; }
+    hm_ckpt_ready() {   # every trainer rank's adapter + training-state shard written, and quiet for >= 60 s
+        local d="$1" r n
+        [ -s "${d}/adapter_megatron_rank0.pt" ] || return 1
+        n="$(ls "${d}"/adapter_megatron_rank*.pt 2>/dev/null | wc -l)"
+        for r in $(seq 0 $((n - 1))); do [ -s "${d}/adapter_megatron_rank${r}.pt" ] && [ -s "${d}/training_state_rank${r}.pt" ] || return 1; done
+        [ $(( $(date +%s) - $(stat -c %Y "${d}/adapter_megatron_rank$((n - 1)).pt") )) -ge 60 ]
+    }
+    hm_wait_gpus_free() {   # engines/trainer of the previous eval released (this node); up to 5 min
+        local _i
+        for _i in $(seq 1 60); do
+            [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '$1 > 2000' | wc -l)" -eq 0 ] && return 0
+            sleep 5
+        done
+        echo "[driver] WARNING: GPUs still busy 5 min after the previous eval"
+    }
+    want="${EVAL_STEP:-latest}"; every="${EVAL_WATCH_EVERY:-0}"; last=-1; idle_since="$(date +%s)"
+    echo "[driver] EVAL_FROM_RUN ${SRC_RUN_DIR}: step ${want}, watch every ${every}, ${EVAL_N:-2} attempts x tasks of ${TASK_IDS_FILE:-all}"
+    while true; do
+        pick=""
+        for n in $(hm_iters); do
+            hm_ckpt_ready "${SRC_RUN_DIR}/ckpt/iter_$(printf %07d "${n}")/adapter" || continue
+            if [ "${last}" -ge 0 ]; then [ "${n}" -ge $(( last + every )) ] && pick="${n}"
+            elif [ "${want}" = latest ] || [ "${n}" -eq "${want}" ] 2>/dev/null; then pick="${n}"; fi
+        done
+        if [ -z "${pick}" ]; then
+            [ "${last}" -ge 0 ] || [ "${every}" -gt 0 ] || { echo "[driver] FATAL: no complete checkpoint ${want} in ${SRC_RUN_DIR}/ckpt" >&2; exit 3; }
+            [ "${every}" -gt 0 ] || break
+            if [ -f "${SRC_RUN_DIR}/chain.stop" ] || [ $(( $(date +%s) - idle_since )) -ge $(( ${EVAL_WATCH_IDLE_MIN:-90} * 60 )) ]; then
+                echo "[driver] EVAL watch: no newer checkpoint (chain.stop or idle ${EVAL_WATCH_IDLE_MIN:-90} min); done"; break
+            fi
+            sleep 60; continue
+        fi
+        adapter="${SRC_RUN_DIR}/ckpt/iter_$(printf %07d "${pick}")/adapter"
+        nsh="$(ls "${adapter}"/adapter_megatron_rank*.pt | wc -l)"
+        [ "${nsh}" -eq "${TRAIN_GPUS}" ] || { echo "[driver] FATAL: ${adapter} has ${nsh} rank shards but TRAIN_GPUS=${TRAIN_GPUS}: use the source run's trainer layout (TRAIN_GPUS/TP/CP)" >&2; exit 3; }
+        tag="eval@${pick}"; efile="${RUN_DIR}/data/${tag}.jsonl"; hm_eval_data "${tag}" "${efile}"
+        st="${RUN_DIR}/.eval-status-${SLURM_JOB_ID:-local}-${pick}"
+        eargs=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${efile}"
+               --n-samples-per-eval-prompt "${EVAL_N:-2}" --lora-adapter-path "${adapter}")
+        printf '%s\n' "# ${tag}" "${eargs[@]}" >> "${RUN_DIR}/args-${SLURM_JOB_ID:-local}.txt"
+        echo "[driver] EVAL_FROM_RUN: ${tag} <- ${adapter}"
+        "${train_cmd[@]}" "${eargs[@]}" 2>&1 | stop_after_eval "${st}" || true
+        status="$(cat "${st}" 2>/dev/null || echo missing)"
+        hm_eval_summary "${tag}" "${adapter}" "${status}" || true
+        [ "${status}" = ok ] || { echo "[driver] FATAL: eval of ${adapter} ended with status ${status}" >&2; exit 3; }
+        last="${pick}"; idle_since="$(date +%s)"
+        [ "${every}" -gt 0 ] || break
+        hm_wait_gpus_free
+    done
+    exit 0
+fi
 if [ "${EVAL_ONLY:-0}" = 1 ]; then
     # Rollout-only measurement (base pass rates, session lengths, overflow at a cap): the eval set (EVAL_DATA x EVAL_N,
     # same harness/sampling, unfiltered) runs before any training; the run stops as soon as its metrics line lands.
     # Trials are in trials-<job>.jsonl (split=eval). Needs EVAL_BEFORE_TRAIN=1 and EVAL_INTERVAL set (the config's job).
     echo "[driver] EVAL_ONLY: eval before train, then stop"
-    stop_after_eval() {
-        local line
-        while IFS= read -r line; do
-            printf '%s\n' "${line}"
-            if [[ "${line}" == *" - eval 0: {"* ]]; then
-                echo "[driver] EVAL_ONLY: eval landed; stopping"
-                pkill -TERM -f "train_async.py|train.py" || true
-            fi
-        done
-    }
-    "${train_cmd[@]}" 2>&1 | stop_after_eval || true
+    "${train_cmd[@]}" 2>&1 | stop_after_eval "${RUN_DIR}/.eval-status-${SLURM_JOB_ID:-local}" || true
+    hm_eval_summary eval "${HF_CKPT}" "$(cat "${RUN_DIR}/.eval-status-${SLURM_JOB_ID:-local}" 2>/dev/null || echo missing)" || true
     exit 0
 fi
 "${train_cmd[@]}"
