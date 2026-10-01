@@ -5,7 +5,7 @@
 #   run.sh SUITE ARMS_FILE [PATCH_DIR]
 #
 # ARMS_FILE: one arm per line, `<name> KEY=VALUE ...` (knobs of bench/grpo.sh; `#` comments).
-# An arm whose summary.json exists is skipped, so a resubmitted job resumes the suite.
+# An arm with a DONE marker (written on rc 0) is skipped, so a resubmitted job resumes the suite.
 # `REPLAY=@<arm>` points a train_only arm at another arm's rollout dump.
 # `!synth <name> <seq_len> <samples> <rollouts>` writes fixed-length synthetic dumps to <name>/rollout_data.
 set -uo pipefail
@@ -32,7 +32,7 @@ while read -r name rest; do
         continue
     fi
     out="${ROOT}/${name}"
-    if [ -s "${out}/summary.json" ] && grep -q '"steps": [1-9]' "${out}/summary.json"; then
+    if [ -f "${out}/DONE" ]; then
         mr_log "arm ${name}: done already, skipping"; continue
     fi
     mkdir -p "${out}"
@@ -47,6 +47,7 @@ while read -r name rest; do
     env "${kv[@]}" OUT="${out}" RAY_PORT_BASE="$((20000 + (${SLURM_JOB_ID:-0} % 800) * 50 + (arm_i % 5) * 10))" \
         bash "${MR}/ray_node.sh" "${patch_opts[@]}" -- bash "${MR}/bench/grpo.sh" > "${out}/job.log" 2>&1
     rc=$?
+    if [ "${rc}" = 0 ]; then date -u +%FT%TZ > "${out}/DONE"; fi
     mr_log "arm ${name}: rc ${rc} in $((SECONDS - t0)) s ($(tail -c 300 "${out}/job.log" | tr '\n' ' ' | cut -c1-200))"
     sleep 10
 done < "${ARMS_FILE}"
