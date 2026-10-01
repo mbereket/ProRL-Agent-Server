@@ -4,12 +4,17 @@ Status: **usable on dfw and hel** (dfw: SIF, Ray 1+2 nodes, NCCL over IB validat
 Code: ProRL-Agent-Server branch **`miles-stack`**, dir `examples/miles_runtime/` (README there).
 Last updated: 2026-10-01 05:35 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
 
-> **[2026-10-01 05:30] MTP auxiliary loss in every bridge-mode Qwen3.5/3.8 run (validation running).** The HF configs have
-> `mtp_num_hidden_layers: 1`; Megatron-Bridge builds an MTP layer although Miles logs `mtp_num_layers None` /
-> `enable_mtp_training False`. `gpt_model._postprocess -> process_mtp_loss` computes a next-token CE over ALL tokens
-> (scale 0.2, not advantage-weighted) and `MTPLossAutoScaler` attaches it to the decoder output, so it flows into the LoRA
-> gradient; its fp32 `[tokens x vocab/TP]` logits are also where 27B 128k OOMs. Fix: `--patches <runtime>/patches/no-mtp`
-> (miles-stack `efbb7e4d`, opt-in) — A/B (grad_norm, memory, merged export) on aws-iad 7598313; promoted to base if confirmed.
+> **[2026-10-01 06:05] MTP auxiliary loss in every bridge-mode Qwen3.5/3.8 run — CONFIRMED; fix `patches/no-mtp`.**
+> The HF configs have `mtp_num_hidden_layers: 1`; Megatron-Bridge builds an MTP layer although Miles logs
+> `mtp_num_layers None` / `enable_mtp_training False`. `gpt_model._postprocess -> process_mtp_loss` computes a next-token
+> CE over ALL tokens (scale 0.2, not advantage-weighted) and `MTPLossAutoScaler` attaches it to the decoder output, so it
+> flows into the LoRA gradient. Measured (same data, same weights):
+> - **27B, zero-advantage synthetic data: grad_norm 0.21 with MTP vs exactly 0 without** — the whole gradient was the MTP loss
+>   (aws-iad z27-64k-tp4-ref vs hel n1-64k-tp4-4g). 9B real SWE-Gym traces, step 0: grad_norm 0.0769 -> 0.0716.
+> - Memory/speed: 9B 64k TP4 66.3 -> 56.1 GB, 44.5 -> 40.0 s/step (useful MFU 20.7 -> 23.0 %); 27B 64k TP4 74.2 -> 62.4 GB,
+>   153 -> 141 s/step; 27B 128k TP4·CP2-hw OOM -> fits (77.8 GB). Params per TP rank -60.8 M (9B, TP4).
+> - Use `--patches <runtime>/patches/no-mtp` (miles-stack `efbb7e4d`+) now for train-side runs; with `--lora-serve-merged`
+>   the end-to-end export check is running (dfw 19610045); it moves to the base set once that passes.
 
 ## 1. What the runtime is
 
@@ -458,21 +463,25 @@ x (960 generated + 560 tool), contexts grow to ~64k):
 Warm 1-node 9B runs are rollout-bound (path-a: train ~190 s vs rollout ~515 s per 64-session step), so the levers in
 order are: merged serving, in-flight sessions up to the KV bound, engine GPUs (trainer:engine split), then trainer.
 
-## 13. 27B LoRA trainer layouts for de4 (in progress; synthetic fixed-length data until de4 dumps exist)
+## 13. 27B LoRA trainer layouts for de4 (in progress; for qwen27b's trade-off table)
 
-Qwen3.8-27B, LoRA r32 all-linear, bridge mode, full recompute, `--use-rollout-logprobs`, logprob chunk 4096, train_only replay
-of fixed-length synthetic samples (8 x L tokens/step), aws-iad H100 80GB. Megatron TP <= 4 (4 query groups); GDN 16 key /
-48 value heads -> headwise TP*CP must divide 16. **All rows so far have the MTP layer ON** (see the note at the top).
+Qwen3.8-27B, LoRA r32 all-linear, bridge mode, full recompute, `--use-rollout-logprobs`, logprob chunk 4096,
+`--max-tokens-per-gpu` = context/CP, train_only replay, H100 80GB. Megatron TP <= 4 (4 query groups); GDN 16 key / 48 value
+heads -> headwise TP*CP must divide 16. Steady-state = median of steps 1-2 (step 0 includes JIT/warm-up).
+**Data label**: SYNTHETIC = fixed-length samples, every sample at the context cap (worst case for memory and per-token cost);
+REAL = DIAG's 9B-generated SWE-Gym traces, base policy (shared tokenizer), 16 samples/step incl. the longest group.
 
-| context | layout (GPUs) | result |
-|---|---|---|
-| 64k | TP4 (4) | 153 s per 1.05 M tok = 6.85 k tok/s (1.7 k/GPU), useful MFU 24.8 %, peak 74 GB |
-| 128k | TP4 CP1 (8) | OOM |
-| 128k | TP4·CP2 headwise (8) | OOM at step 0 (78.5 GB) |
-| 128k | TP2·CP4 headwise (8) | OOM (15.16 GiB alloc in the MTP cross-entropy) |
-| 128k | TP4·CP2 headwise, logprob chunk 1024 (8) | OOM in backward |
+| context | layout (trainer GPUs) | MTP | data | s/step | tokens/step | tok/s | useful MFU | peak GB | result |
+|---|---|---|---|---|---|---|---|---|---|
+| 64k | TP4 (4) | on | synthetic | 153 | 1.05 M | 6.85 k | 24.8 % | 74.2 | fits |
+| 64k | TP4 (4) | **off** | synthetic | **141** | 1.05 M | **7.43 k** | 26.9 % | **62.4** | fits |
+| 96k | TP4 (4) | off | synthetic | 116.5 | 0.79 M | 6.75 k | 27.8 % | 72.7 | fits |
+| 128k | TP4 CP1 (8) | on | synthetic | — | | | | | OOM |
+| 128k | TP4·CP2 headwise (8) | on | synthetic | — | | | | 78.5 | OOM at step 0 |
+| 128k | TP2·CP4 headwise (8) | on | synthetic | — | | | | | OOM (15.2 GiB alloc in MTP CE) |
+| 128k | TP4·CP2 headwise (8) | **off** | synthetic | **115.6** | 1.05 M | **9.07 k** | 20.9 % | **77.8** | fits (tight) |
 
-Running (aws-iad 7598313, MTP off): 128k TP4·CP2-hw, 96k TP4, 128k TP4, 64k TP4 (4 GPUs). Queued as P1: 1-node 96k/128k/192k
-CP variants; 2-node (16 GPUs) TP4·CP2·DP2-hw, TP4·DP4, TP4·CP4-hw (`bench/arms-27b-2n.txt`, `ACTOR_NODES=2`). Table for qwen27b's
-trade-off: this section.
+Running: hel 1527099 (synthetic, MTP off: 128k TP4 4-GPU, TP2·CP2-hw 4-GPU at 64k/96k/128k, 8-GPU CP variants, 192k);
+dfw 19609972 (REAL 96k/128k traces, MTP off: 128k TP4 4-GPU, 96k TP4 4-GPU, 128k TP2·CP2-hw 4-GPU, 128k TP4·CP2-hw 8-GPU);
+aws-iad 7598313 (synthetic, MTP off: 96k TP4 8-GPU, 128k TP4 8-GPU). 2-node layouts queued (`bench/arms-27b-2n.txt`).
 
