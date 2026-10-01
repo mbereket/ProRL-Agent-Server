@@ -3,4 +3,4 @@
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${HERE}/../setup/common.sh"
-bash "${HERE}/stage_sifs.sh" "${HM_EXAMPLE_DIR}/${REFS_FILE:-configs/swegym-dfw-staged93-refs.txt}" "${STAGE_JOBS:-8}"
+bash "${HERE}/stage_sifs.sh" "${HM_EXAMPLE_DIR}/${REFS_FILE:-configs/tasks/swegym-dfw-staged93-refs.txt}" "${STAGE_JOBS:-8}"
