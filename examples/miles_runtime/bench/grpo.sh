@@ -31,7 +31,6 @@ args=(
     --balance-data --seed 1234 --rollout-seed 1234
     --tensor-model-parallel-size "${TP}" --sequence-parallel --pipeline-model-parallel-size 1
     --context-parallel-size "${CP}" --expert-model-parallel-size 1 --expert-tensor-parallel-size 1
-    --recompute-granularity full --recompute-method uniform --recompute-num-layers 1
     --use-dynamic-batch-size --max-tokens-per-gpu "${MTPG}"
     --advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --entropy-coef 0.00
     --eps-clip 0.2 --eps-clip-high 0.28
@@ -40,6 +39,13 @@ args=(
     --attention-softmax-in-fp32 --attention-backend flash
     --num-gpus-per-node "${GPUS}" --actor-num-nodes 1
 )
+case "${RECOMPUTE:-full}" in
+    full) args+=(--recompute-granularity full --recompute-method uniform --recompute-num-layers 1) ;;
+    selective) args+=(--recompute-granularity selective) ;;
+    none) ;;
+    *) echo "bad RECOMPUTE=${RECOMPUTE}" >&2; exit 2 ;;
+esac
+[ "${ROLLOUT_LOGPROBS:-0}" = 1 ] && args+=(--use-rollout-logprobs)   # skip the separate old-logprob forward pass
 [ "${OFFLOAD}" = 1 ] && args+=(--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
 
 if [ "${MODE}" = train_only ]; then
@@ -73,7 +79,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).
