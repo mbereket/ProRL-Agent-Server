@@ -75,6 +75,8 @@ fi
 # Ray actors inherit the raylet environment (apptainer passes the host env through).
 # TMPDIR stays node-local: SGLang binds zmq IPC sockets there (paths capped at 107 chars).
 export TMPDIR=/tmp POLAR_TRAINER_FRAMEWORK=miles
+# --pin-rollout-manager-to-head finds the head node through Ray's state API, which the dashboard serves.
+export RAY_DASHBOARD="${RAY_DASHBOARD:-1}"
 export WANDB_DIR="${RUN_DIR}/wandb_cache" WANDB_CACHE_DIR="${RUN_DIR}/wandb_cache" WANDB_DATA_DIR="${RUN_DIR}/wandb_cache"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 mkdir -p "${RUN_DIR}/wandb_cache"
