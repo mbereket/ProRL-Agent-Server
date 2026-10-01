@@ -1,0 +1,10 @@
+# Long-context training side with chunked logprobs (fp32 [tokens x vocab/TP] cast is the OOM at 16k+/GPU).
+!synth fix16k 16384 64 4
+!synth fix64k 65536 16 3
+!synth fix128k 131072 8 3
+k16k-lora-tp1-ck     ARM=lora MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=1 CP=1 MTPG=16384 ROLLOUT_LOGPROBS=1 EXTRA=--log-probs-chunk-size=4096
+k16k-lora-tp2-ck     ARM=lora MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 CP=1 MTPG=16384 ROLLOUT_LOGPROBS=1 EXTRA=--log-probs-chunk-size=4096
+k64k-lora-tp2cp2-ck  ARM=lora MODE=train_only REPLAY=@fix64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=2 MTPG=32768 ROLLOUT_LOGPROBS=1 EXTRA=--log-probs-chunk-size=4096
+k64k-full-off-cp4-ck ARM=full MODE=train_only REPLAY=@fix64k NUM_ROLLOUT=3 RBS=2 NS=8 TP=2 CP=4 MTPG=16384 OFFLOAD=1 ROLLOUT_LOGPROBS=1 EXTRA=--log-probs-chunk-size=4096
+k128k-lora-cp4-ck    ARM=lora MODE=train_only REPLAY=@fix128k NUM_ROLLOUT=3 RBS=1 NS=8 TP=2 CP=4 MTPG=32768 ROLLOUT_LOGPROBS=1 EXTRA=--log-probs-chunk-size=4096
+k128k-lora-cp8-ck    ARM=lora MODE=train_only REPLAY=@fix128k NUM_ROLLOUT=3 RBS=1 NS=8 TP=1 CP=8 MTPG=16384 ROLLOUT_LOGPROBS=1 EXTRA=--log-probs-chunk-size=4096

@@ -1,0 +1,4 @@
+# Rollout side: SGLang LoRA decode overhead at equal engine TP, and LoRA kernel backend.
+etp2-full         ARM=full LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=2
+etp2-lora-triton  ARM=lora LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=2 EXTRA=--sglang-lora-backend=triton
+etp4-lora         ARM=lora LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=4

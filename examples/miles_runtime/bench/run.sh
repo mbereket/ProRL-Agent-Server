@@ -44,7 +44,7 @@ while read -r name rest; do
     t0=${SECONDS}
     arm_i=$((${arm_i:-0} + 1))
     # fresh Ray port block per arm: a previous arm's stragglers must not collide with the next head
-    env "${kv[@]}" OUT="${out}" RAY_PORT_BASE="$((20000 + (${SLURM_JOB_ID:-0} % 800) * 50 + (arm_i % 5) * 10))" \
+    env "${kv[@]}" OUT="${out}" RAY_PORT_BASE="$((65010 + (${SLURM_JOB_ID:-0} % 12) * 40 + (arm_i % 4) * 10))" \
         bash "${MR}/ray_node.sh" "${patch_opts[@]}" -- bash "${MR}/bench/grpo.sh" > "${out}/job.log" 2>&1
     rc=$?
     if [ "${rc}" = 0 ]; then date -u +%FT%TZ > "${out}/DONE"; fi

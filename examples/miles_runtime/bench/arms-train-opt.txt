@@ -1,0 +1,7 @@
+# Training-side knobs (length-controlled, fixed 16k synthetic batches; same data as arms-train-controlled).
+!synth fix16k 16384 64 4
+t16k-lora-rlp        ARM=lora MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 MTPG=16384 ROLLOUT_LOGPROBS=1
+t16k-full-off-rlp    ARM=full MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 MTPG=16384 OFFLOAD=1 ROLLOUT_LOGPROBS=1
+t16k-lora-sel        ARM=lora MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 MTPG=16384 RECOMPUTE=selective ROLLOUT_LOGPROBS=1
+t16k-lora-norc8k     ARM=lora MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=2 MTPG=8192 RECOMPUTE=none ROLLOUT_LOGPROBS=1
+t16k-lora-tp1-8k     ARM=lora MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=4 RBS=8 NS=8 TP=1 MTPG=8192 ROLLOUT_LOGPROBS=1
