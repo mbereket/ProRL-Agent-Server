@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Merge real rollout dumps (--save-debug-rollout-data files) into bigger replay steps.
 
-    compose_replay.py OUT_DIR IN.pt [IN.pt ...] --steps 3 [--seed 0]
+    compose_replay.py OUT_DIR IN.pt [IN.pt ...] --steps 3 [--seed 0] [--max-samples N]
 
 Every output step <k>.pt holds ALL input samples (groups kept contiguous, group order shuffled per step so
 packing varies), re-indexed: unique index / group_index, and rollout_id (Miles' trajectory id) remapped per
 (input file, original id) so trajectories from different dumps never collide. Prints the length stats.
+--max-samples N keeps N samples per step (whole groups, seeded random order per step, the group holding the
+longest sample always first so every step exercises the peak length); set RBS * NS = N for the replay arm.
 """
 import argparse, os, pickle, random, statistics, types
 import torch
@@ -48,6 +50,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out"); ap.add_argument("inputs", nargs="+")
     ap.add_argument("--steps", type=int, default=3); ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--max-samples", type=int, default=0)
     a = ap.parse_args()
     groups = []  # list of lists of sample dicts
     for fi, path in enumerate(a.inputs):
@@ -65,18 +68,25 @@ def main():
           f"len min/med/p90/max {min(L)}/{int(statistics.median(L))}/{sorted(L)[int(.9*len(L))]}/{max(L)}")
     os.makedirs(a.out, exist_ok=True)
     rng = random.Random(a.seed)
+    longest = max(range(len(groups)), key=lambda g: max(len(s["tokens"]) for s in groups[g]))
     for k in range(a.steps):
         order = list(range(len(groups))); rng.shuffle(order)
+        if a.max_samples:
+            order.remove(longest); order.insert(0, longest)
         out, traj_ids, idx = [], {}, 0
         for gi, g in enumerate(order):
             for s in groups[g]:
+                if a.max_samples and idx >= a.max_samples:
+                    break
                 t = dict(s); key = t.pop("_traj")
                 t["metadata"] = {}  # bridge/Polar metadata is not needed to train
                 t["group_index"] = gi; t["index"] = idx; idx += 1
                 t["rollout_id"] = traj_ids.setdefault(key, len(traj_ids))
                 out.append(t)
         torch.save(dict(rollout_id=k, metadata={}, samples=out), os.path.join(a.out, f"{k}.pt"))
-    print(f"wrote {a.steps} steps x {len(L)} samples to {a.out}")
+        LS = [len(t["tokens"]) for t in out]
+        print(f"step {k}: {len(out)} samples, {sum(LS)} tokens, max {max(LS)}")
+    print(f"wrote {a.steps} steps to {a.out}")
 
 
 if __name__ == "__main__":

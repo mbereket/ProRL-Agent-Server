@@ -9,7 +9,8 @@
 # `REPLAY=@<arm>` points a train_only arm at another arm's rollout dump.
 # `MODEL_PATH=@<path>` is relative to the cluster's miles root (the parent of MILES_STACK_ROOT), e.g. @models/Qwen3.8-27B.
 # `!synth <name> <seq_len> <samples> <rollouts>` writes fixed-length synthetic dumps to <name>/rollout_data.
-# `!compose <name> <dir> <steps>` merges real dumps <dir>/*.pt into <steps> bigger replay steps (compose_replay.py).
+# `!compose <name> <dir> <steps> [--max-samples N]` merges real dumps <dir>/*.pt into <steps> bigger replay steps
+# (compose_replay.py); <dir> may be @<path> relative to the cluster's miles root.
 set -uo pipefail
 MR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
 source "${MR}/lib.sh"
@@ -33,10 +34,11 @@ fi
 while read -r name rest; do
     [ -z "${name}" ] || [ "${name:0:1}" = "#" ] && continue
     if [ "${name}" = "!compose" ]; then   # !compose <name> <dir with real dumps *.pt> <steps>
-        read -r cname csrc csteps <<< "${rest}"
+        read -r cname csrc csteps cextra <<< "${rest}"
         [ "${csrc}" = TRACES_DIR ] && csrc="${MILES_STACK_ROOT}/traces/swegym-smoke2"   # cluster-local copy
+        [[ "${csrc}" == @* ]] && csrc="$(dirname "${MILES_STACK_ROOT}")/${csrc#@}"
         if [ ! -s "${ROOT}/${cname}/rollout_data/$((csteps - 1)).pt" ]; then
-            "${MR}/mrun" --no-nv -- bash -c "python3 '${MR}/bench/compose_replay.py' '${ROOT}/${cname}/rollout_data' ${csrc}/*.pt --steps ${csteps}" 2>&1 | tail -3
+            "${MR}/mrun" --no-nv -- bash -c "python3 '${MR}/bench/compose_replay.py' '${ROOT}/${cname}/rollout_data' ${csrc}/*.pt --steps ${csteps} ${cextra:-}" 2>&1 | tail -6
         fi
         continue
     fi
