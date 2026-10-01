@@ -46,10 +46,11 @@ hm_once() {
     ) 9>"${stamp}.lock"
 }
 
-# This node's cluster-reachable IPv4 address.
+# This node's cluster-reachable IPv4 address: what the hostname resolves to (same as the Ray
+# head address), never a link-local 169.254.x interface (dfw lists one first in hostname -I).
 hm_node_ip() {
     local ip
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-    [ -n "${ip}" ] || ip="$(hostname -i | awk '{print $1}')"
+    ip="$(getent ahostsv4 "$(hostname)" 2>/dev/null | awk 'NR==1{print $1}')"
+    [ -n "${ip}" ] || ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^169\.254\.' | grep -v '^127\.' | head -1)"
     echo "${ip}"
 }

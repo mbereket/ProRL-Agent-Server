@@ -13,7 +13,7 @@ mkdir -p "${RUN}"
 exec > >(tee -a "${RUN}/job.log") 2>&1
 TASKS="${HARBOR_TASKS_DIR:-${HM_SHARED}/tasks/swegym-lite-v3/harbor}"
 export HARBOR_TASKS_DIR="${TASKS}"
-AGENTS="${AGENTS:-mini-swe-agent,terminus-2}"; ATTEMPTS="${ATTEMPTS:-2}"; NTASKS="${NTASKS:-6}"
+AGENTS="${AGENTS:-mini-swe-agent}"; ATTEMPTS="${ATTEMPTS:-2}"; NTASKS="${NTASKS:-6}"
 GPUS="$(nvidia-smi --list-gpus | wc -l | tr -d ' ')"
 MR="${MILES_RUNTIME_DIR:-${SCOMPOSE_PKGS}/miles_runtime}"
 HARBOR_DIR="$(bash "${HM_EXAMPLE_DIR}/setup/ensure_harbor.sh")"

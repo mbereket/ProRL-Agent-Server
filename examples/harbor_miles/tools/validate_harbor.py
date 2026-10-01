@@ -37,7 +37,10 @@ def _request(a: argparse.Namespace, task_id: str, agent: str) -> dict:
         "agent_name": agent,
         "max_seq_len": a.max_seq_len,
     }
-    if agent == "sleep":
+    if agent == "mini-swe-agent":
+        req["agent_import_path"] = "harbor_miles_agents.mini_swe_agents:PreinstalledMiniSweAgent"
+        req["agent_kwargs"] = {"max_tokens": a.max_tokens}
+    elif agent == "sleep":
         req["agent_name"] = "nop"
         req["agent_import_path"] = "harbor_miles_agents.test_agents:SleepAgent"
         req["agent_kwargs"] = {"sleep_sec": 900}

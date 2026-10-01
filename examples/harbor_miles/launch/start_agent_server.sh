@@ -37,6 +37,16 @@ done
 [ -n "${HARBOR_SINGULARITY_OVERLAY_DIR:-}" ] || hm_die "no writable node-local dir for sandbox overlays"
 hm_log "sandbox overlays under ${HARBOR_SINGULARITY_OVERLAY_DIR} ($(df -h "${HARBOR_SINGULARITY_OVERLAY_DIR}" | awk 'NR==2{print $4}') free)"
 mkdir -p "${HARBOR_SINGULARITY_CACHE_DIR}"
+# Read-only agent toolchains (setup/ensure_agent_tools.sh), bound into every sandbox at the same path.
+MOUNTS=""
+for tool in ${HM_AGENT_TOOLS:-mini-swe-agent}; do
+    root="$(bash "${HM_EXAMPLE_DIR}/setup/ensure_agent_tools.sh" "${tool}")"
+    var="HM_AGENT_TOOLS_$(echo "${tool}" | tr 'a-z-' 'A-Z_')"
+    export "${var}=${root}"
+    MOUNTS="${MOUNTS:+${MOUNTS},}{\"source\": \"${root}\", \"target\": \"${root}\", \"read_only\": true}"
+    hm_log "agent tools ${tool}: ${root} ($(cat "${root}/VERSION" 2>/dev/null))"
+done
+export HARBOR_SINGULARITY_MOUNTS="[${MOUNTS}]"
 export PYTHONPATH="${HM_EXAMPLE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 
