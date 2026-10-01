@@ -1499,6 +1499,10 @@ def generate_rollout_polar_async(args: Any, rollout_id: int, data_source: Any, e
         rollout_wall_s=elapsed,
         gen_active_s=async_worker.take_gen_active_seconds(),
     ))
+    # Run-cumulative drop counters by reason (zero-variance, stale, ...).
+    for key, value in async_worker.snapshot_metrics().items():
+        if key.startswith(("polar/dropped_", "polar/stale_")):
+            metrics[f"{key}_total"] = value
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
 
