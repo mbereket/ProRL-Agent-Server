@@ -143,6 +143,8 @@ if [ "${LAYOUT}" = colocate ] || [ "${ROLLOUT_ONLY}" = 1 ]; then N_ENGINES=$(( T
 ENGINE_KV_TOKENS="${ENGINE_KV_TOKENS:-$(( ENGINE_TP == 1 ? 773763 : 913457 * ENGINE_TP ))}"   # measured on hel/dfw @ mem 0.8: TP1 773,763; TP2 1,826,914
 AVG_CTX="${AVG_CTX:-$(( MAX_SEQ_LEN * 3 / 4 ))}"
 KV_CAP=$(( N_ENGINES * ENGINE_KV_TOKENS * ${KV_FRACTION_PCT:-80} / 100 / AVG_CTX ))
+# A layout with a MEASURED knee (INFLIGHT_PER_ENGINE, e.g. 27B TP4 on de4: 35) replaces the KV estimate above.
+[ -n "${INFLIGHT_PER_ENGINE:-}" ] && KV_CAP=$(( N_ENGINES * INFLIGHT_PER_ENGINE ))
 SANDBOX_CAP=$(( ${HM_SANDBOXES_PER_NODE:-32} * MILES_NUM_NODES ))
 SESSION_CAP="${SESSION_CAP:-$(( KV_CAP < SANDBOX_CAP ? KV_CAP : SANDBOX_CAP ))}"
 echo "[driver] session cap ${SESSION_CAP} (${N_ENGINES} engines x TP${ENGINE_TP}, kv/engine ${ENGINE_KV_TOKENS}, avg ctx ${AVG_CTX} -> kv cap ${KV_CAP}; sandbox cap ${SANDBOX_CAP})${ASYNC_CONCURRENCY:+; in flight = ASYNC_CONCURRENCY ${ASYNC_CONCURRENCY} (config)}"
@@ -154,7 +156,9 @@ if [ "${ASYNC}" = 1 ]; then
 else
     args+=(--rollout-function-path hm_rollout.RolloutFn)
     # Sync: one step's groups run together; oversubscribing the engines thrashes the cache too.
-    [ $(( RBS * NS )) -le "${SESSION_CAP}" ] || echo "[driver] WARNING: RBS x NS = $(( RBS * NS )) > session cap ${SESSION_CAP}"
+    # (rollout-only runs queue by design: concurrency = sandbox slots)
+    [ $(( RBS * NS )) -le "${SESSION_CAP}" ] || [ "${ROLLOUT_ONLY}" = 1 ] \
+        || echo "[driver] note: RBS x NS = $(( RBS * NS )) > session cap ${SESSION_CAP}: the rest queue for sandbox slots"
 fi
 [ "${DROP_ZERO_STD:-1}" = 1 ] && args+=(--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter)
 # Periodic eval on the same harness/sampling (no dynamic filter): EVAL_INTERVAL steps, EVAL_N attempts per task,
