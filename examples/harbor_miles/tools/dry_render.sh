@@ -13,6 +13,8 @@
 #   --cluster C     hel | dfw (default) | aws-iad | ord | draco  (paths from cluster/clusters.sh)
 #   --nodes N       job nodes (default: the layout's NODES, else 1)
 #   --hm-root DIR   HM_ROOT as submit.py would export it (default: clusters.sh's)
+#   --eval-src NAME[:ITER[:SHARDS]]  for EVAL_FROM_RUN configs: create a stub source run NAME (run name or absolute dir) with a
+#                   complete checkpoint iter ITER (default 3) of SHARDS trainer-rank shards (default 4)
 #   K=V             extra job env, like submit.py --env (e.g. DE4_HALF=B)
 # Output (default ${TMPDIR:-/tmp}/hm-dry/<config>-<cluster>[-<ref>]): miles-args.txt, train-cmd.txt, patch-sets.txt,
 # agent-servers.txt, prepare-data.txt, job-env.txt (secrets masked), config.txt (layers + derived knobs), render.log.
@@ -21,7 +23,7 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 EX_SELF="$(cd "${HERE}/.." && pwd)"
 REPO="$(git -C "${EX_SELF}" rev-parse --show-toplevel)"
-REF=""; CL=dfw; NN=""; HMR=""; OUT=""
+REF=""; CL=dfw; NN=""; HMR=""; OUT=""; EVSRC=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --ref) REF="$2"; shift 2 ;;
@@ -29,6 +31,7 @@ while [ $# -gt 0 ]; do
         --nodes) NN="$2"; shift 2 ;;
         --hm-root) HMR="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
+        --eval-src) EVSRC="$2"; shift 2 ;;
         -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         *) break ;;
     esac
@@ -82,7 +85,13 @@ if base == "prepare_data.py":
 if base == "model_args_utils.py":
     print("--DRY-MODEL-ARGS-OF " + argv[1]); sys.exit(0)        # the pinned Miles prints the real model args in the job
 if base in ("train.py", "train_async.py"):
-    rec("train-cmd.jsonl", [base] + argv[1:]); sys.exit(0)
+    rec("train-cmd.jsonl", [base] + argv[1:])
+    a = argv[1:]
+    if "--lora-adapter-path" in a:   # what Miles logs when the adapter loads (the driver's eval mode checks for it)
+        print("[dry] Successfully loaded LoRA adapter from " + a[a.index("--lora-adapter-path") + 1], flush=True)
+    if "--eval-interval" in a and ("--skip-eval-before-train" not in a):
+        print("[2026-01-01 00:00:00 dry] log_utils.py:1 - eval 0: {}", flush=True)   # eval-only modes stop on this line
+    sys.exit(0)
 if base == "node_monitor.py":
     sys.exit(0)
 if argv[:1] == ["-c"] and "sched_getaffinity" in argv[1] and not hasattr(os, "sched_getaffinity"):
@@ -125,6 +134,12 @@ EOF
 printf '#!/usr/bin/env bash\nexit 0\n' > "${B}/flock"; cp "${B}/flock" "${B}/curl"; cp "${B}/flock" "${B}/pkill"
 printf '#!/usr/bin/env bash\necho "127.0.0.1       STREAM drynode"\n' > "${B}/getent"
 printf '#!/usr/bin/env bash\nexec /bin/sleep 0.05\n' > "${B}/sleep"   # the launcher's poll loops, at speed
+cat > "${B}/stat" <<EOF
+#!/usr/bin/env bash
+# GNU "stat -c %Y FILE" (mtime) on any platform; anything else -> the system stat
+if [ "\$1" = -c ] && [ "\$2" = %Y ]; then exec "${REAL_PY}" -c 'import os, sys; print(int(os.path.getmtime(sys.argv[1])))' "\$3"; fi
+exec /usr/bin/stat "\$@"
+EOF
 chmod +x "${B}"/*
 # Runtime package: ray_node.sh stub records the patch sets + the job env, then runs the driver like the Ray head would.
 mkdir -p "${WORK}/pkgs/miles_runtime"
@@ -155,6 +170,20 @@ JOBENV=(PATH="${B}:/usr/bin:/bin:/usr/sbin:/sbin" HOME="${WORK}/home" USER="${US
     SESSION_PORT=65460 NVINF_API_KEY=dry-render-placeholder
     DRY_OUT="${DRY_OUT}" DRY_WORK="${WORK}" DRY_MILES_DIR="${WORK}/miles" DRY_NODE_GPUS=8 DRY_CPUS=96)
 [ -n "${RUNS_REAL}" ] && JOBENV+=(HM_RUNS_ROOT="${PFX}${RUNS_REAL}")
+# Stub source run for EVAL_FROM_RUN (decoupled eval): a complete checkpoint, written 10 min ago, in every root the driver looks.
+if [ -n "${EVSRC}" ]; then
+    IFS=: read -r ev_name ev_iter ev_shards <<< "${EVSRC}"
+    case "${ev_name}" in /*) ev_dirs=("${PFX}${ev_name}") ;; *) ev_dirs=("${PFX}${HM_ROOT_REAL}/runs/${ev_name}"); [ -n "${RUNS_REAL}" ] && ev_dirs+=("${PFX}${RUNS_REAL}/${ev_name}") ;; esac
+    for d in "${ev_dirs[@]}"; do
+        a="${d}/ckpt/iter_$(printf %07d "${ev_iter:-3}")/adapter"; mkdir -p "${a}"
+        for r in $(seq 0 $(( ${ev_shards:-4} - 1 ))); do echo stub > "${a}/adapter_megatron_rank${r}.pt"; echo stub > "${a}/training_state_rank${r}.pt"; done
+        echo '{}' > "${a}/adapter_config.json"
+        "${REAL_PY}" -c 'import os, sys, time
+t = time.time() - 600
+for dp, _, fs in os.walk(sys.argv[1]):
+    for f in fs: os.utime(os.path.join(dp, f), (t, t))' "${d}"
+    done
+fi
 for kv in "$@"; do JOBENV+=("${kv}"); done
 
 # ---- 4. run the real launcher

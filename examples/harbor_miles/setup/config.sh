@@ -13,7 +13,8 @@
 # A flat config without LAYOUT_PRESET/DATASET still works: recipe defaults, then the file.
 #
 # hm_derive_config then fills every DERIVED knob that no layer set (an explicit value always wins):
-#   MAX_SEQ_LEN    = CAP in tokens (64k = 65536, 96k = 98304, 128k = 131072)
+#   MAX_SEQ_LEN    = CAP in tokens (64k = 65536, 96k = 98304, 128k = 131072); CAP is REQUIRED (no default; flat configs may
+#                    set MAX_SEQ_LEN instead)
 #   MTPG           = MAX_SEQ_LEN / CP (max tokens per trainer GPU = one full-length sequence per CP shard)
 #   LOGPROB_CHUNK  = 1024 when one sequence puts >= 96k tokens on a trainer GPU (MAX_SEQ_LEN / CP >= 98304), else 4096
 #   TRAIN_ALLOC_CONF = expandable_segments:True when MAX_SEQ_LEN >= 98304 (trainer workers only, Miles --train-env-vars);
@@ -70,7 +71,10 @@ hm_derive_config() {
     local _hm_jobnodes _hm_nodes _hm_gpn _hm_total _hm_engine_gpus _hm_inflight _hm_per_seq
     set -a
     # ---- context cap and trainer memory knobs
-    if [ -z "${MAX_SEQ_LEN:-}" ]; then MAX_SEQ_LEN="$(hm_tokens "${CAP:-64k}")" || return 2; fi
+    if [ -z "${MAX_SEQ_LEN:-}" ]; then
+        [ -n "${CAP:-}" ] || { echo "hm_derive_config: set CAP in the experiment file (e.g. CAP=96k); it has no default" >&2; return 2; }
+        MAX_SEQ_LEN="$(hm_tokens "${CAP}")" || return 2
+    fi
     CP="${CP:-1}"; TP="${TP:-2}"
     MTPG="${MTPG:-$(( MAX_SEQ_LEN / CP ))}"
     _hm_per_seq=$(( MAX_SEQ_LEN / CP ))
@@ -84,6 +88,8 @@ hm_derive_config() {
             TRAIN_ALLOC_CONF=
         fi
     fi
+    # Decoupled eval (EVAL_FROM_RUN) is one job: never chain it (the driver forces it too, but chaining is decided earlier).
+    if [ -n "${EVAL_FROM_RUN:-}" ]; then HM_CHAIN_MAX=0; fi
     # ---- engines and in-flight sessions
     # Job node count: SLURM_JOB_NUM_NODES (srun steps such as node_peer.sh see SLURM_NNODES = 1).
     _hm_jobnodes="${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-}}"

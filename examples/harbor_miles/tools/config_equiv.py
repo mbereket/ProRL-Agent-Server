@@ -59,6 +59,8 @@ def flags(lines):
     """['--a', 'x', '--b', ...] -> [('--a', ('x',)), ('--b', ()), ...]"""
     out, cur, vals = [], None, []
     for tok in lines:
+        if tok.startswith("# "):   # section markers the driver appends (e.g. "# eval@N" before a decoupled eval's args)
+            continue
         if tok.startswith("--"):
             if cur is not None:
                 out.append((cur, tuple(vals)))
