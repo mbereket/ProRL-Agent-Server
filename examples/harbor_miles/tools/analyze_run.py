@@ -63,6 +63,7 @@ def parse_engine_stats(path: str) -> dict:
             "kv_usage_max": round(b["kv_usage_max"], 2),
             "mamba_usage_max": round(b["mamba_usage_max"], 2),
             "avg_running_per_engine": round(b["running_sum"] / b["decode_lines"], 1) if b["decode_lines"] else None,
+            "decode_tok_s_per_engine": round(b["gen_tok_s_sum"] / b["decode_lines"], 1) if b["decode_lines"] else None,
         }
     return out
 
@@ -153,7 +154,7 @@ def main() -> None:
             w.writerow(["step"] + keys)
             for s in sorted(steps):
                 w.writerow([s] + [steps[s].get(k, "") for k in keys])
-    print("step  raw_reward  resp_len  total_len  wait_s  train_s  kl_tr_ro  stale")
+    print("step  raw_reward  resp_len  total_len  wait_s  train_s  wsync_s  kl_tr_ro  stale")
     for s in sorted(steps):
         d = steps[s]
         def g(k, fmt="{:.3f}"):
@@ -161,7 +162,8 @@ def main() -> None:
             return fmt.format(v) if isinstance(v, (int, float)) else "-"
         print(f"{s:4d}  {g('rollout/raw_reward'):>10}  {g('rollout/response_lengths','{:.0f}'):>8}  "
               f"{g('rollout/total_lengths','{:.0f}'):>9}  {g('perf/train_wait_time','{:.0f}'):>6}  "
-              f"{g('perf/train_time','{:.0f}'):>7}  {g('train/train_rollout_kl','{:.1e}'):>8}  "
+              f"{g('perf/train_time','{:.0f}'):>7}  {g('perf/update_weights_time','{:.1f}'):>7}  "
+              f"{g('train/train_rollout_kl','{:.1e}'):>8}  "
               f"{g('rollout/fully_async/avg_staleness','{:.2f}'):>5}")
     rewards = [steps[s]["rollout/raw_reward"] for s in sorted(steps) if "rollout/raw_reward" in steps[s]]
     summary: dict = {"n_steps": len(rewards)}
@@ -187,7 +189,8 @@ def main() -> None:
     print("engine stats by step (cache_hit, kv_usage_max, avg running/engine):")
     for k, v in eng.items():
         print(f"  step {k}: hit {v['cache_hit']}  kv_max {v['kv_usage_max']}  mamba_max {v['mamba_usage_max']}  "
-              f"running/engine {v['avg_running_per_engine']}  prefill_new {v['prefill_new_M']}M")
+              f"running/engine {v['avg_running_per_engine']}  decode tok/s/engine {v['decode_tok_s_per_engine']}  "
+              f"prefill_new {v['prefill_new_M']}M")
     print(json.dumps(summary, indent=1))
     if a.out:
         with open(a.out, "w") as f:
