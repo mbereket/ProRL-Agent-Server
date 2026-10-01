@@ -165,7 +165,7 @@ fi
 if [ -n "${EVAL_INTERVAL:-}" ]; then
     args+=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${EVAL_DATA}"
            --n-samples-per-eval-prompt "${EVAL_N:-2}")
-    [ "${EVAL_BEFORE_TRAIN:-0}" = 1 ] || args+=(--skip-eval-before-train)
+    [ "${EVAL_BEFORE_TRAIN:-0}" = 1 ] || [ "${EVAL_ONLY:-0}" = 1 ] || args+=(--skip-eval-before-train)
 fi
 # Resume (chained jobs, same RUN_NAME).
 #  LoRA (bridge): adapter + optimizer + iteration from the newest complete ckpt/iter_N/adapter via --lora-adapter-path,
@@ -239,8 +239,23 @@ echo "[driver] ${ARM}/${LAYOUT} async=${ASYNC} nodes=${MILES_NUM_NODES} TP${TP} 
     > "${RUN_DIR}/gpu-${SLURM_JOB_ID:-local}.csv" 2>/dev/null & sampler=$!
 trap 'kill ${sampler} 2>/dev/null || true' EXIT
 cd /root/miles
-if [ "${ASYNC}" = 1 ]; then
-    python3 train_async.py --fully-async "${args[@]}"
-else
-    python3 train.py "${args[@]}"
+if [ "${ASYNC}" = 1 ]; then train_cmd=(python3 train_async.py --fully-async "${args[@]}"); else train_cmd=(python3 train.py "${args[@]}"); fi
+if [ "${EVAL_ONLY:-0}" = 1 ]; then
+    # Rollout-only measurement (base pass rates, session lengths, overflow at a cap): the eval set (EVAL_DATA x EVAL_N,
+    # same harness/sampling, unfiltered) runs before any training; the run stops as soon as its metrics line lands.
+    # Trials are in trials-<job>.jsonl (split=eval). Needs EVAL_BEFORE_TRAIN=1 and EVAL_INTERVAL set (the config's job).
+    echo "[driver] EVAL_ONLY: eval before train, then stop"
+    stop_after_eval() {
+        local line
+        while IFS= read -r line; do
+            printf '%s\n' "${line}"
+            if [[ "${line}" == *" - eval 0: {"* ]]; then
+                echo "[driver] EVAL_ONLY: eval landed; stopping"
+                pkill -TERM -f "train_async.py|train.py" || true
+            fi
+        done
+    }
+    "${train_cmd[@]}" 2>&1 | stop_after_eval || true
+    exit 0
 fi
+"${train_cmd[@]}"
