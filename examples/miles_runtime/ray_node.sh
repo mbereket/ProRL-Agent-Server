@@ -89,9 +89,9 @@ driver="$(printf '%q ' "$@")"
 set +e
 "${MR}/mrun" "${mrun_opts[@]}" -- bash -c "
 set -uo pipefail
-# The image's opentelemetry is too old for the Ray 2.58 dashboard (ImportError _ExtendedAttributes):
-# off by default (drivers run on the head directly); RAY_DASHBOARD=1 to try it (needed for ray job submit).
-if [ \"\${RAY_DASHBOARD:-0}\" = 1 ]; then dash=(--dashboard-host 0.0.0.0); else dash=(--include-dashboard=false); fi
+# Dashboard on by default (needs patches/base opentelemetry fix): ray.util.state, ray job submit and
+# Miles --pin-rollout-manager-to-head use it. RAY_DASHBOARD=0 to disable.
+if [ \"\${RAY_DASHBOARD:-1}\" = 1 ]; then dash=(--dashboard-host 0.0.0.0); else dash=(--include-dashboard=false); fi
 ray start --head --node-ip-address '${HEAD_IP}' --port '${RAY_GCS_PORT}' --num-gpus '${GPUS}' \
     --dashboard-port '${RAY_DASHBOARD_PORT}' --ray-client-server-port '$((PORT_BASE + 2))' ${node_ports[*]} \
     \"\${dash[@]}\" --disable-usage-stats >/dev/null || { echo 'ray start failed; raylet/agent logs:' >&2;
