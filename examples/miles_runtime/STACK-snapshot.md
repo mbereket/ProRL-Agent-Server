@@ -4,7 +4,7 @@ Status: **usable on dfw and hel** (dfw: SIF, Ray 1+2 nodes, NCCL over IB validat
 Code: ProRL-Agent-Server branch **`miles-stack`**, dir `examples/miles_runtime/` (README there).
 Last updated: 2026-10-01 05:35 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
 
-> **[2026-10-01 06:30] MTP auxiliary loss — FIXED in the base patch set (miles-stack `a49a88ab`, base `0004`): pull `miles-stack`.**
+> **[2026-10-01 06:20] MTP auxiliary loss — FIXED in the base patch set (miles-stack `a49a88ab`, base `0004`): pull `miles-stack`.**
 > Bridge mode built the HF config's MTP layer (Qwen3.5/3.8 `mtp_num_hidden_layers: 1`) although Miles logs `mtp_num_layers None` /
 > `enable_mtp_training False`; its next-token CE over ALL tokens (scale 0.2, not advantage-weighted) was attached to the decoder
 > output by `MTPLossAutoScaler`, i.e. mixed into every LoRA/RL update. Every bridge-mode run before `a49a88ab` had it.
@@ -486,11 +486,15 @@ heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 include
 | 128k | TP2·CP2 headwise (4) | **REAL** | — | | | | | OOM (12 GiB [tokens/CP x vocab/TP] logits alloc) |
 | 128k | TP4·CP2 headwise (8), MTP on | synthetic | — | | | | 78.5 | OOM |
 | 128k | TP4·CP2 headwise (8) | synthetic | **115.6** | 1.05 M | **9.07 k** | 20.9 % | **77.8** | fits (tight) |
+| 128k | TP4·CP2 headwise (8) | **REAL** | 94.3 (step 2; step 1: 266) | 0.98 M | 10.4 k | 19.3 % | **79.0** | fits at the edge |
+| 128k | TP4 x DP2 (8) | synthetic | — | | | | | OOM (as on 4 GPUs: CP1 at 128k does not fit) |
 
 Reading so far: **4 trainer GPUs hold 27B at 64k; 96k fits the synthetic worst case but not real packed steps; 128k
 does not fit on 4 GPUs.** The per-microbatch cost that grows with context is the LM-head logits, [tokens/CP x vocab/TP] (vocab
 248k: 12 GiB in bf16 at 96k on TP4) plus their gradient; TP cannot go above 4 for 27B, so CP (more GPUs) is the lever.
-In flight: expandable-segments + logprob-chunk-1024 rescue of the 4-GPU 96k/128k rows (`bench/arms-27b-4g-fit.txt`),
-REAL 128k TP4·CP2-hw (8), synthetic 8-GPU CP variants and 192k (hel 1527099), 128k TP4 x DP2 (8, aws-iad 7598313).
-2-node layouts queued (`bench/arms-27b-2n.txt`).
+The REAL 128k TP4·CP2-hw row has no headroom (79.0 GB) and one slow step (266 s vs 94 s); treat it as "fits only with the
+rescue settings" until the expandable-segments rerun lands.
+In flight: hel 1527310 (4-GPU 96k/128k rescue: expandable segments, logprob chunk 1024; then REAL 128k TP4·CP2-hw + exp,
+synthetic 192k), aws-iad 7598871 (8 GPUs: synthetic 192k TP4·CP2-hw / TP2·CP4-hw, REAL 96k TP4xDP2 / TP4·CP2-hw, REAL 128k
+TP2·CP4-hw / TP4·CP2-hw, all with expandable segments). 2-node layouts queued (`bench/arms-27b-2n.txt`).
 
