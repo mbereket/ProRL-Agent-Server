@@ -5,3 +5,4 @@ Runtime-level fixes to the pinned image, applied by every `mrun` call (MILES_NO_
   THD CP input; Miles builds them but only injected them through a get_rope_index hook (too late) ->
   ValueError "Pre-sharded packed CP inputs require explicit rank-local 3D MRoPE position_ids." Pass them explicitly.
 - miles/0002: colocated LoRA with --no-offload-train read weights from a non-existent memory-saver backup (AssertionError: TorchMemorySaver observes invalid LD_PRELOAD).
+- miles/0003: layer-aware training FLOPs -> perf/actor_train_{useful,hw}_{tflops,mfu}, perf/flops_core_frac (GDN layers linear, LoRA: no base weight grads, recompute counted in hw). Legacy perf/actor_train_tflops (3 x all-softmax fwd) overstates 9B LoRA useful work ~1.9x on real 64k traces.
