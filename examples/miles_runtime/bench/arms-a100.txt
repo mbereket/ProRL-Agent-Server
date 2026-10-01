@@ -1,0 +1,12 @@
+# A100 (draco/ord, sm80) vs H100 comparison arms for Qwen3.5-9B LoRA, 1 node x 8 GPUs.
+# Each arm mirrors an H100 arm of STACK.md section 9 / the real64k suites (same knobs), so the ratio is apples to apples.
+# e2e, dapo-math 32x8, 8k responses, colocated, adapter serving, TP1 engines (H100: lora-colo 214 s/step, rollout 123 s, train 47 s)
+a-lora-colo        ARM=lora LAYOUT=colocate NUM_ROLLOUT=6
+# Real SWE-Gym codex traces (path-a smoke2, 64k cap), 24 trajectories per step (H100: arms-real64k-*.txt on dfw)
+!compose swe24 /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket/miles/stack/traces/swegym-smoke2 3
+a-r8-tp2cp2-hw     ARM=lora GPUS=8 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+a-r8-tp4           ARM=lora GPUS=8 TP=4 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
+a-r4-tp4           ARM=lora GPUS=4 TP=4 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
+a-r4-headwise      ARM=lora GPUS=4 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+# e2e with merged serving + TP2 engines (needs PATCH_DIR patches/lora-serve-merged; H100: lay-colo-tp2 in arms-layout1n.txt)
+a-lay-colo-tp2     ARM=lora LORA_SERVE=merged LAYOUT=colocate ENGINE_TP=2 NUM_ROLLOUT=6
