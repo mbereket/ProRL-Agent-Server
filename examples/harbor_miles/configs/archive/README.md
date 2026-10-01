@@ -17,8 +17,10 @@ To re-run the same EXPERIMENT on the current recipe, write a new file in `config
 | `swegym-27b/` | `swegym-codex-27b-lora-{1n,2n}.env` | miles-path-b b8d7e8c2 / 6bad3530 | 27B on SWE-Gym (D5 bring-up); superseded by de4 |
 | `de4-27b/` | `de4-codex-27b-lora-{1n,2n}.env`, `-lora-colo1n.env`, `-smoke2n.env`, `-rollout128k.env` | miles-path-b 0ad57d44 / 11cf655a / 1fdfa6d6 | first de4 27B configs (64k, provisional in-flight); replaced by `layouts/` + `experiments/` |
 | `de4-27b/` | `de4-codex-27b-bs128-2n.env` | miles-path-b b8a7f86a | batch point 2; re-expressed as `experiments/de4-codex-27b-bs128-2n.env` (equivalent) |
+| `de4-27b/` | `de4-codex-27b-eval-r3-smoke.env` | miles-path-b 3819542a | decoupled-eval smoke of r3's adapters; layered example `experiments/de4-27b-eval-r3-smoke.env` (inert differences, EQUIVALENCE.md) |
 | `de4-27b/` | `diag-de4-27b-overfit8-2n-r3.env` (+ `-2n.env`, `-2n-t8.env`, `-1n.env`) | miles-diag 7f76aa95 (r3; earlier variants b3cc86b2 / e840068e) | DIAG 27B de4 overfit r3 (dfw 19612545); re-expressed as `experiments/diag-de4-27b-overfit8-r3.env` (equivalent) |
 | `de4-27b/` | `q27-de4-overfit8-2n-lr1e4.env` (+ `-split1n-lr1e4.env`, `-colo1n.env`, `q27-de4-colo1n-smoke96k{,-r2}.env`, `de4-codex-27b-base128k.env`) | miles-qwen27b d48fac8a / 335b1355 / b1746c33 / 6331c7f4 (LOCAL branch in miles-work/qwen27b/ProRL-pb, not pushed) | LR-1e-4 hedge (dfw 19612902; re-expressed, equivalent), 1n split / colocated timing arms (hel 1527509, aws-iad 7599199), colocated smoke (aws-iad 7598908), the 27B de4 base pass (hel 1527107/1527112) |
 | `bbh/` | `learn-bbh8-async-{1n,2n}.env`, `smoke-bbh8-1n.env`, `bbh-overfit8.txt` | miles-path-b 5b099042 | bbh/bbh-mcp is no longer used (user, 2026-09-30) |
 
-`de4-27b/EQUIVALENCE.md`: the dry-render proof that the three re-expressed running configs launch the same run.
+`de4-27b/EQUIVALENCE.md`: the dry-render proof that the three re-expressed running configs launch the same run (re-checked after
+the 3819542a merge), plus the eval example's (inert) differences.

@@ -8,6 +8,8 @@ its provenance.
 `miles/{path-b,qwen27b,shared/hm}/runs/RUN`), or `CLUSTER:/abs/run/dir`. Remote specs read over SFTP (the tool re-runs
 itself under the cluster-tools venv when needed). Job logs are found by the run's job ids in `<user_root>/miles/joblogs/` (new) and the legacy `<HM_ROOT>/joblogs/`.
 Log timestamps are parsed in `HM_LOG_TZ` (default `America/Los_Angeles`, the clusters' log clock).
+CAVEAT: verified only on dfw/hel logs (they line up with the trials' `t_end` epochs only in Pacific time); aws-iad, ord and draco
+are unverified: if every trial lands in "in progress" or step windows look shifted, set `HM_LOG_TZ` (e.g. `UTC`).
 
 | tool | answers | usage |
 |---|---|---|
