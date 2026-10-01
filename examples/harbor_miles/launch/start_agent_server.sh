@@ -52,6 +52,18 @@ export PYTHONPATH="${HM_EXAMPLE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 # server's in-flight trials of that task within ~15 s (graceful sandbox teardown; the trial returns Flushed = infra, excluded
 # from the loss). From the laptop: cluster-tools scput.py <cluster> <empty file> <RUN_DIR>/cancel/<instance_id>.
 export HARBOR_CANCEL_DIR="${HARBOR_CANCEL_DIR:-${RUN_DIR}/cancel}"
+# Sandbox memory safety (harbor patches 0001/0002); HPC nodes give sandboxes no cgroup memory limit, and one runaway
+# analysis process filled a 1.2 TB job cgroup in 8 minutes and hung the job (dfw 19612902):
+#  HM_SANDBOX_PROC_MEM_GB (default 16 = the de4 task's 8 GB x 2 headroom; 0 = off): per-process RLIMIT_DATA inside every
+#    sandbox (agent, tools, verifier); a runaway allocation fails (MemoryError/ENOMEM) instead of growing.
+#  HM_MEM_WATCHDOG_FRAC (default 0.8; 0 = off): when the job's unreclaimable memory (anon + shmem, page cache excluded)
+#    reaches this fraction of the job cgroup limit, the agent server SIGKILLs the trial with the largest process-tree RSS
+#    and reports it as "Error: MemoryWatchdog" (infra failure, excluded from the loss).
+if [ "${HM_SANDBOX_PROC_MEM_GB:-16}" != 0 ]; then
+    export HARBOR_SANDBOX_DATA_LIMIT_KB=$(( ${HM_SANDBOX_PROC_MEM_GB:-16} * 1024 * 1024 ))
+fi
+export HARBOR_MEM_WATCHDOG_FRAC="${HM_MEM_WATCHDOG_FRAC:-0.8}"
+hm_log "sandbox memory: per-process cap ${HM_SANDBOX_PROC_MEM_GB:-16} GB, node watchdog at ${HARBOR_MEM_WATCHDOG_FRAC} of the job limit"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 
 mkdir -p "${RUN_DIR}/agent_servers" "${RUN_DIR}/trials/${HOST}"

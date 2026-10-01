@@ -201,6 +201,16 @@ def main():
     if not same_ids:
         real.append(f"task list content {ids_o} vs {ids_n}")
 
+    # 7 (printed after 6): code the job runs besides the launcher
+    ho = dict(l.rsplit(" ", 1) for l in read(a.old, "code-hashes.txt").splitlines() if " " in l)
+    hn = dict(l.rsplit(" ", 1) for l in read(a.new, "code-hashes.txt").splitlines() if " " in l)
+    code_lines, code_diff = [], []
+    for k in sorted(set(ho) | set(hn)):
+        same = ho.get(k) == hn.get(k)
+        code_lines.append(f"   {k}: {'SAME' if same else 'DIFF'} ({ho.get(k, '-')} -> {hn.get(k, '-')})")
+        if not same and ho and hn:
+            code_diff.append(k)
+
     # 6. env
     ex_o = a.old_example or read(a.old, "example-dir.txt").strip()
     ex_n = a.new_example or read(a.new, "example-dir.txt").strip() or here
@@ -245,6 +255,10 @@ def main():
         print("   set on one side, read by no code (no effect): " + ", ".join(
             f"{k}={vo if vo is not None else vn}" + (" (old)" if vo is not None and vn is None else " (new)" if vo is None else "")
             for k, vo, vn in dead))
+    if code_lines:
+        print("7. code besides the launcher (content hashes):")
+        print("\n".join(code_lines))
+        real += [f"code: {k}" for k in code_diff]
     print()
     if real:
         print(f"VERDICT: NOT equivalent ({len(real)} real difference(s))")

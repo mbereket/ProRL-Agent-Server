@@ -102,7 +102,7 @@ EOF
 cat > "${B}/harbor-python" <<'EOF'
 #!/usr/bin/env bash
 # the Harbor agent server: record how it would start (per node), then exit
-echo "node=${DRY_NODE:-0} pin=${DRY_PIN:-none} $*" >> "${DRY_OUT}/agent-servers.txt"
+echo "node=${DRY_NODE:-0} pin=${DRY_PIN:-none} $* | env HARBOR_SANDBOX_DATA_LIMIT_KB=${HARBOR_SANDBOX_DATA_LIMIT_KB:-unset} HARBOR_MEM_WATCHDOG_FRAC=${HARBOR_MEM_WATCHDOG_FRAC:-unset} HARBOR_CANCEL_DIR=${HARBOR_CANCEL_DIR:+set}" >> "${DRY_OUT}/agent-servers.txt"
 EOF
 cat > "${B}/taskset" <<'EOF'
 #!/usr/bin/env bash
@@ -232,6 +232,20 @@ open(os.path.join(out, "job-env.txt"), "w").write("\n".join(env) + "\n")
 EOF
 strip < "${DRY_OUT}/render.log" > "${OUT}/render.log"
 echo "${EX}" > "${OUT}/example-dir.txt"     # the launcher tree used (config_equiv.py scans it for consumed variables)
+# Code the job would run besides the launcher: content hashes (path-independent: renamed patches hash the same).
+if [ -n "${REF}" ]; then git -C "${REPO}" archive "${REF}" examples/miles_runtime/patches | tar -x -C "${WORK}/src"; RTP="${WORK}/src/examples/miles_runtime/patches"
+else RTP="${REPO}/examples/miles_runtime/patches"; fi
+"${REAL_PY}" - "${EX}" "${RTP}" > "${OUT}/code-hashes.txt" <<'EOF'
+import hashlib, os, sys
+def h(paths):
+    return hashlib.sha256("".join(sorted(hashlib.sha256(open(p, "rb").read()).hexdigest() for p in paths)).encode()).hexdigest()[:16]
+def files(root, ext):
+    return [os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs if f.endswith(ext)] if os.path.isdir(root) else []
+ex, rtp = sys.argv[1:3]
+print("harbor (PIN + patches)", h([os.path.join(ex, "harbor/PIN")] + files(os.path.join(ex, "harbor/patches"), ".patch")))
+print("miles_patches", h(files(os.path.join(ex, "miles_patches"), ".patch")))
+print("runtime patches (all sets)", h(files(rtp, ".patch") + files(rtp, ".txt")))
+EOF
 grep -h "config: " "${OUT}/render.log" | sed 's/^.*config: /config: /' | head -1 > "${OUT}/config.txt" || true
 grep -h "\[driver\]" "${OUT}/render.log" >> "${OUT}/config.txt" || true
 n_args="$(grep -c . "${OUT}/miles-args.txt" || true)"
