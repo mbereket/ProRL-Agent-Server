@@ -73,67 +73,106 @@ def _is_nonfinite(v) -> bool:
     return v is None or not math.isfinite(v)
 
 
-def quarantine_nonfinite_logprobs(samples: list[Sample], where: str = "") -> dict[str, float]:
-    """Non-finite rollout logprobs (NaN/inf/None from the engine) must never reach the ratio/loss.
+_TOKENIZER = None
 
-    For every sample with a non-finite rollout_log_probs entry:
-      * the entry is replaced by 0.0: Miles masks the loss MULTIPLICATIVELY (NaN x 0 = NaN), so a NaN on even a
-        masked-out token would poison the step's loss and metrics;
-      * if any such entry sits on a trainable token (loss_mask 1), the sample is excluded from the loss
-        (``remove_sample``; its reward still counts in the group baseline: the verifier result is valid);
-      * metadata["nan_logprob"] records where they were, and one log line per affected sample says whether they sit in
-        the last assistant turn and whether the trajectory was truncated/overlong.
-    Idempotent: a second call finds nothing. Returns per-call counts (also logged).
+
+def _tokenizer(args):
+    """The policy tokenizer, loaded once per process (only needed to re-decode a stripped sample's response text)."""
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        try:
+            from miles.utils.processing_utils import load_tokenizer
+
+            _TOKENIZER = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        except Exception:
+            logger.exception("hm nan_logprob: tokenizer load failed; stripped responses get empty text (tokens are exact)")
+
+            class _NoDecode:
+                def decode(self, ids):
+                    return ""
+
+            _TOKENIZER = _NoDecode()
+    return _TOKENIZER
+
+
+NAN_KEYS = ("tail_samples", "tail_tokens_stripped", "tail_truncated", "tail_overlong", "mid_samples", "mid_tokens")
+
+
+def quarantine_nonfinite_logprobs(samples: list[Sample], args=None, where: str = "") -> dict[str, float]:
+    """Non-finite rollout logprobs (NaN/inf/None) must never reach the ratio/loss, and must not cost us trajectories.
+
+    Root cause (DIAG): when a request hits the engine's context window, SGLang returns None/NaN placeholder logprobs on
+    the TAIL of that final (context-clamped) turn. Those trajectories are the overlong ones we train on with reward 0, so
+    they are kept:
+      * TAIL = the longest response suffix whose tokens are all non-finite or untrainable (loss_mask 0). If it holds
+        any non-finite logprob, it is cut with Miles' Sample.strip_last_output_tokens (tokens, loss mask, logprobs,
+        weight-version spans, response text). The sample keeps its reward and status (nan_tail_*).
+      * Anything non-finite BEFORE the tail would be a real numerical problem: the sample is excluded from the loss
+        (remove_sample; its reward still counts in the group baseline) and its non-finite entries are set to 0.0, since
+        Miles masks the loss multiplicatively (NaN x 0 = NaN) (nan_mid_*).
+    metadata["nan_logprob"] records what was done; one log line per affected sample + one per call. Idempotent.
     """
     stats = Counter()
     for s in samples:
         lp = s.rollout_log_probs
         if not lp:
             continue
+        n = len(lp)
         bad = [i for i, v in enumerate(lp) if _is_nonfinite(v)]
         if not bad:
             continue
-        mask = s.loss_mask
-        trainable = [i for i in bad if mask is None or (i < len(mask) and mask[i])]
-        last_untrainable = max((i for i, m in enumerate(mask or []) if not m), default=-1)
-        in_last_turn = all(i > last_untrainable for i in bad)
-        if not isinstance(lp, list):
-            lp = list(lp)
-        for i in bad:
-            lp[i] = 0.0
-        s.rollout_log_probs = lp
-        if trainable:
-            s.remove_sample = True
-        md = s.metadata if isinstance(s.metadata, dict) else {}
+        mask = s.loss_mask if s.loss_mask is not None else [1] * n
+        t = n
+        while t > 0 and (_is_nonfinite(lp[t - 1]) or not mask[t - 1]):
+            t -= 1
+        tail_bad = [i for i in bad if i >= t]
+        mid_bad = [i for i in bad if i < t]
         status = getattr(getattr(s, "status", None), "value", getattr(s, "status", None))
-        info = {"tokens": len(bad), "trainable": len(trainable), "first": bad[0], "last": bad[-1], "response_len": len(lp),
-                "in_last_turn": in_last_turn, "status": status, "overlong": _is_overlong(s)}
+        md = s.metadata if isinstance(s.metadata, dict) else {}
+        info = {"response_len": n, "tail_start": t if tail_bad else None, "tail_nonfinite": len(tail_bad),
+                "stripped": 0, "mid_nonfinite": len(mid_bad), "first_mid": mid_bad[0] if mid_bad else None,
+                "status": status, "overlong": _is_overlong(s), "exit_status": md.get("exit_status")}
+        if tail_bad:
+            strip = n - t
+            if strip >= s.response_length:   # nothing finite left to train on
+                mid_bad = list(bad)
+                info.update(mid_nonfinite=len(mid_bad), first_mid=mid_bad[0], tail_start=None)
+            else:
+                s.strip_last_output_tokens(strip, _tokenizer(args))
+                info["stripped"] = strip
+                stats["tail_samples"] += 1
+                stats["tail_tokens_stripped"] += strip
+                stats["tail_truncated"] += status == "truncated"
+                stats["tail_overlong"] += info["overlong"]
+        if mid_bad:
+            lp = list(s.rollout_log_probs)
+            for i in range(len(lp)):
+                if _is_nonfinite(lp[i]):
+                    lp[i] = 0.0
+            s.rollout_log_probs = lp
+            s.remove_sample = True
+            stats["mid_samples"] += 1
+            stats["mid_tokens"] += len(mid_bad)
         md["nan_logprob"] = info
         s.metadata = md
-        stats["samples"] += 1
-        stats["removed"] += bool(trainable)
-        stats["tokens"] += len(bad)
-        stats["last_turn"] += in_last_turn
-        stats["truncated"] += status == "truncated"
-        stats["overlong"] += info["overlong"]
         logger.warning("hm nan_logprob %s: sample index=%s instance=%s %s", where, s.index, md.get("instance_id"), info)
     if stats:
-        logger.warning("hm nan_logprob %s: nan_logprob_samples=%d of %d (removed %d, tokens %d, all-in-last-turn %d, "
-                       "truncated %d, overlong %d)", where, stats["samples"], len(samples), stats["removed"],
-                       stats["tokens"], stats["last_turn"], stats["truncated"], stats["overlong"])
-    return {f"harbor/nan_logprob_{k}": float(stats[k])
-            for k in ("samples", "removed", "tokens", "last_turn", "truncated", "overlong")}
+        logger.warning("hm nan_logprob %s: nan_tail_samples=%d nan_tail_tokens_stripped=%d (truncated %d, overlong %d) "
+                       "nan_mid_samples=%d (removed from loss; %d tokens) of %d samples", where, stats["tail_samples"],
+                       stats["tail_tokens_stripped"], stats["tail_truncated"], stats["tail_overlong"],
+                       stats["mid_samples"], stats["mid_tokens"], len(samples))
+    return {f"harbor/nan_{k}": float(stats[k]) for k in NAN_KEYS}
 
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:
     """--custom-rollout-log-function-path hook. It runs before the step's train-data conversion in every mode, incl.
     fully async. It quarantines non-finite rollout logprobs and adds harbor/* metrics (exit statuses, overlong rate,
-    agent times, nan_logprob_*) to the step's `perf N:` line. It never fails the step. Returns False: Miles' logging
+    agent times, nan_tail_*/nan_mid_*) to the step's `perf N:` line. It never fails the step. Returns False: Miles' logging
     still runs."""
     try:
         flat = _flatten(samples)
         extra = aggregate_metrics(flat)
-        extra.update(quarantine_nonfinite_logprobs(flat, where=f"rollout {rollout_id}"))
+        extra.update(quarantine_nonfinite_logprobs(flat, args, where=f"rollout {rollout_id}"))
         if isinstance(rollout_extra_metrics, dict):
             rollout_extra_metrics.update(extra)
         else:
@@ -146,7 +185,7 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
 def post_process_rewards(args, samples: list[Sample] | list[list[Sample]]) -> tuple[list[float], list[float]]:
     samples = _flatten(samples)
     # Normally a no-op (the log hook already ran); guarantees NaN-free logprobs if the hook is not configured.
-    quarantine_nonfinite_logprobs(samples, where="post_process")
+    quarantine_nonfinite_logprobs(samples, args, where="post_process")
     raw = [float(s.get_reward_value(args)) for s in samples]
     normalized = [0.0] * len(samples)
     grpo_like = args.advantage_estimator in ("grpo", "gspo", "reinforce_plus_plus_baseline")
