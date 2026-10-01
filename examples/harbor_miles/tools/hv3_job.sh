@@ -40,7 +40,11 @@ export AGENT_MAX_INPUT_TOKENS=57344 AGENT_MAX_OUTPUT_TOKENS=8192 HARBOR_MAX_SEQ_
 export HARBOR_AGENT_SERVERS_FILE="${RUN}/agent_servers.txt"
 bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${RUN}" 18300 "${MAXC:-32}"
 NODE_IP="$(hm_node_ip)"
-IDS="$(ls "${TASKS}" | head -"${NTASKS}" | tr '\n' ',')"
+if [ -n "${TASK_IDS_FILE:-}" ]; then
+    IDS="$(awk 'NR%7==1' "${HM_EXAMPLE_DIR}/${TASK_IDS_FILE}" | head -"${NTASKS}" | tr '\n' ',')"   # spread over repos
+else
+    IDS="$(ls "${TASKS}" | head -"${NTASKS}" | tr '\n' ',')"
+fi
 hm_log "tasks: ${IDS}"
 "${HARBOR_DIR}/.venv/bin/python" "${HM_EXAMPLE_DIR}/tools/validate_harbor.py" trials --tasks-dir "${TASKS}" \
     --task-ids "${IDS}" --agents "${AGENTS}" --attempts "${ATTEMPTS}" --base-url "http://${NODE_IP}:30600/v1" \

@@ -7,10 +7,13 @@
 Rewards come from the Harbor verifier via hm_agent.run (sample.metadata).
 
 Policies (env, read in the rollout process):
-  HM_OVERLONG_REWARD  "zero" (default) | "verifier": reward of a trial that ran out of
-                      context (SequenceLengthLimitExceeded). "verifier" keeps whatever
-                      partial credit the verifier gave; "zero" trains it as a failure.
-  (timeouts always score what the verifier gave, i.e. usually 0)
+  HM_OVERLONG_REWARD  "verifier" (default) | "zero": reward of a trajectory that ran out of
+                      context. The verifier still runs on the sandbox state the agent left
+                      (Harbor runs it after agent errors/timeouts), so "verifier" rewards the
+                      outcome only: a fix that landed before the context ran out counts. "zero"
+                      additionally penalizes length. Timeouts always score the verifier result.
+  A trajectory is "overlong" if the agent server reports SequenceLengthLimitExceeded or the
+  session server truncated it (Sample.Status.TRUNCATED) — independent of the harness's error text.
 
 Infrastructure failures (agent_function sets metadata["infra_failure"]) are
 excluded from the loss (``remove_sample``) AND from the group baseline: the
@@ -39,10 +42,16 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
+def _is_overlong(sample: Sample) -> bool:
+    md = sample.metadata or {}
+    status = getattr(sample, "status", None)
+    return md.get("exit_status") == "SequenceLengthLimitExceeded" or getattr(status, "value", status) == "truncated"
+
+
 def _reward_of(sample: Sample) -> float:
     md = sample.metadata or {}
     reward = float(md.get("reward", 0.0) or 0.0)
-    if md.get("exit_status") == "SequenceLengthLimitExceeded" and os.environ.get("HM_OVERLONG_REWARD", "zero") == "zero":
+    if os.environ.get("HM_OVERLONG_REWARD", "verifier") == "zero" and _is_overlong(sample):
         return 0.0
     return reward
 
@@ -110,6 +119,7 @@ def aggregate_metrics(samples: list[Sample]) -> dict[str, float]:
     for status, count in statuses.items():
         metrics[f"harbor/exit/{status.replace(' ', '_').replace(':', '')}"] = count / n
     metrics["harbor/infra_failure_rate"] = sum(bool(md.get("infra_failure")) for md in mds) / n
+    metrics["harbor/overlong_rate"] = sum(_is_overlong(s) for s in samples) / n
     agent = [md.get("agent_metrics") or {} for md in mds]
     for key in ("total_time", "env_setup_time", "agent_setup_time", "agent_run_time", "eval_time", "turns",
                 "dispatch_attempts"):

@@ -49,8 +49,45 @@ index 0000000..6d72e95
 +export HARBOR_PYTHON="$HARBOR_SERVER_PYTHON"
 +echo "[harbor] starting server with $HARBOR_PYTHON $(date +%T)" >&2
 +exec "$HARBOR_PYTHON" "$@"
+diff --git a/src/harbor/environments/singularity/server.py b/src/harbor/environments/singularity/server.py
+index 04f9644..6e72db5 100644
+--- a/src/harbor/environments/singularity/server.py
++++ b/src/harbor/environments/singularity/server.py
+@@ -373,12 +373,32 @@ def setup_apt_sources() -> None:
+         logger.warning(f"Could not write {sources_file}: {e}")
+ 
+ 
++def setup_apt_unprivileged() -> None:
++    """Let apt work under --fakeroot without subuid mappings.
++
++    In a root-mapped user namespace only uid 0 is mapped, so apt's privilege drop
++    to the ``_apt`` sandbox user fails on its own lists/archives directories
++    ("Permission denied" on /var/lib/apt/lists/partial). Run apt's fetchers as
++    root instead (the container is the sandbox).
++    """
++    conf_dir = "/etc/apt/apt.conf.d"
++    if not os.path.isdir("/etc/apt"):
++        return
++    try:
++        os.makedirs(conf_dir, exist_ok=True)
++        with open(f"{conf_dir}/00-harbor-singularity-sandbox", "w") as f:
++            f.write('APT::Sandbox::User "root";\n')
++    except OSError as e:
++        logger.warning(f"Could not configure apt sandbox user: {e}")
++
++
+ def setup_singularity_environment(workdir: str) -> None:
+     """Run all Singularity environment setup."""
+     setup_workdir(workdir)
+     setup_dpkg_for_overlay()
+     setup_common_directories()
+     setup_fake_sudo()
++    setup_apt_unprivileged()
+ 
+     try:
+         setup_apt_sources()
 diff --git a/src/harbor/environments/singularity/singularity.py b/src/harbor/environments/singularity/singularity.py
-index c728d73..c11ed47 100644
+index c728d73..3405003 100644
 --- a/src/harbor/environments/singularity/singularity.py
 +++ b/src/harbor/environments/singularity/singularity.py
 @@ -21,6 +21,8 @@ runs a FastAPI server inside the container to handle command execution.
@@ -70,7 +107,7 @@ index c728d73..c11ed47 100644
  from pathlib import Path
  from typing import override
  
-@@ -53,6 +56,104 @@ class MemoryLimitExceededError(Exception):
+@@ -53,6 +56,108 @@ class MemoryLimitExceededError(Exception):
      pass
  
  
@@ -157,13 +194,17 @@ index c728d73..c11ed47 100644
 +        shutil.rmtree(path, ignore_errors=True)
 +
 +
-+def find_prebuilt_sif(docker_image: str) -> Path | None:
-+    """Look up a prebuilt SIF for ``docker_image`` in HARBOR_SINGULARITY_SIF_DIRS."""
++def find_prebuilt_sif(docker_image: str, extra_names: list[str] | None = None) -> Path | None:
++    """Look up a prebuilt SIF for ``docker_image`` in HARBOR_SINGULARITY_SIF_DIRS.
++
++    Names tried: Harbor's cache name, ``ref-<sha256(ref)[:32]>.sif``, then ``extra_names``
++    (e.g. ``<task dir>.sif`` for per-task image caches)."""
 +    dirs = [d for d in (_env_str("HARBOR_SINGULARITY_SIF_DIRS") or "").split(":") if d]
 +    names = []
 +    for ref in (docker_image, f"{docker_image}:latest" if ":" not in docker_image.rsplit("/", 1)[-1] else None):
 +        if ref:
 +            names += [_harbor_sif_name(ref), _legacy_sif_name(ref)]
++    names += list(extra_names or [])
 +    for d in dirs:
 +        for name in names:
 +            candidate = Path(d) / name
@@ -175,7 +216,7 @@ index c728d73..c11ed47 100644
  class SingularityEnvironment(BaseEnvironment):
      """
      Singularity-based environment for HPC clusters.
-@@ -107,6 +208,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -107,6 +212,7 @@ class SingularityEnvironment(BaseEnvironment):
          self._stream_task: asyncio.Task[None] | None = None
          self._memory_watchdog_task: asyncio.Task[None] | None = None
          self._http_client: httpx.AsyncClient | None = None
@@ -183,7 +224,7 @@ index c728d73..c11ed47 100644
  
          memory_mb = self._effective_memory_mb
          self._memory_limit_bytes = (
-@@ -170,7 +272,10 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -170,7 +276,10 @@ class SingularityEnvironment(BaseEnvironment):
              self.logger.debug(f"Using pre-built .sif image: {sif_path}")
  
      def _resolve_workdir(self) -> str:
@@ -195,11 +236,13 @@ index c728d73..c11ed47 100644
          if self._dockerfile_path.exists():
              workdir = "/app"
              try:
-@@ -206,6 +311,11 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -206,6 +315,13 @@ class SingularityEnvironment(BaseEnvironment):
          Uses file locking to prevent race conditions when multiple concurrent
          tasks try to convert the same image simultaneously.
          """
-+        prebuilt = find_prebuilt_sif(docker_image)
++        prebuilt = find_prebuilt_sif(
++            docker_image, extra_names=[f"{Path(self.environment_dir).parent.name}.sif"]
++        )
 +        if prebuilt is not None and not force_pull:
 +            self.logger.debug(f"Using prebuilt Singularity image: {prebuilt}")
 +            return prebuilt
@@ -207,7 +250,7 @@ index c728d73..c11ed47 100644
          if ":" not in docker_image:
              docker_image = f"{docker_image}:latest"
  
-@@ -248,7 +358,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -248,7 +364,7 @@ class SingularityEnvironment(BaseEnvironment):
              )
  
              cmd = [
@@ -216,7 +259,7 @@ index c728d73..c11ed47 100644
                  "pull",
                  str(tmp_sif_path),
                  f"docker://{docker_image}",
-@@ -327,13 +437,23 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -327,13 +443,23 @@ class SingularityEnvironment(BaseEnvironment):
          staging_server = self._staging_dir / "_hbexec.py"
          shutil.copy(server_script, staging_server)
  
@@ -241,7 +284,7 @@ index c728d73..c11ed47 100644
  
          for port_attempt in range(max_port_retries):
              reserved_socket, port = self._reserve_port()
-@@ -350,9 +470,34 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -350,9 +476,34 @@ class SingularityEnvironment(BaseEnvironment):
              ]
              for mount in self._mounts:
                  if mount.get("type") == "bind":
@@ -278,7 +321,7 @@ index c728d73..c11ed47 100644
  
              no_mount_args: list[str] = []
              singularity_no_mount = self._singularity_no_mount
-@@ -377,15 +522,18 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -377,15 +528,18 @@ class SingularityEnvironment(BaseEnvironment):
                  self._workdir,
              ]
              cmd = [
@@ -301,7 +344,7 @@ index c728d73..c11ed47 100644
                  *bind_mounts,
                  str(self._sif_path),
                  *bootstrap_cmd,
-@@ -409,7 +557,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -409,7 +563,7 @@ class SingularityEnvironment(BaseEnvironment):
              self._http_client = httpx.AsyncClient(timeout=30.0)
              server_ready = False
  
@@ -310,7 +353,7 @@ index c728d73..c11ed47 100644
                  try:
                      response = await self._http_client.get(
                          f"http://localhost:{self._server_port}/health"
-@@ -429,7 +577,12 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -429,7 +583,12 @@ class SingularityEnvironment(BaseEnvironment):
                                  f"- port {self._server_port} collision"
                              )
                              break
@@ -324,7 +367,7 @@ index c728d73..c11ed47 100644
                          if self._memory_limit_bytes is not None:
                              self._memory_watchdog_task = asyncio.create_task(
                                  self._memory_watchdog()
-@@ -481,13 +634,47 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -481,13 +640,47 @@ class SingularityEnvironment(BaseEnvironment):
          if not self._server_process or not self._server_process.stdout:
              return
  
@@ -372,7 +415,7 @@ index c728d73..c11ed47 100644
  
      def _get_process_tree_memory(self, pid: int) -> int:
          """Get total PSS memory of a process and all its descendants.
-@@ -679,9 +866,21 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -679,9 +872,21 @@ class SingularityEnvironment(BaseEnvironment):
  
          if self._server_process and self._server_process.returncode is None:
              pid = self._server_process.pid
@@ -396,7 +439,7 @@ index c728d73..c11ed47 100644
  
              try:
                  await asyncio.wait_for(self._server_process.wait(), timeout=5.0)
-@@ -690,14 +889,7 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -690,14 +895,7 @@ class SingularityEnvironment(BaseEnvironment):
                  self._server_process.kill()
                  await self._server_process.wait()
  
@@ -412,7 +455,7 @@ index c728d73..c11ed47 100644
  
          if hasattr(self, "_stream_task") and self._stream_task:
              self._stream_task.cancel()
-@@ -709,6 +901,10 @@ class SingularityEnvironment(BaseEnvironment):
+@@ -709,6 +907,10 @@ class SingularityEnvironment(BaseEnvironment):
          if self._staging_dir and self._staging_dir.exists():
              shutil.rmtree(self._staging_dir, ignore_errors=True)
  
