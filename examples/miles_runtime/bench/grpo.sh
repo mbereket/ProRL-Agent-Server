@@ -27,7 +27,7 @@ args=(
     --prompt-data "${DATA}/dapo-math-17k/dapo-math-17k.jsonl" --input-key prompt --label-key label
     --apply-chat-template --rollout-shuffle --rm-type deepscaler
     --num-rollout "${NUM_ROLLOUT}" --rollout-batch-size "${RBS}" --n-samples-per-prompt "${NS}"
-    --rollout-max-response-len "${MAXRESP}" --rollout-temperature 1 --global-batch-size "$((RBS * NS))"
+    --rollout-max-response-len "${MAXRESP}" --rollout-temperature 1 --global-batch-size "$((RBS * NS / ${STEPS:-1}))"
     --balance-data --seed 1234 --rollout-seed 1234
     --tensor-model-parallel-size "${TP}" --sequence-parallel --pipeline-model-parallel-size 1
     --context-parallel-size "${CP}" --expert-model-parallel-size 1 --expert-tensor-parallel-size 1
@@ -79,7 +79,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).

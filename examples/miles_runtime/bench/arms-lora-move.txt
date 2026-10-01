@@ -1,0 +1,5 @@
+# Is the trained adapter what SGLang serves? 2 optimizer steps per rollout: in step 2 the train/rollout
+# |dlogp| includes one update of policy movement (counterfactual for "rollout still on old weights");
+# step 1 of the NEXT rollout must drop back to the numerical floor if the adapter sync works.
+lora-move-colo    ARM=lora LAYOUT=colocate LR=3e-4 STEPS=2 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096
+lora-move-disagg  ARM=lora LAYOUT=disagg TRAIN_GPUS=4 LR=3e-4 STEPS=2 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096
