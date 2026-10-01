@@ -11,7 +11,7 @@ algorithm/layout knobs. Unknown keys are an error. Schema (defaults in SCHEMA):
   name: run-id
   tasks:    dir (required), mount_root, n, seed, task_ids_file, exclude_ids_file
   harness:  name, model_name, dir, settings, session_timeout, request_timeout, max_run_workers,
-            max_async_level, thinking, keep_sessions, path_prepend, ld_library_path, cli_version
+            max_async_level, max_staleness, thinking, keep_sessions, path_prepend, ld_library_path, cli_version
   model:    hf_checkpoint, model_args_file, torch_dist_dir, load_dir, sglang_tool_call_parser
   lora:     rank (0 = full fine-tune), alpha, dropout, target_modules, exclude_modules
   cluster:  num_nodes, actor_num_gpus, tp_size, context_parallel_size, sandbox_nodes (head|all),
@@ -90,6 +90,8 @@ SCHEMA = {
         "request_timeout": 3600,
         "max_run_workers": 16,       # concurrent sandboxes per sandbox node
         "max_async_level": 2,        # groups in flight = batch_size x this (a warm pool across steps)
+        "max_staleness": None,       # drop groups consumed > this many rollouts after submission (weight versions behind
+                                     # the engines); None = max_async_level + 1 (never binds)
         "thinking": None,
         "keep_sessions": False,
         "path_prepend": "",
@@ -229,6 +231,8 @@ def load(path: str) -> dict:
         die(f"{path}: harness.name must be one of {HARNESSES}")
     if r["num_steps"] == 0 and not (cfg["eval"]["prompt_data"] or cfg["eval"]["task_ids_file"]):
         die(f"{path}: rollout.num_steps: 0 (eval only) needs eval.prompt_data")
+    if h["max_staleness"] is not None and (not isinstance(h["max_staleness"], int) or h["max_staleness"] < 0):
+        die(f"{path}: harness.max_staleness must be a non-negative int or null")
     if h["max_async_level"] > 1 and tr["sync"]:
         die(f"{path}: harness.max_async_level > 1 needs training.sync: false")
     if tr["loss_aggregation"] not in ("token_mean", "trajectory_mean"):
@@ -575,6 +579,8 @@ def mode_run(cfg: dict) -> None:
     # The bridge verifies (at worker start and eval) that every gateway in this
     # topology routes rollouts to the trainer's live adapter.
     polar["polar_topology_path"] = f"{run_dir}/topology.yaml"
+    if h["max_staleness"] is not None:
+        polar["polar_max_off_policy_steps"] = h["max_staleness"]
 
     topo = render("topology.yaml")
     proto = topo["gateway"]["nodes"][0]

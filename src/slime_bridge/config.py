@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from polar.config import TopologyConfig
+from slime_bridge._compat import framework
 from slime_bridge.adapter import OVERLONG_POLICIES
 
 _PLACEHOLDER_RE = re.compile(r"{([^{}]+)}")
@@ -78,7 +79,15 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
 
     max_concurrency = rollout_batch_size * max_async_level
     max_session_concurrency = max_concurrency * group_size
-    max_off_policy_steps = max_async_level + update_weights_interval
+    # Staleness of a group = rollout id that consumes it - rollout id current when it was submitted (= how many
+    # weight versions the engines moved past the group's generating policy before it is trained). Older groups are
+    # dropped (polar/dropped_stale_groups). Default: the most the async pool can produce without drops.
+    max_off_policy_steps = getattr(args, "polar_max_off_policy_steps", None)
+    if max_off_policy_steps is None:
+        max_off_policy_steps = max_async_level + update_weights_interval
+    max_off_policy_steps = int(max_off_policy_steps)
+    if max_off_policy_steps < 0:
+        raise ValueError("polar_max_off_policy_steps must be non-negative")
 
     request_timeout = getattr(args, "polar_request_timeout", None)
     if request_timeout is not None:
@@ -103,6 +112,10 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     # rollout_batch_size informative groups). False: the dropped group still uses its slot of the step, so a step
     # trains on <= rollout_batch_size groups (no oversampling; at least one group is always trained).
     zero_variance_replace = bool(getattr(args, "polar_zero_variance_replace", True))
+    if drop_zero_variance_groups and not zero_variance_replace and framework() == "miles":
+        # Miles schedules compact (multi-trace) rollouts in whole global batches of rollouts and asserts on a short
+        # step; --use-dynamic-global-batch-size skips compact rollouts.
+        raise ValueError("polar_zero_variance_replace: false is not supported on Miles (a step must fill the global batch)")
     zero_variance_tol = float(getattr(args, "polar_zero_variance_tol", 1e-6))
     if zero_variance_tol < 0.0:
         raise ValueError("polar_zero_variance_tol must be non-negative")
