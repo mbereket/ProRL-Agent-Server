@@ -75,6 +75,12 @@ fi
 # Ray actors inherit the raylet environment (apptainer passes the host env through).
 # TMPDIR stays node-local: SGLang binds zmq IPC sockets there (paths capped at 107 chars).
 export TMPDIR=/tmp POLAR_TRAINER_FRAMEWORK=miles
+# JIT/kernel caches that default under $HOME (full or quota'd on several clusters; a shared lustre
+# cache corrupts under concurrent writers): node-local per job. mrun covers ~/.cache, Triton, Inductor.
+JIT="/tmp/miles-jit-${USER}-${SLURM_JOB_ID}"
+export TILELANG_CACHE_DIR="${JIT}/tilelang" TILELANG_TMP_DIR="${JIT}/tilelang-tmp" DG_JIT_CACHE_DIR="${JIT}/deep_gemm" \
+       CUDA_CACHE_PATH="${JIT}/nv" TVM_FFI_CACHE_DIR="${JIT}/tvm-ffi" FLASHINFER_WORKSPACE_BASE="${JIT}/flashinfer" \
+       SGLANG_CACHE_DIR="${JIT}/sglang"
 # --pin-rollout-manager-to-head finds the head node through Ray's state API, which the dashboard serves.
 export RAY_DASHBOARD="${RAY_DASHBOARD:-1}"
 export WANDB_DIR="${RUN_DIR}/wandb_cache" WANDB_CACHE_DIR="${RUN_DIR}/wandb_cache" WANDB_DATA_DIR="${RUN_DIR}/wandb_cache"
