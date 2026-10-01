@@ -15,7 +15,14 @@ SUITE="${1:?suite}"; ARMS_FILE="${2:?arms file}"; PATCH_DIR="${3:-}"
 [ -f "${ARMS_FILE}" ] || ARMS_FILE="${MR}/bench/${ARMS_FILE}"
 ROOT="${MILES_STACK_ROOT}/bench/${SUITE}"
 mkdir -p "${ROOT}"
-patch_opts=(); [ -n "${PATCH_DIR}" ] && { [ -d "${PATCH_DIR}" ] || PATCH_DIR="${MR}/${PATCH_DIR}"; patch_opts=(--patches "${PATCH_DIR}"); }
+# PATCH_DIR: one or more patch-set dirs, colon-separated, absolute or relative to miles_runtime/
+patch_opts=()
+IFS=: read -r -a _pdirs <<< "${PATCH_DIR}"
+for d in "${_pdirs[@]}"; do
+    [ -n "${d}" ] || continue
+    [ -d "${d}" ] || d="${MR}/${d}"
+    patch_opts+=(--patches "${d}")
+done
 
 if [ "${SLURM_NODEID:-0}" = 0 ]; then
     "${MR}/mrun" --no-nv -- bash "${MR}/bench/prepare.sh" 2>&1 | tail -20

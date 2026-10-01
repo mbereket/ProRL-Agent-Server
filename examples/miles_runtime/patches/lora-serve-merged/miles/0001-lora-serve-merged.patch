@@ -1,0 +1,144 @@
+diff -ru a/miles/backends/megatron_utils/actor.py b/miles/backends/megatron_utils/actor.py
+--- a/miles/backends/megatron_utils/actor.py
++++ b/miles/backends/megatron_utils/actor.py
+@@ -462,7 +462,7 @@
+             # Params stay resident for update_weights, which pauses them afterwards.
+             torch_memory_saver.pause(tag="grad_buffer")
+             torch_memory_saver.pause(tag="default")
+-        elif lora_rollout_enabled(self.args):
++        elif is_lora_enabled(self.args):
+             # adapter params keep their host backup in "default"; the grad buffers have none
+             if not self._grad_buffer_paused:
+                 torch_memory_saver.pause(tag="grad_buffer")
+@@ -482,7 +482,7 @@
+     def offload_grad_buffer(self) -> None:
+         """Free the LoRA grad buffers ahead of sleep(), so the engine can resume its weights first."""
+         assert self.args.offload_train
+-        assert lora_rollout_enabled(self.args), "only LoRA keeps its grad buffers in a no-backup region"
++        assert is_lora_enabled(self.args), "only LoRA keeps its grad buffers in a no-backup region"
+         if self._asleep or self._grad_buffer_paused:
+             return
+         print_memory("before offload grad buffer")
+@@ -500,7 +500,7 @@
+             return
+         print_memory("before wake_up model")
+ 
+-        if lora_rollout_enabled(self.args):
++        if is_lora_enabled(self.args):
+             torch_memory_saver.resume(tag="default")
+             torch_memory_saver.resume(tag="grad_buffer")
+             self._grad_buffer_paused = False
+diff -ru a/miles/backends/megatron_utils/update_weight/hf_weight_iterator_bridge.py b/miles/backends/megatron_utils/update_weight/hf_weight_iterator_bridge.py
+--- a/miles/backends/megatron_utils/update_weight/hf_weight_iterator_bridge.py
++++ b/miles/backends/megatron_utils/update_weight/hf_weight_iterator_bridge.py
+@@ -31,7 +31,8 @@
+                 self.model,
+                 cpu=False,
+                 conversion_tasks=conversion_tasks,
+-                merge_adapter_weights=False,
++                # --lora-serve-merged: base + (alpha/r)*B@A under plain HF names for a non-LoRA engine
++                merge_adapter_weights=bool(getattr(self.args, "lora_serve_merged", False)),
+                 **self._source_name_kwargs(self._bridge.export_hf_weights),
+             )
+ 
+diff -ru a/miles/rollout/session/config.py b/miles/rollout/session/config.py
+--- a/miles/rollout/session/config.py
++++ b/miles/rollout/session/config.py
+@@ -23,6 +23,7 @@
+     lora_rank: int
+     lora_adapter_path: str | None
+     lora_train_only: bool
++    lora_serve_merged: bool = False
+     use_session_server: bool | str | None
+     session_message_matcher: str
+     pause_generation_mode: str | None
+@@ -53,6 +54,7 @@
+         lora_rank=args.lora_rank,
+         lora_adapter_path=args.lora_adapter_path,
+         lora_train_only=getattr(args, "lora_train_only", False),
++        lora_serve_merged=getattr(args, "lora_serve_merged", False),
+         use_session_server=getattr(args, "use_session_server", None),
+         session_message_matcher=getattr(args, "session_message_matcher", "strict"),
+         pause_generation_mode=getattr(args, "pause_generation_mode", None),
+diff -ru a/miles/utils/lora/arguments.py b/miles/utils/lora/arguments.py
+--- a/miles/utils/lora/arguments.py
++++ b/miles/utils/lora/arguments.py
+@@ -83,6 +83,18 @@
+         ),
+     )
+     parser.add_argument(
++        "--lora-serve-merged",
++        action="store_true",
++        default=False,
++        help=(
++            "Train LoRA adapters but serve a plain model: every weight sync merges "
++            "W + (alpha/r)*B@A on the trainer (Megatron-Bridge export with "
++            "merge_adapter_weights) and pushes full weights through the regular "
++            "full-model sync path, so SGLang runs without LoRA kernels (no LoRA "
++            "decode overhead). Costs a full-weight sync per update."
++        ),
++    )
++    parser.add_argument(
+         "--lora-train-only",
+         action="store_true",
+         default=False,
+@@ -139,6 +151,10 @@
+         return
+     assert args.train_backend == "megatron", "LoRA injection is not implemented for FSDP; use --train-backend megatron"
+     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
++    if getattr(args, "lora_serve_merged", False):
++        assert not getattr(args, "lora_train_only", False), "--lora-serve-merged and --lora-train-only are exclusive"
++        assert not getattr(args, "multi_lora", False), "--lora-serve-merged serves one merged policy (no multi-LoRA)"
++        assert args.megatron_to_hf_mode == "bridge", "--lora-serve-merged needs --megatron-to-hf-mode bridge"
+     hf_config = load_hf_config(args.hf_checkpoint)
+     args.hf_lora_targets, args.lora_adapter_targets = _resolve_lora_targets(args, hf_config)
+ 
+diff -ru a/miles/utils/lora/utils.py b/miles/utils/lora/utils.py
+--- a/miles/utils/lora/utils.py
++++ b/miles/utils/lora/utils.py
+@@ -28,7 +28,11 @@
+     Gates everything rollout-facing: SGLang's ``enable_lora``, the per-request
+     ``lora_path``, and the adapter weight sync. Training-side LoRA is unaffected.
+     """
+-    return is_lora_enabled(args) and not getattr(args, "lora_train_only", False)
++    return (
++        is_lora_enabled(args)
++        and not getattr(args, "lora_train_only", False)
++        and not getattr(args, "lora_serve_merged", False)
++    )
+ 
+ 
+ def engine_loads_adapter_from_disk(args: Namespace) -> bool:
+@@ -38,7 +42,10 @@
+ 
+ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
+     """LoRA + --colocate + --lora-base-cpu-backup all set."""
+-    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
++    # SGLang-side base mirror only exists when the engine serves LoRA.
++    return (
++        lora_rollout_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
++    )
+ 
+ 
+ def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
+diff -ru a/train.py b/train.py
+--- a/train.py
++++ b/train.py
+@@ -15,7 +15,7 @@
+ from miles.utils.async_utils import Disposer, with_disposer
+ from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
+ from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
+-from miles.utils.lora.utils import lora_rollout_enabled
++from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
+ from miles.utils.misc import should_run_periodic_action
+ from miles.utils.orchestration_utils import init_orchestration_script
+ 
+@@ -142,7 +142,7 @@
+         if rollout_id + 1 < args.num_rollout or eval_due:
+             if args.colocate_memory_peak_device == "gpu":
+                 await actor_model.clear_memory()
+-                if lora_rollout_enabled(args):
++                if is_lora_enabled(args):
+                     await actor_model.offload_grad_buffer()
+                 await inference_controller.onload_weights()
+                 await offload_train()

@@ -68,6 +68,8 @@ if [ "${ARM}" = lora ]; then
            --target-modules "${LORA_TARGETS}" --no-gradient-accumulation-fusion)
     if [ "${LORA_ROLLOUT:-1}" = 0 ]; then
         args+=(--lora-train-only)   # negative control: SGLang stays on the frozen base
+    elif [ "${LORA_SERVE:-adapter}" = merged ]; then
+        args+=(--lora-serve-merged)  # needs patches/lora-serve-merged: plain engine, merged full-weight sync
     elif [ "${MODE}" = e2e ]; then
         args+=(--sglang-max-lora-rank "${LORA_RANK}")
         # Colocated LoRA must keep the SGLang base weights in host RAM, or rollouts after the first
@@ -79,7 +81,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).
