@@ -22,7 +22,7 @@ esac
 export HM_USER_ROOT="${_user_root}"
 export HM_ROOT="${HM_ROOT:-${_user_root}/miles/path-b}"
 export HM_SHARED="${HM_SHARED:-${_user_root}/prorl-harbor}"
-export HM_SIF_DIRS="${HM_SIF_DIRS:-${_user_root}/bio-synth/cache/apptainer/harbor:${HM_SHARED}/harbor_sif_images}"
+export HM_SIF_DIRS="${HM_SIF_DIRS:-${_user_root}/miles/shared/harbor_sif_images:${_user_root}/bio-synth/cache/apptainer/harbor:${HM_SHARED}/harbor_sif_images}"
 export HM_APPTAINER="${HM_APPTAINER:-${HM_SHARED}/apptainer/1.5.3}"
 export HM_UV="${HM_UV:-${HM_SHARED}/bin/uv}"
 export HM_CUDA_COMPAT

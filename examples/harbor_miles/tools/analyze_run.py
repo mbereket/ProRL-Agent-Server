@@ -22,6 +22,7 @@ import sys
 _STEP_RE = re.compile(r"step (\d+): (\{.*\})\s*$")
 _ROLLOUT_RE = re.compile(r"rollout (\d+): (\{.*\})\s*$")
 _PERF_RE = re.compile(r"train_metric_utils\.py:\d+ - perf (\d+): (\{.*\})\s*$")
+_ROLLOUT_PERF_RE = re.compile(r"rollout_executor\] metrics\.py:\d+ - perf (\d+): (\{.*\})\s*$")
 _TS_RE = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
 _PREFILL_RE = re.compile(r"Prefill batch, #new-seq: (\d+), #new-token: (\d+), #cached-token: (\d+)")
 _DECODE_RE = re.compile(r"Decode batch, #running-req: (\d+), #full token: (\d+), full token usage: ([\d.]+)"
@@ -79,9 +80,11 @@ def parse_log(path: str) -> dict[int, dict]:
     steps: dict[int, dict] = collections.defaultdict(dict)
     with open(path, errors="replace") as f:
         for line in f:
-            for rx, prefix in ((_STEP_RE, "train"), (_ROLLOUT_RE, "rollout"), (_PERF_RE, "perf")):
+            for rx, prefix in ((_STEP_RE, "train"), (_ROLLOUT_RE, "rollout"), (_PERF_RE, "perf"),
+                               (_ROLLOUT_PERF_RE, "rperf")):
                 m = rx.search(line)
-                if m and ("log_utils" in line or "model.py" in line or "train_metric_utils" in line):
+                if m and ("log_utils" in line or "model.py" in line or "train_metric_utils" in line
+                          or "rollout_executor" in line):
                     steps[int(m.group(1))].update(_parse_dict(m.group(2)))
     return dict(steps)
 
@@ -165,6 +168,12 @@ def main() -> None:
               f"{g('perf/train_time','{:.0f}'):>7}  {g('perf/update_weights_time','{:.1f}'):>7}  "
               f"{g('train/train_rollout_kl','{:.1e}'):>8}  "
               f"{g('rollout/fully_async/avg_staleness','{:.2f}'):>5}")
+    for s in sorted(steps):
+        drops = {k.split("drop_", 1)[1]: v for k, v in steps[s].items() if k.startswith("rollout/dynamic_filter/drop_")}
+        if drops:
+            kept = steps[s].get("rollout/fully_async/queue_size")
+            print(f"  step {s} dynamic-filter drops (groups): {drops}  unfiltered reward "
+                  f"{steps[s].get('rollout/raw_reward_unfiltered')}")
     rewards = [steps[s]["rollout/raw_reward"] for s in sorted(steps) if "rollout/raw_reward" in steps[s]]
     summary: dict = {"n_steps": len(rewards)}
     if rewards:
