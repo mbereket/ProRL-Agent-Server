@@ -1,0 +1,9 @@
+# name          tp lora extra-sglang-args
+base-a          1  0
+csgmv16         1  1   --lora-backend csgmv --max-lora-chunk-size 16
+csgmv64         1  1   --lora-backend csgmv --max-lora-chunk-size 64
+csgmv128        1  1   --lora-backend csgmv --max-lora-chunk-size 128
+triton          1  1   --lora-backend triton
+torchnative     1  1   --lora-backend torch_native
+base-b          1  0
+csgmv32         1  1   --lora-backend csgmv --max-lora-chunk-size 32

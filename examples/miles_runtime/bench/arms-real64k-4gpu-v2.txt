@@ -1,0 +1,7 @@
+# Real SWE-Gym 64k traces, TRULY 4 trainer GPUs (ray_node GPUS fix 168cd373). Steps of 24 traj / 892k tokens.
+!compose swe24 TRACES_DIR 3
+q4-tp4            ARM=lora GPUS=4 TP=4 CP=1 MTPG=65536 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
+q4-tp2cp2-chunk   ARM=lora GPUS=4 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096
+q4-tp2cp2-hw      ARM=lora GPUS=4 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+q4-tp1cp4-hw      ARM=lora GPUS=4 TP=1 CP=4 MTPG=16384 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+q4-tp2cp2-pa      ARM=lora GPUS=4 TP=2 CP=2 MTPG=32768 MODE=train_only REPLAY=@swe24 NUM_ROLLOUT=3 RBS=6 NS=4 LORA_ALPHA=64 ROLLOUT_LOGPROBS=1 EXTRA=--reward-key=score,--calculate-per-token-loss,--disable-grpo-std-normalization,--log-probs-chunk-size=4096,--attention-backend=auto

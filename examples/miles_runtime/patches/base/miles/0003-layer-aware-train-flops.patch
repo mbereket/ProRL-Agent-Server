@@ -1,0 +1,127 @@
+diff -ru a/miles/utils/flops_utils.py b/miles/utils/flops_utils.py
+--- a/miles/utils/flops_utils.py
++++ b/miles/utils/flops_utils.py
+@@ -201,3 +201,70 @@
+         qk_pos_emb_head_dim=getattr(config, "qk_rope_head_dim", None) or 0,
+         v_head_dim=getattr(config, "v_head_dim", None) or 0,
+     )
++
++
++# ---------------------------------------------------------------------------------------------------------------
++# Layer-type-aware training FLOPs (hybrid linear/full attention, e.g. Qwen3.5/3.6/3.8 GDN; LoRA-aware backward).
++# calculate_fwd_flops above treats every layer as softmax attention (incl. the s^2 term) and the training metric
++# multiplies by 3 (= full weight grads). For GDN hybrids and LoRA that overstates the useful work.
++# ---------------------------------------------------------------------------------------------------------------
++_GDN_CHUNK = 64
++
++
++def _text_config(config):
++    getter = getattr(config, "get_text_config", None)
++    return (getter() if callable(getter) else getattr(config, "text_config", None)) or config
++
++
++def _layer_kinds(cfg, num_layers):
++    layer_types = getattr(cfg, "layer_types", None)
++    if layer_types:
++        return ["full" if "full" in str(t) else "linear" for t in layer_types[:num_layers]]
++    interval = getattr(cfg, "full_attention_interval", None)
++    if interval:
++        return ["full" if (i + 1) % interval == 0 else "linear" for i in range(num_layers)]
++    return ["full"] * num_layers
++
++
++def train_flops_breakdown(seqlens, hf_config, *, lora_rank=0, full_recompute=False):
++    """Per-step training FLOPs for `seqlens` (one entry per sample). Returns dict with
++    fwd, useful (fwd + bwd actually needed: activation grads, + weight grads only when full FT, + LoRA adapters),
++    hardware (useful + recomputed forward), core_frac (share of fwd in attention/GDN cores)."""
++    c = _text_config(hf_config)
++    h, L, V = c.hidden_size, c.num_hidden_layers, c.vocab_size
++    nh = c.num_attention_heads
++    nkv = getattr(c, "num_key_value_heads", None) or nh
++    dh = getattr(c, "head_dim", None) or h // nh
++    gate = 2 if getattr(c, "attn_output_gate", False) else 1
++    ffn = c.intermediate_size
++    nk, dk = getattr(c, "linear_num_key_heads", 0) or 0, getattr(c, "linear_key_head_dim", 0) or 0
++    nv, dv = getattr(c, "linear_num_value_heads", 0) or 0, getattr(c, "linear_value_head_dim", 0) or 0
++    kconv = getattr(c, "linear_conv_kernel_dim", 4) or 4
++    kinds = _layer_kinds(c, L)
++    n_full, n_lin = kinds.count("full"), kinds.count("linear")
++    Kd, Vd = nk * dk, nv * dv
++
++    # per-token linear (GEMM) flops, (din, dout) of every adapted linear for LoRA
++    full_lin = [(h, gate * nh * dh), (h, nkv * dh), (h, nkv * dh), (nh * dh, h)]
++    gdn_lin = [(h, 2 * Kd + 2 * Vd), (h, 2 * nv), (Vd, h)] if n_lin else []
++    mlp_lin = [(h, ffn), (h, ffn), (ffn, h)]
++    per_tok_lin = (n_full * sum(2 * a * b for a, b in full_lin) + n_lin * sum(2 * a * b for a, b in gdn_lin)
++                   + L * sum(2 * a * b for a, b in mlp_lin))
++    lm_head = 2 * h * V
++    per_tok_gdn_core = n_lin * (nv * (6 * dk * dv + 2 * _GDN_CHUNK * (dk + dv)) + 2 * kconv * (2 * Kd + Vd))
++    adapters = (n_full * full_lin + n_lin * gdn_lin + L * mlp_lin) if lora_rank else []
++    per_tok_lora_fwd = sum(2 * lora_rank * (a + b) for a, b in adapters)
++
++    fwd = core = 0.0
++    for s in seqlens:
++        attn_core = n_full * 2 * nh * s * s * dh  # causal QK^T + AV
++        fwd += s * (per_tok_lin + lm_head + per_tok_gdn_core) + attn_core
++        core += s * per_tok_gdn_core + attn_core
++    tokens = float(sum(seqlens))
++    linear_fwd = tokens * (per_tok_lin + lm_head)
++    act_grad = fwd + core  # activation grads ~ fwd; attention/GDN cores ~2x fwd in backward
++    weight_grad = 0.0 if lora_rank else linear_fwd
++    lora = 3 * tokens * per_tok_lora_fwd
++    useful = fwd + act_grad + weight_grad + lora
++    hardware = useful + (fwd + tokens * per_tok_lora_fwd if full_recompute else 0.0)
++    return {"fwd": fwd, "useful": useful, "hardware": hardware, "core_frac": core / fwd if fwd else 0.0}
+diff -ru a/miles/utils/train_metric_utils.py b/miles/utils/train_metric_utils.py
+--- a/miles/utils/train_metric_utils.py
++++ b/miles/utils/train_metric_utils.py
+@@ -47,6 +47,12 @@
+                 log_dict["perf/mfu_peak_tflops"] = peak_tflops
+                 log_dict["perf/actor_train_mfu"] = log_dict["perf/actor_train_tflops"] / peak_tflops
+ 
++    if log_dict.get("perf/actor_train_time", 0) > 0 and getattr(timer_instance, "seq_lens", None):
++        try:
++            _log_layer_aware_flops(args, log_dict, timer_instance.seq_lens)
++        except Exception as e:  # metrics only; never break training
++            logger.warning(f"layer-aware FLOPs metrics skipped: {e!r}")
++
+     if "perf/train_wait_time" in log_dict and "perf/train_time" in log_dict:
+         total_time = log_dict["perf/train_wait_time"] + log_dict["perf/train_time"]
+         if total_time > 0:
+@@ -62,3 +68,36 @@
+         step=compute_rollout_step(args, rollout_id),
+     )
+     tracking.log(args, log_dict, step_key=step_key)
++
++
++_HF_CONFIG_CACHE = {}
++
++
++def _log_layer_aware_flops(args, log_dict, seq_lens):
++    """perf/actor_train_{useful,hw}_{tflops,mfu}: GDN-aware (linear layers have no s^2 term), LoRA-aware
++    (no base weight grads) and recompute-aware; the legacy actor_train_tflops = 3 x all-softmax fwd."""
++    import torch.distributed as dist
++
++    from miles.utils.flops_utils import train_flops_breakdown
++
++    path = getattr(args, "hf_checkpoint", None)
++    if not path or not (dist.is_available() and dist.is_initialized()):
++        return
++    if path not in _HF_CONFIG_CACHE:
++        from transformers import AutoConfig
++
++        _HF_CONFIG_CACHE[path] = AutoConfig.from_pretrained(path, trust_remote_code=True)
++    fl = train_flops_breakdown(
++        seq_lens,
++        _HF_CONFIG_CACHE[path],
++        lora_rank=getattr(args, "lora_rank", 0) or 0,
++        full_recompute=getattr(args, "recompute_granularity", None) == "full",
++    )
++    t, world = log_dict["perf/actor_train_time"], dist.get_world_size()
++    log_dict["perf/actor_train_useful_tflops"] = fl["useful"] / world / t / 1e12
++    log_dict["perf/actor_train_hw_tflops"] = fl["hardware"] / world / t / 1e12
++    log_dict["perf/flops_core_frac"] = fl["core_frac"]
++    peak = getattr(args, "mfu_peak_tflops", None) or local_peak_bf16_tflops()
++    if peak:
++        log_dict["perf/actor_train_useful_mfu"] = log_dict["perf/actor_train_useful_tflops"] / peak
++        log_dict["perf/actor_train_hw_mfu"] = log_dict["perf/actor_train_hw_tflops"] / peak

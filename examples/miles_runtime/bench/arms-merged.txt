@@ -1,0 +1,7 @@
+# "train LoRA, serve merged" (patches/lora-serve-merged). Correctness: 2 optimizer steps per rollout, same as
+# lora-move-*: KL at the first step of each new rollout must sit at the numerical floor (stale weights -> ~ppo_kl).
+merged-move-colo    ARM=lora LORA_SERVE=merged LAYOUT=colocate LR=3e-4 STEPS=2 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096
+merged-move-disagg  ARM=lora LORA_SERVE=merged LAYOUT=disagg TRAIN_GPUS=4 LR=3e-4 STEPS=2 NUM_ROLLOUT=5 RBS=16 NS=8 MAXRESP=4096
+# end-to-end step time vs etp2-full / etp2-lora / etp4-full (same shape: 32x8, 8k responses)
+merged-etp2         ARM=lora LORA_SERVE=merged LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=2
+merged-etp4         ARM=lora LORA_SERVE=merged LAYOUT=colocate NUM_ROLLOUT=3 ENGINE_TP=4

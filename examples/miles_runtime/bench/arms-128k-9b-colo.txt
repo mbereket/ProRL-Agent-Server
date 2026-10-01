@@ -1,0 +1,3 @@
+# 9B 128k 1-node COLOCATED recipe pieces: TP8 trainer (128k layout) + 4 x TP2 merged engines in one allocation,
+# dapo-math shape (32x8, 8k responses) to measure sleep/wake/weight-sync/memory with the 128k trainer layout.
+y9-colo-tp8-merged   ARM=lora LORA_SERVE=merged LAYOUT=colocate TP=8 MTPG=131072 ENGINE_TP=2 MEMF=0.7 NUM_ROLLOUT=4 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096

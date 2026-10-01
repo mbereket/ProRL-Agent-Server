@@ -8,6 +8,7 @@
 # An arm with a DONE marker (written on rc 0) is skipped, so a resubmitted job resumes the suite.
 # `REPLAY=@<arm>` points a train_only arm at another arm's rollout dump.
 # `!synth <name> <seq_len> <samples> <rollouts>` writes fixed-length synthetic dumps to <name>/rollout_data.
+# `!compose <name> <dir> <steps>` merges real dumps <dir>/*.pt into <steps> bigger replay steps (compose_replay.py).
 set -uo pipefail
 MR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
 source "${MR}/lib.sh"
@@ -15,7 +16,14 @@ SUITE="${1:?suite}"; ARMS_FILE="${2:?arms file}"; PATCH_DIR="${3:-}"
 [ -f "${ARMS_FILE}" ] || ARMS_FILE="${MR}/bench/${ARMS_FILE}"
 ROOT="${MILES_STACK_ROOT}/bench/${SUITE}"
 mkdir -p "${ROOT}"
-patch_opts=(); [ -n "${PATCH_DIR}" ] && { [ -d "${PATCH_DIR}" ] || PATCH_DIR="${MR}/${PATCH_DIR}"; patch_opts=(--patches "${PATCH_DIR}"); }
+# PATCH_DIR: one or more patch-set dirs, colon-separated, absolute or relative to miles_runtime/
+patch_opts=()
+IFS=: read -r -a _pdirs <<< "${PATCH_DIR}"
+for d in "${_pdirs[@]}"; do
+    [ -n "${d}" ] || continue
+    [ -d "${d}" ] || d="${MR}/${d}"
+    patch_opts+=(--patches "${d}")
+done
 
 if [ "${SLURM_NODEID:-0}" = 0 ]; then
     "${MR}/mrun" --no-nv -- bash "${MR}/bench/prepare.sh" 2>&1 | tail -20
@@ -23,6 +31,14 @@ fi
 
 while read -r name rest; do
     [ -z "${name}" ] || [ "${name:0:1}" = "#" ] && continue
+    if [ "${name}" = "!compose" ]; then   # !compose <name> <dir with real dumps *.pt> <steps>
+        read -r cname csrc csteps <<< "${rest}"
+        [ "${csrc}" = TRACES_DIR ] && csrc="${MILES_STACK_ROOT}/traces/swegym-smoke2"   # cluster-local copy
+        if [ ! -s "${ROOT}/${cname}/rollout_data/$((csteps - 1)).pt" ]; then
+            "${MR}/mrun" --no-nv -- bash -c "python3 '${MR}/bench/compose_replay.py' '${ROOT}/${cname}/rollout_data' ${csrc}/*.pt --steps ${csteps}" 2>&1 | tail -3
+        fi
+        continue
+    fi
     if [ "${name}" = "!synth" ]; then
         read -r sname slen ssamples srollouts <<< "${rest}"
         if [ ! -s "${ROOT}/${sname}/rollout_data/$((srollouts - 1)).pt" ]; then

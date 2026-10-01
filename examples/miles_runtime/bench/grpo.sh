@@ -16,20 +16,20 @@ TP="${TP:-2}"; CP="${CP:-1}"; MTPG="${MTPG:-9216}"; OFFLOAD="${OFFLOAD:-0}"
 ENGINE_TP="${ENGINE_TP:-1}"; MEMF="${MEMF:-0.6}"
 LORA_RANK="${LORA_RANK:-32}"; LORA_ALPHA="${LORA_ALPHA:-32}"; LORA_TARGETS="${LORA_TARGETS:-all-linear}"
 LR="${LR:-}"; [ -n "${LR}" ] || { [ "${ARM}" = lora ] && LR=1e-5 || LR=1e-6; }
-SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-1}"; EXTRA="${EXTRA:-}"
+SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-1}"; EXTRA="${EXTRA:-}"; EXTRA="${EXTRA//,/ }"   # arms files: EXTRA=--a,--b=c
 MODELS="${MILES_STACK_ROOT}/models"; DATA="${MILES_STACK_ROOT}/datasets"
 mkdir -p "${OUT}"
 
 read -ra MODEL_ARGS <<< "$(python3 /root/miles/miles/utils/external_utils/model_args_utils.py "${MODEL_TYPE}")"
 args=(
     "${MODEL_ARGS[@]}"
-    --hf-checkpoint "${MODELS}/${MODEL}" --megatron-to-hf-mode bridge
+    --hf-checkpoint "${MODEL_PATH:-${MODELS}/${MODEL}}" --megatron-to-hf-mode bridge
     --prompt-data "${DATA}/dapo-math-17k/dapo-math-17k.jsonl" --input-key prompt --label-key label
     --apply-chat-template --rollout-shuffle --rm-type deepscaler
     --num-rollout "${NUM_ROLLOUT}" --rollout-batch-size "${RBS}" --n-samples-per-prompt "${NS}"
     --rollout-max-response-len "${MAXRESP}" --rollout-temperature 1 --global-batch-size "$((RBS * NS / ${STEPS:-1}))"
     --balance-data --seed 1234 --rollout-seed 1234
-    --tensor-model-parallel-size "${TP}" --sequence-parallel --pipeline-model-parallel-size 1
+    --tensor-model-parallel-size "${TP}" --pipeline-model-parallel-size 1
     --context-parallel-size "${CP}" --expert-model-parallel-size 1 --expert-tensor-parallel-size 1
     --use-dynamic-batch-size --max-tokens-per-gpu "${MTPG}"
     --advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --entropy-coef 0.00
@@ -39,8 +39,10 @@ args=(
     --attention-softmax-in-fp32 --attention-backend flash
     --num-gpus-per-node "${GPUS}" --actor-num-nodes 1
 )
+[ "${SP:-1}" = 1 ] && [ "${TP}" -gt 1 ] && args+=(--sequence-parallel)
 case "${RECOMPUTE:-full}" in
     full) args+=(--recompute-granularity full --recompute-method uniform --recompute-num-layers 1) ;;
+    block:*) args+=(--recompute-granularity full --recompute-method block --recompute-num-layers "${RECOMPUTE#block:}") ;;  # first N layers only
     selective) args+=(--recompute-granularity selective) ;;
     none) ;;
     *) echo "bad RECOMPUTE=${RECOMPUTE}" >&2; exit 2 ;;
@@ -56,6 +58,8 @@ else
     [ "${ENGINE_TP}" -gt 1 ] && args+=(--sglang-disable-custom-all-reduce)   # broken on hel (see STACK.md)
     if [ "${LAYOUT}" = colocate ]; then
         args+=(--colocate --actor-num-gpus-per-node "${GPUS}")
+        # trainer and engines both stay resident (no sleep/wake): needs a small trainer (LoRA) + lower MEMF
+        [ "${NOOFF:-0}" = 1 ] && args+=(--no-offload-train --no-offload-rollout)
     else
         args+=(--actor-num-gpus-per-node "${TRAIN_GPUS}" --rollout-num-gpus "$((GPUS - TRAIN_GPUS))"
                --update-weight-transfer-mode broadcast)
@@ -68,6 +72,8 @@ if [ "${ARM}" = lora ]; then
            --target-modules "${LORA_TARGETS}" --no-gradient-accumulation-fusion)
     if [ "${LORA_ROLLOUT:-1}" = 0 ]; then
         args+=(--lora-train-only)   # negative control: SGLang stays on the frozen base
+    elif [ "${LORA_SERVE:-adapter}" = merged ]; then
+        args+=(--lora-serve-merged)  # needs patches/lora-serve-merged: plain engine, merged full-weight sync
     elif [ "${MODE}" = e2e ]; then
         args+=(--sglang-max-lora-rank "${LORA_RANK}")
         # Colocated LoRA must keep the SGLang base weights in host RAM, or rollouts after the first
@@ -79,7 +85,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(MODEL_PATH|MODEL_TYPE|SP|GPUS|ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).
@@ -88,10 +94,27 @@ echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFF
 trap 'kill ${sampler} 2>/dev/null || true' EXIT
 
 cd /root/miles
+entry=train.py
+if [ "${ASYNC:-0}" = 1 ]; then entry=train_async.py; args+=(--fully-async); fi   # needs LAYOUT=disagg
 t0=${SECONDS}
 set +e
-python3 train.py "${args[@]}" 2>&1 | tee "${OUT}/train.log"
-rc=${PIPESTATUS[0]}
+python3 "${entry}" "${args[@]}" > >(tee "${OUT}/train.log") 2>&1 &
+train_pid=$!
+# Stall watchdog: a hung arm (e.g. an engine that never comes up while Miles retries) must not hold the node.
+# First metrics line may take FIRST_STALL_S (JIT compile + engine start); later ones STEP_STALL_S each.
+( last=0; since=${SECONDS}; limit=${FIRST_STALL_S:-1800}
+  while kill -0 "${train_pid}" 2>/dev/null; do
+      sleep 30
+      n=$(grep -c 'perf [0-9]*:' "${OUT}/train.log" 2>/dev/null); n=${n:-0}
+      if [ "${n}" -gt "${last}" ]; then last=${n}; since=${SECONDS}; limit=${STEP_STALL_S:-1200}; fi
+      if [ $((SECONDS - since)) -gt "${limit}" ]; then
+          echo "[grpo] STALL: no progress for $((SECONDS - since)) s (${n} perf lines) -> killing" | tee -a "${OUT}/train.log"
+          pkill -TERM -P "${train_pid}" 2>/dev/null; kill -TERM "${train_pid}" 2>/dev/null; sleep 20
+          pkill -KILL -P "${train_pid}" 2>/dev/null; kill -KILL "${train_pid}" 2>/dev/null; break
+      fi
+  done ) & watchdog=$!
+wait "${train_pid}"; rc=$?
+kill "${watchdog}" 2>/dev/null
 set -e
 echo "[grpo] exit ${rc} after $((SECONDS - t0)) s"
 python3 "$(dirname "$0")/parse_metrics.py" "${OUT}" || true
