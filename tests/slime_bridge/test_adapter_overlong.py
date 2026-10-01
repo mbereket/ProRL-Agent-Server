@@ -105,6 +105,27 @@ def test_context_overflow_session_with_traces_trains_with_zero_reward(monkeypatc
     assert masked.metadata["polar"]["overlong"] is False
 
 
+def test_completed_session_with_gateway_context_refusal_trains_with_zero_reward(monkeypatch) -> None:
+    """codex stops after the engine refuses an over-window request; the verifier still runs and may pass."""
+    monkeypatch.setattr(adapter, "_load_sample_type", lambda: FakeSample)
+    trace = _long_trace().model_copy(update={"finish_reason": "tool_calls"})
+    result = _session_result(trace=trace)
+    result.trajectory.metadata["task_metadata"] = {
+        "group_id": 3,
+        "upstream_error": "Upstream returned HTTP 400: The input (65625 tokens) is longer than the model's "
+                          "context length (65536 tokens).",
+    }
+    s = session_result_to_samples(result, group_index=1, trajectory_index=2)[0]
+    assert s.status == FakeSample.Status.COMPLETED
+    assert s.reward == {"score": 0.0}
+    assert s.metadata["polar"]["overlong_reason"] == "context_overflow"
+
+    result.trajectory.metadata["task_metadata"]["upstream_error"] = "Upstream request timed out"
+    s = session_result_to_samples(result, group_index=1, trajectory_index=2)[0]
+    assert s.reward == {"score": 1.0}
+    assert s.metadata["polar"]["overlong"] is False
+
+
 def test_plain_error_session_stays_masked(monkeypatch) -> None:
     monkeypatch.setattr(adapter, "_load_sample_type", lambda: FakeSample)
     result = _overflow_result(_long_trace(), error="step 0 exited with code 1")

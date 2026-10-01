@@ -339,7 +339,12 @@ def _is_context_overflow(result: "SessionResult") -> bool:
     for value in (result.error, result.trajectory.error):
         if value:
             texts.append(str(value))
-    for source in (getattr(result, "metadata", None), getattr(result.trajectory, "metadata", None)):
+    sources = [getattr(result, "metadata", None), getattr(result.trajectory, "metadata", None)]
+    # The gateway records engine refusals on the session (task_metadata.upstream_error): a harness that sent a
+    # request over the context window ends there, often without reporting an error itself.
+    if isinstance(sources[1], dict):
+        sources.append(sources[1].get("task_metadata"))
+    for source in sources:
         if isinstance(source, dict):
             for key, value in source.items():
                 if isinstance(value, str) and ("error" in str(key).lower() or "reason" in str(key).lower()):

@@ -720,6 +720,7 @@ async def _handle_non_streaming(
         response = await state.inference.completion(openai_request, routing_key=session_id)
     except UpstreamError as exc:
         logger.warning("Non-streaming upstream error for session %s: %s", session_id, exc)
+        state.storage.record_upstream_error(session_id, str(exc))
         return _upstream_error_response(api_type, exc)
 
     _remember_reasoning(state, session_id, response)
@@ -756,6 +757,7 @@ async def _handle_streaming(
         response = await state.inference.completion(non_stream_request, routing_key=session_id)
     except UpstreamError as exc:
         logger.warning("Upstream error for streaming session %s: %s", session_id, exc)
+        state.storage.record_upstream_error(session_id, str(exc))
         return _upstream_error_response(api_type, exc)
 
     _remember_reasoning(state, session_id, response)

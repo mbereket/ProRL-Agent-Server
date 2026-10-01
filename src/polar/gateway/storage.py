@@ -138,6 +138,19 @@ class SessionStore:
             )
         return record.completion_id
 
+    def record_upstream_error(self, session_id: str, message: str) -> None:
+        """Keep the latest upstream (inference) error on the session.
+
+        It reaches the trajectory as ``metadata.task_metadata.upstream_error``, so
+        a trainer can tell a harness that stopped because the engine refused the
+        request (e.g. the conversation outgrew the context window) from one that
+        finished on its own.
+        """
+        with self._lock:
+            state = self._get_or_create_session_locked(session_id, created_at=None)
+            state.metadata["upstream_error"] = message[:2000]
+            state.metadata["upstream_error_count"] = int(state.metadata.get("upstream_error_count", 0)) + 1
+
     def get_session_metadata(self, session_id: str) -> dict[str, Any] | None:
         """Return session metadata if present."""
         with self._lock:
