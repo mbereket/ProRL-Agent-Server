@@ -39,7 +39,7 @@ CLUSTERS = {
     # interactive only (9 h), max 2 submitted jobs per user (pending count); $HOME over quota
     "aws-iad": dict(hostname="aws-iad-cs-002-login-02.nvidia.com", account="nemotron_reason_science",
                     user_root="/lustre/fsw/portfolios/nemotron/projects/nemotron_reason_science/users/mbereket",
-                    sbatch="/cm/shared/apps/slurm/current/bin/sbatch", cpus=192, mem_gb=1800),
+                    sbatch="/cm/shared/apps/slurm/current/bin/sbatch", cpus=192, mem_gb=1500),
 }
 
 
