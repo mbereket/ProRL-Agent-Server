@@ -1781,6 +1781,12 @@ def _polar_extra_metrics(
             out["polar/traj/trainable_token_fraction"] = (
                 sum(session_trainable_tokens.values()) / total_response
             )
+        total_trainable = sum(session_trainable_tokens.values())
+        if total_trainable > 0:
+            # Share of the step's trainable tokens that come from overlong (reward-0 under zero_reward_train) attempts.
+            out["polar/overlong_trainable_token_fraction"] = (
+                sum(v for sid, v in session_trainable_tokens.items() if sid in overlong_sessions) / total_trainable
+            )
     if session_turns:
         out["polar/traj/turns_mean"] = sum(session_turns.values()) / len(session_turns)
         per_turn = [
