@@ -28,6 +28,7 @@ if [ "${ROLLOUT_ONLY}" = 1 ]; then ASYNC=0; LAYOUT=disagg; DROP_ZERO_STD=0; EVAL
 #   Trials: RUN_DIR/trials-<job>.jsonl with split=eval@N; summary: RUN_DIR/eval@N-<job>.json + a row in RUN_DIR/eval_summary.tsv.
 #   EVAL_WATCH_EVERY=K: keep going: evaluate each newer checkpoint >= last+K as it appears (poll 60 s) until none arrives
 #   for EVAL_WATCH_IDLE_MIN (default 90) or the source run has chain.stop.
+#   Weights only (an adapter-only view without training_state: no optimizer/LR-scheduler restore, any NUM_ROLLOUT works).
 #   Fails fast if the adapter does not load (Miles would otherwise continue with a fresh B=0 adapter = the base model).
 if [ -n "${EVAL_FROM_RUN:-}" ]; then
     case "${EVAL_FROM_RUN}" in /*) SRC_RUN_DIR="${EVAL_FROM_RUN}" ;; *) SRC_RUN_DIR="$(dirname "${RUN_DIR}")/${EVAL_FROM_RUN}" ;; esac
@@ -375,10 +376,16 @@ if [ -n "${EVAL_FROM_RUN:-}" ]; then
         adapter="${SRC_RUN_DIR}/ckpt/iter_$(printf %07d "${pick}")/adapter"
         nsh="$(ls "${adapter}"/adapter_megatron_rank*.pt | wc -l)"
         [ "${nsh}" -eq "${TRAIN_GPUS}" ] || { echo "[driver] FATAL: ${adapter} has ${nsh} rank shards but TRAIN_GPUS=${TRAIN_GPUS}: use the source run's trainer layout (TRAIN_GPUS/TP/CP)" >&2; exit 3; }
+        # Weights only: an adapter-only view (symlinks to the rank shards, no training_state_rank*.pt), so Miles restores
+        # neither optimizer nor LR scheduler (its total-iterations check would fail: this job's NUM_ROLLOUT differs).
+        view="${RUN_DIR}/adapters/iter_$(printf %07d "${pick}")"; mkdir -p "${view}"
+        for f in "${adapter}"/adapter_megatron_rank*.pt "${adapter}"/adapter_config.json; do
+            [ -e "${f}" ] && ln -sfn "${f}" "${view}/$(basename "${f}")"
+        done
         tag="eval@${pick}"; efile="${RUN_DIR}/data/${tag}.jsonl"; hm_eval_data "${tag}" "${efile}"
         st="${RUN_DIR}/.eval-status-${SLURM_JOB_ID:-local}-${pick}"
         eargs=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${efile}"
-               --n-samples-per-eval-prompt "${EVAL_N:-2}" --lora-adapter-path "${adapter}")
+               --n-samples-per-eval-prompt "${EVAL_N:-2}" --lora-adapter-path "${view}")
         printf '%s\n' "# ${tag}" "${eargs[@]}" >> "${RUN_DIR}/args-${SLURM_JOB_ID:-local}.txt"
         echo "[driver] EVAL_FROM_RUN: ${tag} <- ${adapter}"
         "${train_cmd[@]}" "${eargs[@]}" 2>&1 | stop_after_eval "${st}" || true
