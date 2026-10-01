@@ -16,7 +16,7 @@ TP="${TP:-2}"; CP="${CP:-1}"; MTPG="${MTPG:-9216}"; OFFLOAD="${OFFLOAD:-0}"
 ENGINE_TP="${ENGINE_TP:-1}"; MEMF="${MEMF:-0.6}"
 LORA_RANK="${LORA_RANK:-32}"; LORA_ALPHA="${LORA_ALPHA:-32}"; LORA_TARGETS="${LORA_TARGETS:-all-linear}"
 LR="${LR:-}"; [ -n "${LR}" ] || { [ "${ARM}" = lora ] && LR=1e-5 || LR=1e-6; }
-SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-1}"; EXTRA="${EXTRA:-}"
+SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-1}"; EXTRA="${EXTRA:-}"; EXTRA="${EXTRA//,/ }"   # arms files: EXTRA=--a,--b=c
 MODELS="${MILES_STACK_ROOT}/models"; DATA="${MILES_STACK_ROOT}/datasets"
 mkdir -p "${OUT}"
 
@@ -29,7 +29,7 @@ args=(
     --num-rollout "${NUM_ROLLOUT}" --rollout-batch-size "${RBS}" --n-samples-per-prompt "${NS}"
     --rollout-max-response-len "${MAXRESP}" --rollout-temperature 1 --global-batch-size "$((RBS * NS / ${STEPS:-1}))"
     --balance-data --seed 1234 --rollout-seed 1234
-    --tensor-model-parallel-size "${TP}" --sequence-parallel --pipeline-model-parallel-size 1
+    --tensor-model-parallel-size "${TP}" --pipeline-model-parallel-size 1
     --context-parallel-size "${CP}" --expert-model-parallel-size 1 --expert-tensor-parallel-size 1
     --use-dynamic-batch-size --max-tokens-per-gpu "${MTPG}"
     --advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --entropy-coef 0.00
@@ -39,6 +39,7 @@ args=(
     --attention-softmax-in-fp32 --attention-backend flash
     --num-gpus-per-node "${GPUS}" --actor-num-nodes 1
 )
+[ "${SP:-1}" = 1 ] && [ "${TP}" -gt 1 ] && args+=(--sequence-parallel)
 case "${RECOMPUTE:-full}" in
     full) args+=(--recompute-granularity full --recompute-method uniform --recompute-num-layers 1) ;;
     selective) args+=(--recompute-granularity selective) ;;
@@ -83,7 +84,7 @@ fi
 args+=(${EXTRA})
 
 printf '%s\n' "${args[@]}" > "${OUT}/args.txt"
-env | grep -E '^(ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
+env | grep -E '^(SP|GPUS|ASYNC|NOOFF|LORA_SERVE|STEPS|ARM|LAYOUT|MODE|TP|CP|MTPG|OFFLOAD|RECOMPUTE|ROLLOUT_LOGPROBS|ENGINE_TP|MEMF|LORA_|LR|NUM_ROLLOUT|RBS|NS|MAXRESP|TRAIN_GPUS|REPLAY)=' | sort > "${OUT}/knobs.txt" || true
 echo "[grpo] ${ARM}/${LAYOUT}/${MODE} TP${TP} CP${CP} mtpg ${MTPG} offload ${OFFLOAD} engineTP ${ENGINE_TP} -> ${OUT}"
 
 # GPU memory sampler (peak per GPU, all processes on the node).

@@ -8,6 +8,7 @@
 # An arm with a DONE marker (written on rc 0) is skipped, so a resubmitted job resumes the suite.
 # `REPLAY=@<arm>` points a train_only arm at another arm's rollout dump.
 # `!synth <name> <seq_len> <samples> <rollouts>` writes fixed-length synthetic dumps to <name>/rollout_data.
+# `!compose <name> <dir> <steps>` merges real dumps <dir>/*.pt into <steps> bigger replay steps (compose_replay.py).
 set -uo pipefail
 MR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
 source "${MR}/lib.sh"
@@ -30,6 +31,13 @@ fi
 
 while read -r name rest; do
     [ -z "${name}" ] || [ "${name:0:1}" = "#" ] && continue
+    if [ "${name}" = "!compose" ]; then   # !compose <name> <dir with real dumps *.pt> <steps>
+        read -r cname csrc csteps <<< "${rest}"
+        if [ ! -s "${ROOT}/${cname}/rollout_data/$((csteps - 1)).pt" ]; then
+            "${MR}/mrun" --no-nv -- bash -c "python3 '${MR}/bench/compose_replay.py' '${ROOT}/${cname}/rollout_data' ${csrc}/*.pt --steps ${csteps}" 2>&1 | tail -3
+        fi
+        continue
+    fi
     if [ "${name}" = "!synth" ]; then
         read -r sname slen ssamples srollouts <<< "${rest}"
         if [ ! -s "${ROOT}/${sname}/rollout_data/$((srollouts - 1)).pt" ]; then
