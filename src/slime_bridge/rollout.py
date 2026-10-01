@@ -194,6 +194,8 @@ class _CompletedGroup:
     policy_version: int
     session_count: int
     completed_at: float = field(default_factory=time.monotonic)
+    # Zero-variance group dropped without replacement: occupies its step slot, contributes no samples.
+    dropped: bool = False
 
 # ---------------------------------------------------------------------------
 # Global worker singleton
@@ -622,6 +624,9 @@ class AsyncPolarRolloutWorker:
         accepted: list[_CompletedGroup] = []
         while self._completed_buffer and len(accepted) < max_groups:
             completed = self._completed_buffer.popleft()
+            if completed.dropped:
+                accepted.append(completed)
+                continue
             staleness = max(0, int(rollout_id) - completed.policy_version)
             if staleness > self.config.max_off_policy_steps:
                 self._inc_metric("polar/stale_groups")
@@ -884,6 +889,13 @@ class AsyncPolarRolloutWorker:
             reason,
             last_error,
         )
+        if isinstance(last_error, PolarZeroVarianceGroupError) and not self.config.zero_variance_replace:
+            await self._emit_completed(_CompletedGroup(
+                group_id=pending.group_id, group=pending.group, samples=[],
+                task_id=str(getattr(last_error, "task_id", "")), submitted_rollout_id=pending.submitted_rollout_id,
+                policy_version=pending.policy_version, session_count=pending.session_cost, dropped=True,
+            ))
+            return
         # Zero-variance drops are an expected filter, not a failure.
         if not isinstance(last_error, PolarZeroVarianceGroupError):
             self._consecutive_drops += 1
@@ -1439,15 +1451,23 @@ def generate_rollout_polar_async(args: Any, rollout_id: int, data_source: Any, e
     start = time.monotonic()
     last_progress = start
 
-    while len(data) < target:
+    n_dropped_slots = 0
+    while len(data) + n_dropped_slots < target:
         made_progress = False
         completed_groups = async_worker.drain_completed(
-            max_groups=target - len(data),
+            max_groups=target - len(data) - n_dropped_slots,
             rollout_id=rollout_id,
         )
         for completed in completed_groups:
-            data.append(completed.samples)
             made_progress = True
+            if completed.dropped:
+                n_dropped_slots += 1
+                if len(data) + n_dropped_slots >= target and not data:
+                    # every slot of this step was a dropped group: keep waiting for one trainable group
+                    n_dropped_slots -= 1
+                    async_worker.request_groups(1)
+                continue
+            data.append(completed.samples)
 
         now = time.monotonic()
         if made_progress:
@@ -1459,7 +1479,7 @@ def generate_rollout_polar_async(args: Any, rollout_id: int, data_source: Any, e
             )
             last_progress = now
 
-        if len(data) < target:
+        if len(data) + n_dropped_slots < target:
             time.sleep(0.05)
 
     elapsed = time.monotonic() - start

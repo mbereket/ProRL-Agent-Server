@@ -31,6 +31,7 @@ class PolarSlimeConfig:
     timeout_reward_zero: bool
     group_id_scope: str
     drop_zero_variance_groups: bool
+    zero_variance_replace: bool
     zero_variance_tol: float
     max_consecutive_dropped_groups: int
     min_complete_accept_fraction: float
@@ -98,6 +99,10 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         raise ValueError("polar_group_id_scope must be 'trajectory' or 'prompt'")
 
     drop_zero_variance_groups = bool(getattr(args, "polar_drop_zero_variance_groups", False))
+    # True: a dropped zero-variance group is replaced by a fresh prompt (oversampling: every step trains on
+    # rollout_batch_size informative groups). False: the dropped group still uses its slot of the step, so a step
+    # trains on <= rollout_batch_size groups (no oversampling; at least one group is always trained).
+    zero_variance_replace = bool(getattr(args, "polar_zero_variance_replace", True))
     zero_variance_tol = float(getattr(args, "polar_zero_variance_tol", 1e-6))
     if zero_variance_tol < 0.0:
         raise ValueError("polar_zero_variance_tol must be non-negative")
@@ -150,6 +155,7 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         timeout_reward_zero=timeout_reward_zero,
         group_id_scope=group_id_scope,
         drop_zero_variance_groups=drop_zero_variance_groups,
+        zero_variance_replace=zero_variance_replace,
         zero_variance_tol=zero_variance_tol,
         max_consecutive_dropped_groups=max_consecutive_dropped_groups,
         min_complete_accept_fraction=min_complete_accept_fraction,
