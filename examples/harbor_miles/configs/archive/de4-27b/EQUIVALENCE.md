@@ -1,4 +1,4 @@
-# Dry-render equivalence of the re-expressed configs (re-checked 2026-10-01 08:50 PT on harbor-miles after merging miles-path-b 3819542a)
+# Dry-render equivalence of the re-expressed configs (re-checked 2026-10-01 08:31 PT on harbor-miles after merging miles-path-b 3819542a)
 
 Each ORIGINAL config was rendered with the launcher of the commit it was submitted from, the re-expression with harbor-miles
 (`tools/config_equiv.sh OLD_REF OLD_CONFIG NEW_CONFIG --nodes 2`, cluster dfw). Compared: the Miles args, train command,
