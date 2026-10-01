@@ -72,13 +72,19 @@ if [ "${DRY_RUN}" = 0 ]; then
     # Task images live in this work root's image dir. Images another work root already
     # has (APPTAINER_IMAGE_DIR from the cluster profile, e.g. a shared SIF cache) are
     # symlinked, never written; only what is missing everywhere is pulled, into our dir.
-    SHARED_IMAGE_DIR="${APPTAINER_IMAGE_DIR:-}"
-    export APPTAINER_IMAGE_DIR="${MILES_IMAGE_DIR:-${WORKROOT}/harbor_sif_images}"
+    # One task-image dir per cluster for every Miles run (all agents): <user root>/miles/shared/harbor_sif_images.
+    # Images other dirs already hold (the cluster profile's SIF cache, this work root's older dir) are symlinked in,
+    # never moved; anything still missing is pulled into it. MILES_IMAGE_DIR overrides.
+    SHARED_IMAGE_DIRS=("${APPTAINER_IMAGE_DIR:-}" "${WORKROOT}/harbor_sif_images")
+    default_dir="${WORKROOT}/harbor_sif_images"
+    [ -n "${CLUSTER_USER_ROOT:-}" ] && default_dir="${CLUSTER_USER_ROOT}/miles/shared/harbor_sif_images"
+    export APPTAINER_IMAGE_DIR="${MILES_IMAGE_DIR:-${default_dir}}"
+    SHARED_IMAGE_DIR="${SHARED_IMAGE_DIRS[0]}"
     mkdir -p "${APPTAINER_IMAGE_DIR}"
     log "task images -> ${APPTAINER_IMAGE_DIR}${SHARED_IMAGE_DIR:+ (links into ${SHARED_IMAGE_DIR})}"
     to_pull="$(mktemp)"
     config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
-        --shared-dir "${SHARED_IMAGE_DIR}" "${select[@]:2}" > "${to_pull}"
+        --shared-dir "${SHARED_IMAGE_DIRS[0]}" --shared-dir "${SHARED_IMAGE_DIRS[1]}" "${select[@]:2}" > "${to_pull}"
     # Registry credentials in the environment (the cluster layer maps a GitLab token to APPTAINER_DOCKER_*)
     # belong to that registry only: Docker Hub refs (no registry host) are pulled anonymously.
     pull_one() {
@@ -98,7 +104,7 @@ if [ "${DRY_RUN}" = 0 ]; then
     cut -f1,2 "${to_pull}" | tr '\t' ' ' | xargs -r -P "${JOBS}" -L 1 bash -c 'pull_one "$0" "$1"'
     # Tasks whose image still could not be staged are left out of this run (listed), not fatal.
     config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
-        --shared-dir "${SHARED_IMAGE_DIR}" "${select[@]:2}" > "${to_pull}"
+        --shared-dir "${SHARED_IMAGE_DIRS[0]}" --shared-dir "${SHARED_IMAGE_DIRS[1]}" "${select[@]:2}" > "${to_pull}"
     if [ -s "${to_pull}" ]; then
         skip="${RUN_DIR}/tasks_without_image.txt"
         cut -f3 "${to_pull}" | tr ',' '\n' > "${skip}"
