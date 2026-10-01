@@ -174,12 +174,22 @@ def main() -> None:
             kept = steps[s].get("rollout/fully_async/queue_size")
             print(f"  step {s} dynamic-filter drops (groups): {drops}  unfiltered reward "
                   f"{steps[s].get('rollout/raw_reward_unfiltered')}")
+    evals = {}
+    with open(a.log, errors="replace") as f:
+        for line in f:
+            m = re.search(r"\] metrics\.py:\d+ - eval (\d+): (\{.*\})\s*$", line)
+            if m:
+                d = _parse_dict(m.group(2))
+                evals[int(m.group(1))] = {k: v for k, v in d.items() if "/" in k and k.count("/") == 1}
+    for k, v in sorted(evals.items()):
+        print(f"  eval after rollout {k}: {v}")
     rewards = [steps[s]["rollout/raw_reward"] for s in sorted(steps) if "rollout/raw_reward" in steps[s]]
     summary: dict = {"n_steps": len(rewards)}
     if rewards:
         k = max(1, min(5, len(rewards) // 3))
         summary.update(first_k_mean_reward=round(statistics.mean(rewards[:k]), 3),
                        last_k_mean_reward=round(statistics.mean(rewards[-k:]), 3), k=k)
+    summary["eval"] = evals
     summary["trials"] = summarize_trials(a.trials)
     # TITO session divergence: v1 one-turn rollbacks (logged) and rejected requests (4xx to the agent).
     div = collections.Counter()

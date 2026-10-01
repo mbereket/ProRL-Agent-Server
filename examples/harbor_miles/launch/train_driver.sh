@@ -124,6 +124,13 @@ else
     [ $(( RBS * NS )) -le "${SESSION_CAP}" ] || echo "[driver] WARNING: RBS x NS = $(( RBS * NS )) > session cap ${SESSION_CAP}"
 fi
 [ "${DROP_ZERO_STD:-0}" = 1 ] && args+=(--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter)
+# Periodic eval on the same harness/sampling (no dynamic filter): EVAL_INTERVAL steps, EVAL_N attempts per task,
+# EVAL_DATA (default: the training prompts = optimization check on the full training set).
+if [ -n "${EVAL_INTERVAL:-}" ]; then
+    args+=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data "${EVAL_NAME:-train}" "${EVAL_DATA:-${DATA}}"
+           --n-samples-per-eval-prompt "${EVAL_N:-2}")
+    [ "${EVAL_BEFORE_TRAIN:-0}" = 1 ] || args+=(--skip-eval-before-train)
+fi
 # Resume (chained jobs, same RUN_NAME): Megatron checkpoint incl. the LoRA adapter.
 if [ -f "${RUN_DIR}/ckpt/latest_checkpointed_iteration.txt" ]; then
     args+=(--load "${RUN_DIR}/ckpt")
