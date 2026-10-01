@@ -13,10 +13,10 @@ index d1b3868..3cbd45e 100755
  
 diff --git a/src/harbor/environments/singularity/bootstrap_offline.sh b/src/harbor/environments/singularity/bootstrap_offline.sh
 new file mode 100755
-index 0000000..6d72e95
+index 0000000..ebe25c6
 --- /dev/null
 +++ b/src/harbor/environments/singularity/bootstrap_offline.sh
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,36 @@
 +#!/bin/bash
 +# Harbor singularity server bootstrap, offline variant.
 +#
@@ -42,13 +42,17 @@ index 0000000..6d72e95
 +  echo "[harbor] setup.sh done $(date +%T)" >&2
 +fi
 +
-+if [ -z "${HARBOR_SERVER_PYTHON:-}" ] || ! "$HARBOR_SERVER_PYTHON" -c "import uvicorn, fastapi" 2>/dev/null; then
++# -I (isolated): the image's PYTHONPATH/PYTHONHOME/user site must not leak into the server's own
++# interpreter (e.g. a repo-under-test's pydantic shadowing the server's). Commands the server runs
++# still get the image's environment unchanged.
++if [ -z "${HARBOR_SERVER_PYTHON:-}" ] || ! "$HARBOR_SERVER_PYTHON" -I -c "import uvicorn, fastapi" 2>/dev/null; then
 +  echo "[harbor] FATAL: HARBOR_SERVER_PYTHON=${HARBOR_SERVER_PYTHON:-unset} has no uvicorn+fastapi" >&2
++  "${HARBOR_SERVER_PYTHON:-python3}" -I -c "import uvicorn, fastapi" >&2 || true
 +  exit 1
 +fi
 +export HARBOR_PYTHON="$HARBOR_SERVER_PYTHON"
-+echo "[harbor] starting server with $HARBOR_PYTHON $(date +%T)" >&2
-+exec "$HARBOR_PYTHON" "$@"
++echo "[harbor] starting server with $HARBOR_PYTHON -I $(date +%T)" >&2
++exec "$HARBOR_PYTHON" -I "$@"
 diff --git a/src/harbor/environments/singularity/server.py b/src/harbor/environments/singularity/server.py
 index 04f9644..6e72db5 100644
 --- a/src/harbor/environments/singularity/server.py
