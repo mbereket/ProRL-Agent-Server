@@ -10,6 +10,8 @@
 set -euo pipefail
 : "${RUN_DIR:?}" "${HARBOR_TASKS_DIR:?}" "${MILES_NUM_NODES:?}"
 ARM="${ARM:-lora}"; LAYOUT="${LAYOUT:-disagg}"; ASYNC="${ASYNC:-0}"
+# Colocated trainer + engines cannot overlap rollout and training: always the synchronous loop.
+if [ "${LAYOUT}" = colocate ] && [ "${ASYNC}" = 1 ]; then echo "[driver] LAYOUT=colocate -> ASYNC=0 (sync loop)"; ASYNC=0; fi
 MODEL_TYPE="${MODEL_TYPE:-qwen3.5-9B}"
 HF_CKPT="${HF_CKPT:?config must set HF_CKPT (HF model dir)}"
 GPUS_PER_NODE="$(nvidia-smi --list-gpus | wc -l | tr -d ' ')"
@@ -184,8 +186,20 @@ fi
 # GatedDeltaNet context-parallel mode when CP > 1 (H2H_SPEC: headwise; never chunkwise).
 [ "${CP}" -gt 1 ] && [ -n "${LINEAR_CP_MODE:-headwise}" ] && args+=(--linear-cp-mode "${LINEAR_CP_MODE:-headwise}")
 if [ "${LAYOUT}" = colocate ]; then
+    # Trainer and engines time-share every GPU (offload between phases; with LORA_SERVE=merged the patch set keys the
+    # sleep/wake layout on "LoRA is trained"). Engines: all GPUs / ENGINE_TP.
     args+=(--colocate --actor-num-nodes "${MILES_NUM_NODES}" --actor-num-gpus-per-node "${GPUS_PER_NODE}")
 else
+    # Split layout. Trainer = TRAIN_GPUS on the first node (< 1 node) or whole nodes; engines = every other GPU of the
+    # job, on any node (e.g. 4 trainer + 12 engine GPUs on 2 nodes, 8 + 24 on 4). Engines never straddle nodes.
+    if [ "${TRAIN_GPUS}" -lt "${GPUS_PER_NODE}" ]; then
+        [ $(( (GPUS_PER_NODE - TRAIN_GPUS) % ENGINE_TP )) -eq 0 ] \
+            || { echo "[driver] FATAL: ENGINE_TP ${ENGINE_TP} does not tile the ${GPUS_PER_NODE}-${TRAIN_GPUS} engine GPUs left on the trainer node" >&2; exit 2; }
+    else
+        [ $(( TRAIN_GPUS % GPUS_PER_NODE )) -eq 0 ] \
+            || { echo "[driver] FATAL: TRAIN_GPUS ${TRAIN_GPUS} must be < ${GPUS_PER_NODE} or a multiple of it" >&2; exit 2; }
+    fi
+    [ $(( TOTAL_GPUS - TRAIN_GPUS )) -gt 0 ] || { echo "[driver] FATAL: no GPUs left for engines" >&2; exit 2; }
     if [ "${TRAIN_GPUS}" -ge "${GPUS_PER_NODE}" ]; then   # whole trainer nodes
         ACTOR_NODES=$(( TRAIN_GPUS / GPUS_PER_NODE ))
         args+=(--actor-num-nodes "${ACTOR_NODES}" --actor-num-gpus-per-node "${GPUS_PER_NODE}"
@@ -211,8 +225,9 @@ if [ "${ARM}" = lora ]; then
         args+=(--sglang-lora-backend "${LORA_BACKEND:-triton}")
     fi
 fi
+# W&B reads WANDB_API_KEY from the environment (never on the command line: args are logged to RUN_DIR/args-*.txt).
 [ -n "${WANDB_API_KEY:-}" ] && [ -n "${WANDB_PROJECT:-}" ] && args+=(--use-wandb --wandb-project "${WANDB_PROJECT}"
-    --wandb-group "${RUN_NAME}" --wandb-key "${WANDB_API_KEY}")
+    --wandb-group "${RUN_NAME}")
 # shellcheck disable=SC2206
 args+=(${EXTRA})
 

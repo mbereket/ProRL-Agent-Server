@@ -44,6 +44,13 @@ HM_AGENT_TIMEOUT="${HM_AGENT_TIMEOUT:-3600}" \
     bash "${HM_EXAMPLE_DIR}/launch/start_agent_server.sh" "${RUN_DIR}" "${HM_AGENT_SERVER_PORT:-65500}" \
     "${HM_SANDBOXES_PER_NODE:-32}"
 
+# Per-node CPU / memory / sandbox sampler (sandbox-density measurements): RUN_DIR/node-<job>-<host>.csv.
+if [ "${HM_NODE_MONITOR:-1}" = 1 ] && command -v python3 >/dev/null; then
+    _me="$(grep -m1 "//$(hm_node_ip):" "${HARBOR_AGENT_SERVERS_FILE}" 2>/dev/null | awk '{print $1}')"
+    python3 "${HM_EXAMPLE_DIR}/launch/node_monitor.py" "${RUN_DIR}/node-${SLURM_JOB_ID}-$(hostname -s).csv" \
+        "${_me:-http://127.0.0.1:${HM_AGENT_SERVER_PORT:-65500}}" "${HM_NODE_MONITOR_S:-30}" >/dev/null 2>&1 &
+fi
+
 # Everything the rollout process (agent function) needs is in the environment Ray inherits.
 export AGENT_MODEL_NAME="${AGENT_MODEL_NAME:-qwen35-9b}"
 export HM_TRIAL_LOG="${HM_TRIAL_LOG:-${RUN_DIR}/trials-${SLURM_JOB_ID}.jsonl}"
