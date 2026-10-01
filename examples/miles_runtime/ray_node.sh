@@ -63,11 +63,13 @@ self_args=("${mrun_opts[@]}" -- "$@")
 if [ "${role}" = worker ]; then
     mr_log "worker ${me}: waiting for ray head ${HEAD_IP}:${RAY_GCS_PORT}"
     for _ in $(seq 1 600); do (echo > "/dev/tcp/${HEAD_IP}/${RAY_GCS_PORT}") 2>/dev/null && break; sleep 2; done
+    mr_jit_seed
     exec "${MR}/mrun" "${mrun_opts[@]}" -- ray start --address="${RAY_ADDRESS}" --node-ip-address "$(getent ahostsv4 "${me}" | awk 'NR==1{print $1}')" \
         --num-gpus "${GPUS}" "${node_ports[@]}" --disable-usage-stats --block
 fi
 
 mr_log "head ${me} (${HEAD_IP}): ${NUM_NODES} node(s) x ${GPUS} GPU"
+mr_jit_seed
 worker_pids=()
 if [ "${NUM_NODES}" -gt 1 ] && [ "${SLURM_STEP_NUM_TASKS:-1}" -le 1 ]; then
     wlog_dir="${MILES_OWNER_ROOT:-${MILES_STACK_ROOT}}/joblogs"; mkdir -p "${wlog_dir}"
@@ -110,4 +112,5 @@ ray stop --force >/dev/null 2>&1 || true
 exit \${rc}
 "
 rc=$?
+mr_jit_publish   # head node's caches cover what the workers compile too (same kernels, same image)
 exit "${rc}"

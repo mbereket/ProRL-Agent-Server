@@ -4,3 +4,4 @@ Runtime-level fixes to the pinned image, applied by every `mrun` call (MILES_NO_
   parallelism: the pinned Megatron-Bridge requires explicit rank-local 3D MRoPE position_ids for pre-sharded
   THD CP input; Miles builds them but only injected them through a get_rope_index hook (too late) ->
   ValueError "Pre-sharded packed CP inputs require explicit rank-local 3D MRoPE position_ids." Pass them explicitly.
+- miles/0002: colocated LoRA with --no-offload-train read weights from a non-existent memory-saver backup (AssertionError: TorchMemorySaver observes invalid LD_PRELOAD).

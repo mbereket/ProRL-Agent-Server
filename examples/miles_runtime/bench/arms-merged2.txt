@@ -1,0 +1,4 @@
+# Merged serving e2e (dapo 32x8, 8k) + bf16 mamba SSM state check vs the trainer (train/rollout mismatch, decode tok/s).
+m2-etp2-merged          ARM=lora LORA_SERVE=merged LAYOUT=colocate NUM_ROLLOUT=4 ENGINE_TP=2
+m2-etp2-merged-ssmbf16  ARM=lora LORA_SERVE=merged LAYOUT=colocate NUM_ROLLOUT=4 ENGINE_TP=2 EXTRA=--sglang-mamba-ssm-dtype=bfloat16
+m2-etp4-merged          ARM=lora LORA_SERVE=merged LAYOUT=colocate NUM_ROLLOUT=4 ENGINE_TP=4

@@ -1,0 +1,2 @@
+# JIT cache check, warm job (seeded from the cold job snapshot)
+jit-warm ARM=lora MODE=train_only REPLAY=@fix16k NUM_ROLLOUT=2 RBS=8 NS=8 TP=2 MTPG=16384 EXTRA=--log-probs-chunk-size=4096

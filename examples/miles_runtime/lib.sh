@@ -61,3 +61,32 @@ mr_cuda_compat_libdir() {
     [ -n "${lib}" ] || mr_die "driver $(mr_driver_major) needs CUDA forward-compat libs; run setup.sh compat"
     dirname "${lib}"
 }
+
+# ---- persistent JIT caches (TileLang/Triton/Inductor/flashinfer/sglang/CUDA) across jobs --------------------
+# mrun keeps all JIT caches under node-local MRUN cache_root (lustre caches shared live by concurrent jobs corrupt).
+# mr_jit_seed copies the newest published snapshot in; mr_jit_publish tars the node's cache back (atomic rename,
+# last writer wins; snapshots only ever grow when jobs run back to back). Keyed by image + GPU compute capability.
+mr_cache_root() { echo "${MRUN_CACHE_ROOT:-/tmp/miles-${USER}-${SLURM_JOB_ID:-local}}"; }
+mr_jit_dir() {
+    local cc; cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d .)"
+    echo "${MILES_STACK_ROOT}/jitcache/${MILES_SIF_NAME}-sm${cc:-x}"
+}
+mr_jit_seed() {
+    [ "${MILES_JIT_CACHE:-1}" = 1 ] || return 0
+    local d snap root; d="$(mr_jit_dir)"; snap="${d}/latest.tar"; root="$(mr_cache_root)"
+    [ -s "${snap}" ] || { mr_log "jit cache: no snapshot at ${snap} (cold start)"; return 0; }
+    mkdir -p "${root}" && tar -C "${root}" -xf "${snap}" 2>/dev/null \
+        && mr_log "jit cache: seeded ${root} from ${snap} ($(du -sh "${snap}" | cut -f1))"
+}
+mr_jit_publish() {
+    [ "${MILES_JIT_CACHE:-1}" = 1 ] || return 0
+    local d root tmp; d="$(mr_jit_dir)"; root="$(mr_cache_root)"
+    [ -d "${root}" ] || return 0
+    mkdir -p "${d}"; tmp="${d}/.latest.tar.$$.$(hostname -s)"
+    # skip sockets/locks; keep compiled artifacts only
+    if tar -C "${root}" --exclude='*.lock' --exclude='*.sock' -cf "${tmp}" . 2>/dev/null; then
+        mv -f "${tmp}" "${d}/latest.tar" && mr_log "jit cache: published $(du -sh "${d}/latest.tar" | cut -f1) -> ${d}/latest.tar"
+    else
+        rm -f "${tmp}"
+    fi
+}

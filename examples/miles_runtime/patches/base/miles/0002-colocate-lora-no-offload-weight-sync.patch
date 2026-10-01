@@ -1,0 +1,10 @@
+--- a/miles/backends/megatron_utils/actor.py
++++ b/miles/backends/megatron_utils/actor.py
+@@ -519,6 +519,7 @@
+         still needs the real backups, and a disk offload target leaves no host backup to read."""
+         return (
+             self.args.colocate
++            and self.args.offload_train  # no memory saver (no host backup) without --offload-train
+             and is_lora_enabled(self.args)
+             and self.args.offload_train_target == "cpu"
+             and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
