@@ -1,0 +1,13 @@
+# P0 (coordinator 08:10): 27B trainer speed on REAL 96k (DIAG 9B-generated SWE-Gym traces), dfw paths, <= 1.5 h.
+# PATCH_DIRS=bench/patches:patches/thd-bucket (bucketing is a no-op unless MILES_THD_PAD_BUCKET is set).
+# (a) JIT/autotune on unseen steps: 6 fresh steps cold, then 6 other fresh steps with packed lengths bucketed to 8k.
+!compose diag96k-s7 @path-b/runs/diag-workload9b-96k/dumps 6 --max-samples 16 --seed 7
+!compose diag96k-s11 @path-b/runs/diag-workload9b-96k/dumps 6 --max-samples 16 --seed 11
+!compose diag96k @path-b/runs/diag-workload9b-96k/dumps 3 --max-samples 16
+d-r96k-tp4-exp-6step        ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only ROLLOUT_LOGPROBS=1 RBS=8 NS=2 NUM_ROLLOUT=6 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k-s7 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TRITON_PRINT_AUTOTUNING=1 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+d-r96k-tp4-exp-6step-bk8k   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only ROLLOUT_LOGPROBS=1 RBS=8 NS=2 NUM_ROLLOUT=6 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k-s11 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True MILES_THD_PAD_BUCKET=8192 TRITON_PRINT_AUTOTUNING=1 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+# (b) 8 trainer GPUs, REAL 96k (seed-0 steps; TP4xCP2-hw shapes warm from 19613127): full recompute, DP2, partial recompute.
+p-r96k-tp4cp2-hw-full       ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only ROLLOUT_LOGPROBS=1 RBS=8 NS=2 NUM_ROLLOUT=3 GPUS=8 TP=4 CP=2 MTPG=49152 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+p-r96k-tp4dp2-exp           ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only ROLLOUT_LOGPROBS=1 RBS=8 NS=2 NUM_ROLLOUT=3 GPUS=8 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+p-r96k-tp4cp2-hw-blk48      ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only ROLLOUT_LOGPROBS=1 RBS=8 NS=2 NUM_ROLLOUT=3 GPUS=8 TP=4 CP=2 MTPG=49152 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True RECOMPUTE=block:48 EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+p-r96k-tp4cp2-hw-sel        ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only ROLLOUT_LOGPROBS=1 RBS=8 NS=2 NUM_ROLLOUT=3 GPUS=8 TP=4 CP=2 MTPG=49152 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True RECOMPUTE=selective EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise

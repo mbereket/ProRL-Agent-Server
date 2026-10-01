@@ -502,22 +502,49 @@ heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 include
 also dropped: data parallelism leaves the per-replica footprint unchanged, so they fit exactly where the 4- and 8-GPU
 replicas above fit, at ~2x the tokens/s.
 
-**Recipe for 4 trainer GPUs (1-node 4 trainer + 1 TP4 engine), 27B LoRA, MTP off (base 0004):**
-- **64k**: TP4 / CP1 / `--max-tokens-per-gpu 65536` — 7.4 k tok/s, 62 GB (synthetic); comfortable.
-- **96k**: TP4 / CP1 / `--max-tokens-per-gpu 98304` **plus `--log-probs-chunk-size 1024` and
-  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** in the environment Ray's trainer workers inherit (set it before
-  `ray start`) — REAL traces 7.45 k tok/s, 26 % useful MFU, 77.2 GB. Without both it OOMs (or, with only expandable
-  segments, runs 45 % slower). Little headroom: watch per-step peak memory in the first steps of a real run.
-- **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise **with expandable
-  segments** (REAL: 68.3 GB; 79.0 GB without). TP2·CP4 headwise OOMs on REAL 128k.
-- **Margin, 8 GPUs TP4·CP2 headwise + expandable segments, REAL (same cluster/settings): 96k 56.3 GB vs 128k 68.3 GB.**
-- **192k**: needs ≥ 16 trainer GPUs (all 8-GPU layouts OOM); 16-GPU untested.
+**Recommended 27B LoRA trainer settings per cap (final, 2026-10-01 09:15; MTP off = base 0004, full recompute, logprob
+chunk 4096, `--use-rollout-logprobs`).** Tags: REPLAY-REAL = train-only replay of DIAG's REAL 9B-generated SWE-Gym traces
+(base policy); REPLAY-SYN = fixed-length synthetic samples at the cap. Nothing below was measured inside an end-to-end
+27B RL run.
 
-**Speed caveat (open):** step times on REAL traces vary 2-3x between steps and between otherwise similar arms (dfw REAL
-128k TP4·CP2-hw: 266 s then 94 s for the same token count; the 4-GPU 96k exp-only arm ran at 4.1 k tok/s and the next arm,
-+ chunk 1024 on identical data, at 7.45 k). The second arm started from the first arm's JIT cache (published 1.3 -> 1.5 GB),
-so part of that gap may be kernel JIT for new shapes rather than the chunk size. Memory conclusions are solid; tok/s on
-REAL rows is a lower bound until a warm-cache rerun (queued as P1). Both 96k settings stay recommended.
+| cap | trainer GPUs | layout + settings | tok/s | peak GB | tag |
+|---|---|---|---|---|---|
+| 64k | 4 | TP4 / CP1 / `--max-tokens-per-gpu 65536` | 7.4 k | 62.4 | REPLAY-SYN |
+| 96k | 4 | TP4 / CP1 / 98304 + **`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** (required; set before `ray start`) | 7.2-7.3 k warm; ~5.9 k mean over 6 unseen steps (autotune, decays) | 77.2-78.9 | REPLAY-REAL |
+| 96k | 8 | **TP4 x DP2** / 98304 + expandable segments | 10.1-11.1 k (partly cold) | 77.3 | REPLAY-REAL |
+| 96k | 8 | TP4·CP2 headwise / 49152 + expandable segments (headroom fallback) | 5.0-5.4 k | 55.9 | REPLAY-REAL |
+| 128k | 8 | **TP4·CP2 headwise** / 65536 + expandable segments (4 GPUs: OOM with every setting; TP2·CP4 OOM; CP1 OOM) | 9.9 k (step 2; steps 0-1: 3.3-4.3 k) | 68.3 | REPLAY-REAL |
+| 192k | >= 16 | untested (all 8-GPU layouts OOM) | — | — | REPLAY-SYN |
+
+Kernel note for every cap: persist the JIT/Triton cache across jobs (`ray_node.sh` does; others: `mr_jit_seed` /
+`mr_jit_publish` from `lib.sh`), else each job re-autotunes the GDN conv kernels for every new packed length.
+`MILES_THD_PAD_BUCKET=8192` (`patches/thd-bucket`) cuts the autotune events ~2x for a modest (~7 %) gain; optional.
+Partial (`block:N`) and selective recompute do not fit at 96k on 8 GPUs (CP2).
+
+**Speed on REAL traces — kernel autotune, measured (dfw 19613127 + 19614453, REAL 96k, 4 GPUs TP4 + expandable segments):**
+- Cause: Triton `causal_conv1d_fwd_kernel` / `causal_conv1d_bwd_kernel` (GDN short conv) autotune with a key that contains the
+  packed micro-batch length in 1024-token blocks; every new value costs ~4.4 s (fwd) + ~8.3 s (bwd) per rank.
+- Cold kernels persist on new data but **decay**: 6 unseen steps -> 9 new keys, 117 s of autotune (rank 0); tok/s per step
+  4.7 / 6.1 / 5.3 / 5.9 / 7.2 / 6.0 k vs 7.2-7.3 k warm (identical rerun). The key space is bounded (<= cap/1024, ~96 at
+  96k), tuned keys stay in memory for the job, and they are persisted across jobs by the JIT-cache seed/publish in
+  `ray_node.sh` (`mr_jit_seed` / `mr_jit_publish` in `lib.sh` for other launchers). A launcher that does not persist the
+  Triton cache pays it again in every job/chunk.
+- Padding packed lengths to 8k buckets (`patches/thd-bucket`, `MILES_THD_PAD_BUCKET=8192`, opt-in): 6 other unseen steps ->
+  3-4 keys, 53 s autotune; tok/s 5.8 / 7.0 / 6.8 / 5.7 / 6.3 / 6.4 k (mean 6.3 k vs 5.9 k without, different data; pad tokens
+  up to 8k per micro-batch are computed but not counted). A modest win; persisting the cache is the bigger lever.
+- Logprob chunk 1024: no effect on speed; without expandable segments it OOMs (expandable segments are required at 96k/4 GPUs).
+
+**8 trainer GPUs, REAL 96k (dfw 19614453; GPU counts verified):**
+
+| layout (8 GPUs) | s/step (steps 1-2) | tok/s | useful MFU | peak GB | note |
+|---|---|---|---|---|---|
+| **TP4 x DP2 + expandable segments** | 61-70 | **10.1-11.1 k** (step 0: 9.0 k) | 18-20 % | 77.3 | best; partly cold (DP packs new shapes) |
+| TP4·CP2 headwise, full recompute | 124-143 | 5.0-5.4 k | 9-10 % | 55.9 | warm and cold runs identical: CP2 itself is slow on real 96k |
+| TP4·CP2 headwise, recompute `block:48` (16 of 64 layers keep activations) | — | | | 79.1 | **OOM** (the 24 GB headroom is not enough for 16 layers) |
+| TP4·CP2 headwise, selective recompute | — | | | 78.4 | **OOM** |
+
+**Pick for 8 trainer GPUs at 96k: TP4 x DP2 + expandable segments** (2x the CP2 layout; each replica has the 4-GPU footprint,
+77.3 GB). TP4·CP2 headwise is the fallback only when memory headroom matters more than speed (55.9 GB).
 
 Older reading (kept for the record): 96k fits the synthetic worst case but not real packed steps with default settings. The per-microbatch cost that grows with context is the LM-head logits, [tokens/CP x vocab/TP] (vocab
 248k: 12 GiB in bf16 at 96k on TP4) plus their gradient; TP cannot go above 4 for 27B, so CP (more GPUs) is the lever.

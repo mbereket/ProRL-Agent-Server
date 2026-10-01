@@ -1,0 +1,24 @@
+--- a/miles/backends/training_utils/data.py	2026-10-01 08:06:52
++++ b/miles/backends/training_utils/data.py	2026-10-01 08:06:52
+@@ -1,4 +1,6 @@
+ import logging
++import math
++import os
+ from argparse import Namespace
+ from collections.abc import Sequence
+ 
+@@ -280,7 +282,13 @@
+             tokens = torch.cat(tokens)
+ 
+             # Always pad to reduce memory fragmentation and maybe make the computation faster
+-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
++            pad_to = pad_size
++            bucket = int(os.environ.get("MILES_THD_PAD_BUCKET", "0") or 0)
++            if bucket > 0:
++                # Round the packed (per-CP-rank) length up to a multiple of `bucket`: kernels that compile or
++                # autotune per tensor shape then see a few lengths instead of a new one every micro-batch.
++                pad_to = math.lcm(bucket, pad_size)
++            pad = (pad_to - tokens.size(0) % pad_to) % pad_to
+             if pad != 0:
+                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+                 cu_seqlens.append(cu_seqlens[-1] + pad)
