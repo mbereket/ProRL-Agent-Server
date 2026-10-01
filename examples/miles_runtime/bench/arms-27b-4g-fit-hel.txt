@@ -1,0 +1,14 @@
+# hel variant of arms-27b-4g-fit.txt: 128k from hel's DIAG dump in place; 96k composed later (copy still uploading at submit).
+# Then the 8-GPU synthetic arms left over from hel 1527099 (cancelled to run these first). MTP off = base 0004.
+!compose diag128k @path-b/runs/diag-workload9b-128k/dumps 3 --max-samples 16
+!synth fix128k 131072 8 3
+!synth fix192k 196608 8 3
+f-r128k-tp4-exp-ck1k   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=131072 REPLAY=@diag128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=1024
+f-s128k-tp4-exp-ck1k   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=1 NS=8 GPUS=4 TP=4 CP=1 MTPG=131072 REPLAY=@fix128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=1024
+!compose diag96k @stack/traces/diag9b-96k 3 --max-samples 16
+f-r96k-tp4-exp         ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+f-r96k-tp4-exp-ck1k    ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=1024
+f-r128k-tp4cp2-hw-exp  ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=8 TP=4 CP=2 MTPG=65536 REPLAY=@diag128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+f-s192k-tp4cp2-hw-exp  ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=1 NS=8 GPUS=8 TP=4 CP=2 MTPG=98304 REPLAY=@fix192k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+f-s192k-tp2cp4-hw-exp  ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=1 NS=8 GPUS=8 TP=2 CP=4 MTPG=49152 REPLAY=@fix192k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+f-s128k-tp2cp4-hw-exp  ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=1 NS=8 GPUS=8 TP=2 CP=4 MTPG=32768 REPLAY=@fix128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise

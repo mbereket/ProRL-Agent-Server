@@ -4,12 +4,17 @@ Status: **usable on dfw and hel** (dfw: SIF, Ray 1+2 nodes, NCCL over IB validat
 Code: ProRL-Agent-Server branch **`miles-stack`**, dir `examples/miles_runtime/` (README there).
 Last updated: 2026-10-01 05:35 PT. **Use the latest `miles-stack` head** (≥ `52074b8b`; < `52074b8b`: Qwen3.5 + context parallelism crashes, Ray ports inside dfw's ephemeral range; < `5c1b3bc8`: multi-node ray_node.sh only started the head; < `025a9936`: earlier mrun crashes with ENOSPC on dfw/aws-iad `$HOME`; < `6f487a5d`: Ray cannot start).
 
-> **[2026-10-01 05:30] MTP auxiliary loss in every bridge-mode Qwen3.5/3.8 run (validation running).** The HF configs have
-> `mtp_num_hidden_layers: 1`; Megatron-Bridge builds an MTP layer although Miles logs `mtp_num_layers None` /
-> `enable_mtp_training False`. `gpt_model._postprocess -> process_mtp_loss` computes a next-token CE over ALL tokens
-> (scale 0.2, not advantage-weighted) and `MTPLossAutoScaler` attaches it to the decoder output, so it flows into the LoRA
-> gradient; its fp32 `[tokens x vocab/TP]` logits are also where 27B 128k OOMs. Fix: `--patches <runtime>/patches/no-mtp`
-> (miles-stack `efbb7e4d`, opt-in) — A/B (grad_norm, memory, merged export) on aws-iad 7598313; promoted to base if confirmed.
+> **[2026-10-01 06:20] MTP auxiliary loss — FIXED in the base patch set (miles-stack `a49a88ab`, base `0004`): pull `miles-stack`.**
+> Bridge mode built the HF config's MTP layer (Qwen3.5/3.8 `mtp_num_hidden_layers: 1`) although Miles logs `mtp_num_layers None` /
+> `enable_mtp_training False`; its next-token CE over ALL tokens (scale 0.2, not advantage-weighted) was attached to the decoder
+> output by `MTPLossAutoScaler`, i.e. mixed into every LoRA/RL update. Every bridge-mode run before `a49a88ab` had it.
+> - 27B, synthetic data whose RL gradient is ~0 (dummy rollout logprobs -> importance ratios ~e^-10, clipped): grad_norm
+>   **0.21 with MTP vs 0.0000 without** — the whole update was the MTP loss (random tokens: its worst case).
+> - 9B real SWE-Gym traces, identical data and weights at step 0: grad_norm 0.0769 -> 0.0716.
+> - Memory/speed: 9B 64k TP4 66.3 -> 56.1 GB, 44.5 -> 40.0 s/step (useful MFU 20.7 -> 23.0 %); 27B 64k TP4 74.2 -> 62.4 GB,
+>   153 -> 141 s; 27B 128k TP4·CP2-hw OOM -> fits. Params per TP rank -60.8 M (9B, TP4).
+> - Merged serving end-to-end without MTP (dfw 19610045, merged-move-colo shape): served-vs-trainer KL 2.3-3.7e-4 after
+>   updates (stale engine: ~0.03) -> export fine. `patches/no-mtp` is now an empty alias. `--enable-mtp-training` restores MTP.
 
 ## 1. What the runtime is
 
@@ -76,6 +81,8 @@ python3 $MR/jobs/submit.py --cluster dfw --partition interactive --nodes 1 --gpu
   builds the Qwen3-VL model) crashed with `ValueError: Pre-sharded packed CP inputs require explicit rank-local 3D
   MRoPE position_ids` — the pinned Megatron-Bridge wants explicit position ids; Miles computed them but injected
   them too late. Patch passes them explicitly (validation running: bench arms-64k).
+- `miles/0002` (resident colocation weight sync), `miles/0003` (layer-aware MFU metrics), and **`miles/0004`: drop the
+  HF-config MTP layer unless `--enable-mtp-training`** (see the note at the top; it leaked an MTP loss into every update).
 - `opentelemetry-api==1.44.0` (pip overlay): the image ships api 1.45.0 with sdk 1.44.0 → Ray's dashboard
   agent dies with `ImportError: _ExtendedAttributes`, the raylet times out, and **`ray start` fails**
   ("The current node timed out during startup"). Anything that starts Ray inside the SIF needs this.
@@ -385,7 +392,7 @@ rollout-bound (path-a: 191 s train vs 515 s rollout), so further trainer tuning 
 
 **Runtime**: ProRL `miles-stack` ≥ `7519dd6e` (includes FLEET's A100/`MR_NODE_GPUS` fixes), SIF
 `radixark/miles@sha256:30bca3fc…`; base patch set auto-applied (otel pin, Qwen3.5 CP MRoPE fix, resident-colocation
-fix, layer-aware MFU metrics); add `--patches <runtime>/patches/lora-serve-merged`. JIT caches persist per
+fix, layer-aware MFU metrics, MTP-layer drop — needs miles-stack ≥ `a49a88ab`); add `--patches <runtime>/patches/lora-serve-merged`. JIT caches persist per
 cluster automatically (`$MILES_STACK_ROOT/jitcache/<image>-sm90/latest.tar`, seeded at `ray_node.sh` start, published
 at its end): 9B TP4 real-trace step 0 **454 s cold → 137 s warm** in a new job (steady 44 s; hel 1524737 vs 1525159).
 Jobs that don't launch through `ray_node.sh` can call `mr_jit_seed` / `mr_jit_publish` from `lib.sh`.
@@ -458,21 +465,65 @@ x (960 generated + 560 tool), contexts grow to ~64k):
 Warm 1-node 9B runs are rollout-bound (path-a: train ~190 s vs rollout ~515 s per 64-session step), so the levers in
 order are: merged serving, in-flight sessions up to the KV bound, engine GPUs (trainer:engine split), then trainer.
 
-## 13. 27B LoRA trainer layouts for de4 (in progress; synthetic fixed-length data until de4 dumps exist)
+## 13. 27B LoRA trainer layouts for de4 (in progress; for qwen27b's trade-off table)
 
-Qwen3.8-27B, LoRA r32 all-linear, bridge mode, full recompute, `--use-rollout-logprobs`, logprob chunk 4096, train_only replay
-of fixed-length synthetic samples (8 x L tokens/step), aws-iad H100 80GB. Megatron TP <= 4 (4 query groups); GDN 16 key /
-48 value heads -> headwise TP*CP must divide 16. **All rows so far have the MTP layer ON** (see the note at the top).
+Qwen3.8-27B, LoRA r32 all-linear, bridge mode, full recompute, `--use-rollout-logprobs`, logprob chunk 4096,
+`--max-tokens-per-gpu` = context/CP, train_only replay, H100 80GB. Megatron TP <= 4 (4 query groups); GDN 16 key / 48 value
+heads -> headwise TP*CP must divide 16. Steady state = steps 1-2 (step 0 includes JIT/warm-up).
+**Data**: SYNTHETIC = fixed-length samples at the cap (90 % response); REAL = DIAG's 9B-generated SWE-Gym traces, base policy
+(shared tokenizer; 96k dumps: max 98.3k, 128k dump: max 103.7k), 16 samples/step (0.62-0.98 M tokens) incl. the longest group.
+**MTP off** = base patch 0004 (all rows below except the two marked "on").
 
-| context | layout (GPUs) | result |
-|---|---|---|
-| 64k | TP4 (4) | 153 s per 1.05 M tok = 6.85 k tok/s (1.7 k/GPU), useful MFU 24.8 %, peak 74 GB |
-| 128k | TP4 CP1 (8) | OOM |
-| 128k | TP4·CP2 headwise (8) | OOM at step 0 (78.5 GB) |
-| 128k | TP2·CP4 headwise (8) | OOM (15.16 GiB alloc in the MTP cross-entropy) |
-| 128k | TP4·CP2 headwise, logprob chunk 1024 (8) | OOM in backward |
+| context | layout (trainer GPUs) | data | s/step | tokens/step | tok/s | useful MFU | peak GB | result |
+|---|---|---|---|---|---|---|---|---|
+| 64k | TP4 (4), MTP on | synthetic | 153 | 1.05 M | 6.85 k | 24.8 % | 74.2 | fits |
+| 64k | TP4 (4) | synthetic | **141** | 1.05 M | **7.43 k** | 26.9 % | **62.4** | fits |
+| 96k | TP4 (4) | synthetic | 116.5 | 0.79 M | 6.75 k | 27.8 % | 72.7 | fits |
+| 96k | TP4 (4) | **REAL** | — | | | | 78.9 | **OOM** (backward: 11.25 GiB alloc, 10.3 GiB free) |
+| 96k | TP4 (4) + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | **REAL** | 150-189 | 0.62-0.77 M | **4.1 k** | 14.5 % | **77.2** | **fits, but slow** (vs 6.75 k synthetic: allocator pressure at the edge) |
+| 96k | **TP4 (4) + expandable segments + `--log-probs-chunk-size 1024`** | **REAL** | **83-104** | 0.62-0.77 M | **7.45 k** | 26.4 % | 77.2 | **fits at full speed** |
+| 96k | TP4 x DP2 (8) | synthetic | 59.7 | 0.79 M | 13.2 k | 27.1 % | 72.8 | fits on synthetic only: DP keeps the 4-GPU TP4 per-replica footprint, which OOMs on REAL 96k |
+| 128k | TP4 (4) | synthetic | — | | | | 78.9 | OOM (~1 GiB short, logprob chunk) |
+| 128k | TP4 (4) | **REAL** | — | | | | 78.7 | OOM (same place) |
+| 128k | TP4 (4) + expandable segments + logprob chunk 1024 | REAL and synthetic | — | | | | 79.0 | **OOM** (114 MiB free) — 128k on 4 GPUs is out |
+| 128k | TP2·CP2 headwise (4) | **REAL** | — | | | | | OOM (12 GiB [tokens/CP x vocab/TP] logits alloc) |
+| 128k | TP4·CP2 headwise (8), MTP on | synthetic | — | | | | 78.5 | OOM |
+| 128k | TP4·CP2 headwise (8) | synthetic | **115.6** | 1.05 M | **9.07 k** | 20.9 % | **77.8** | fits (tight) |
+| 128k | TP4·CP2 headwise (8) | **REAL** | 94.3 (step 2; step 1: 266) | 0.98 M | 10.4 k | 19.3 % | **79.0** | fits at the edge |
+| 128k | TP4 x DP2 (8) | synthetic | — | | | | | OOM (as on 4 GPUs: CP1 at 128k does not fit) |
+| 96k | TP4·CP2 headwise (8) + expandable segments | **REAL** | 136-225 | 0.62-0.77 M | 3.4-4.6 k | 6-8 % | **56.3** | fits with **~24 GB headroom** (slow: see JIT note) |
+| 128k | TP4·CP2 headwise (8) + expandable segments | **REAL** | 98 (step 2; steps 0-1: 262, 228) | 0.98 M | 9.9 k (step 2) | 18.5 % | **68.3** | fits, ~11 GB headroom |
+| 128k | TP2·CP4 headwise (8) + expandable segments | **REAL** | — | | | | 77.8 | OOM in backward (recompute) |
+| 192k | TP4·CP2 headwise (8) + expandable segments | synthetic | — | | | | 77.2 | OOM (logprob chunk, 0.4 GiB free) |
+| 192k | TP2·CP4 headwise (8) + expandable segments | synthetic | — | | | | 77.7 | OOM (logprob chunk, 0.2 GiB free) |
+| 192k | 16 GPUs (TP4·CP4) | — | | | | | | **not tested** — dropped: de4's longest observed 27B session is ~93k |
 
-Running (aws-iad 7598313, MTP off): 128k TP4·CP2-hw, 96k TP4, 128k TP4, 64k TP4 (4 GPUs). Queued as P1: 1-node 96k/128k/192k
-CP variants; 2-node (16 GPUs) TP4·CP2·DP2-hw, TP4·DP4, TP4·CP4-hw (`bench/arms-27b-2n.txt`, `ACTOR_NODES=2`). Table for qwen27b's
-trade-off: this section.
+**192k needs ≥ 16 trainer GPUs (all 8-GPU layouts OOM); 16-GPU untested.** 2-node DP layouts (TP4 x DP4, TP4·CP2 x DP2) were
+also dropped: data parallelism leaves the per-replica footprint unchanged, so they fit exactly where the 4- and 8-GPU
+replicas above fit, at ~2x the tokens/s.
+
+**Recipe for 4 trainer GPUs (1-node 4 trainer + 1 TP4 engine), 27B LoRA, MTP off (base 0004):**
+- **64k**: TP4 / CP1 / `--max-tokens-per-gpu 65536` — 7.4 k tok/s, 62 GB (synthetic); comfortable.
+- **96k**: TP4 / CP1 / `--max-tokens-per-gpu 98304` **plus `--log-probs-chunk-size 1024` and
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** in the environment Ray's trainer workers inherit (set it before
+  `ray start`) — REAL traces 7.45 k tok/s, 26 % useful MFU, 77.2 GB. Without both it OOMs (or, with only expandable
+  segments, runs 45 % slower). Little headroom: watch per-step peak memory in the first steps of a real run.
+- **128k**: does not fit on 4 GPUs (OOM with every setting tried). Needs 8 trainer GPUs, TP4·CP2 headwise **with expandable
+  segments** (REAL: 68.3 GB; 79.0 GB without). TP2·CP4 headwise OOMs on REAL 128k.
+- **Margin, 8 GPUs TP4·CP2 headwise + expandable segments, REAL (same cluster/settings): 96k 56.3 GB vs 128k 68.3 GB.**
+- **192k**: needs ≥ 16 trainer GPUs (all 8-GPU layouts OOM); 16-GPU untested.
+
+**Speed caveat (open):** step times on REAL traces vary 2-3x between steps and between otherwise similar arms (dfw REAL
+128k TP4·CP2-hw: 266 s then 94 s for the same token count; the 4-GPU 96k exp-only arm ran at 4.1 k tok/s and the next arm,
++ chunk 1024 on identical data, at 7.45 k). The second arm started from the first arm's JIT cache (published 1.3 -> 1.5 GB),
+so part of that gap may be kernel JIT for new shapes rather than the chunk size. Memory conclusions are solid; tok/s on
+REAL rows is a lower bound until a warm-cache rerun (queued as P1). Both 96k settings stay recommended.
+
+Older reading (kept for the record): 96k fits the synthetic worst case but not real packed steps with default settings. The per-microbatch cost that grows with context is the LM-head logits, [tokens/CP x vocab/TP] (vocab
+248k: 12 GiB in bf16 at 96k on TP4) plus their gradient; TP cannot go above 4 for 27B, so CP (more GPUs) is the lever.
+The REAL 128k TP4·CP2-hw row has no headroom (79.0 GB) and one slow step (266 s vs 94 s); treat it as "fits only with the
+rescue settings" until the expandable-segments rerun lands.
+In flight: hel 1527310 (4-GPU 96k/128k rescue: expandable segments, logprob chunk 1024; then REAL 128k TP4·CP2-hw + exp,
+synthetic 192k), aws-iad 7598871 (8 GPUs: synthetic 192k TP4·CP2-hw / TP2·CP4-hw, REAL 96k TP4·CP2-hw, REAL 128k TP2·CP4-hw / TP4·CP2-hw,
+all with expandable segments — the 96k vs 128k TP4·CP2-hw peaks are the margin argument for the cap).
 

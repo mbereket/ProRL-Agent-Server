@@ -1,0 +1,10 @@
+# 27B LoRA trainer on REAL (9B-generated SWE-Gym, base policy) DIAG traces, MTP off (PATCH_DIR bench/patches:patches/no-mtp).
+# 96k: dfw path-b diag-workload9b-96k (2 dumps, 96 samples); 128k: copy of hel diag-workload9b-128k/rollout_0.pt
+# (48 samples, groups of 2, 2.50 M tokens, len med 48.5k / p90 89.4k / max 103.7k). 16 samples per step (8 groups of 2),
+# the group with the longest sample in every step. Priority order (dfw slot is on loan until ~06:30).
+!compose diag96k @path-b/runs/diag-workload9b-96k/dumps 3 --max-samples 16
+!compose diag128k @stack/traces/diag9b-128k 3 --max-samples 16
+r-128k-tp4-4g          ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=131072 REPLAY=@diag128k EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+r-96k-tp4-4g           ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=4 CP=1 MTPG=98304 REPLAY=@diag96k EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096
+r-128k-tp2cp2-hw-4g    ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=4 TP=2 CP=2 MTPG=65536 REPLAY=@diag128k EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+r-128k-tp4cp2-hw       ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=8 TP=4 CP=2 MTPG=65536 REPLAY=@diag128k EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise

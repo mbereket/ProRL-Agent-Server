@@ -1,0 +1,7 @@
+# 27B on 8 trainer GPUs (a whole trainer node of a 2-node run), REAL DIAG 9B-generated SWE-Gym traces, MTP off (base 0004).
+# No TP4 x DP2 arm: DP keeps the per-replica footprint of 4-GPU TP4 (covered by arms-27b-4g-fit*).
+!compose diag96k @stack/traces/diag9b-96k 3 --max-samples 16
+!compose diag128k @stack/traces/diag9b-128k 3 --max-samples 16
+g-r96k-tp4cp2-hw-exp    ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=8 TP=4 CP=2 MTPG=49152 REPLAY=@diag96k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+g-r128k-tp2cp4-hw-exp   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=8 TP=2 CP=4 MTPG=32768 REPLAY=@diag128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
+g-r128k-tp4cp2-hw-exp   ARM=lora MODEL_PATH=@models/Qwen3.8-27B MODEL_TYPE=qwen3.8-27B MODE=train_only NUM_ROLLOUT=3 ROLLOUT_LOGPROBS=1 RBS=8 NS=2 GPUS=8 TP=4 CP=2 MTPG=65536 REPLAY=@diag128k PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True EXTRA=--calculate-per-token-loss,--log-probs-chunk-size=4096,--linear-cp-mode=headwise
