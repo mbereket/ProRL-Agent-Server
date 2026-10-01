@@ -281,9 +281,16 @@ if [ "${ARM}" = lora ]; then
         args+=(--sglang-lora-backend "${LORA_BACKEND:-triton}")
     fi
 fi
-# W&B reads WANDB_API_KEY from the environment (never on the command line: args are logged to RUN_DIR/args-*.txt).
-[ -n "${WANDB_API_KEY:-}" ] && [ -n "${WANDB_PROJECT:-}" ] && args+=(--use-wandb --wandb-project "${WANDB_PROJECT}"
-    --wandb-group "${RUN_NAME}")
+# W&B: on when WANDB_PROJECT is set. The key comes from the environment (cluster-side ~/.secrets via common.sh), never the
+# command line (args are logged to RUN_DIR/args-*.txt). The run is named RUN_NAME (no random suffix) and its run id is
+# derived from RUN_NAME, so chained chunks resume the SAME W&B run. Optional WANDB_ENTITY (= --wandb-team).
+if [ -n "${WANDB_PROJECT:-}" ]; then
+    [ -n "${WANDB_API_KEY:-}" ] || hm_die "WANDB_PROJECT=${WANDB_PROJECT} but WANDB_API_KEY is not set (add it to the cluster's ~/.secrets)"
+    WANDB_RUN_ID="${WANDB_RUN_ID:-$(printf '%s' "${RUN_NAME}" | tr -c 'A-Za-z0-9_-' '-')}"
+    args+=(--use-wandb --wandb-project "${WANDB_PROJECT}" --wandb-group "${RUN_NAME}" --disable-wandb-random-suffix
+        --wandb-run-id "${WANDB_RUN_ID}")
+    [ -n "${WANDB_ENTITY:-}" ] && args+=(--wandb-team "${WANDB_ENTITY}")
+fi
 # Trainer-only CUDA allocator setting (derived: expandable_segments:True at caps >= 96k; STACK §13), set by Miles in the
 # trainer workers' runtime env at process start (before CUDA init). The SGLang engines do not get it.
 [ -n "${TRAIN_ALLOC_CONF:-}" ] && args+=(--train-env-vars "{\"PYTORCH_CUDA_ALLOC_CONF\":\"${TRAIN_ALLOC_CONF}\"}")
