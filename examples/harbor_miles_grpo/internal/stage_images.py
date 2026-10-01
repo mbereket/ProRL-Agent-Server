@@ -7,7 +7,7 @@ For every selected task the expected SIF (prepare_tasks.sif_name of its docker_i
 OWN. Present -> nothing. Otherwise symlink a copy another work root already has, found under either
 naming scheme in use on our clusters: the docker-ref name, or the task directory name
 (<task_dir>.sif, older SWE-Gym staging). Prints the "<docker_ref>\\t<sif>" pairs still missing, which
-the caller pulls. Never writes outside OWN.
+the caller pulls, with the task dirs that use each image as a third column. Never writes outside OWN.
 """
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ def main() -> None:
     shared = [Path(s) for s in a.shared_dir if s and Path(s).resolve() != own.resolve()]
     linked = present = 0
     missing: dict[str, str] = {}
+    missing_tasks: dict[str, list[str]] = {}
     for task_dir, _ in selected:
         ref = read_task(task_dir)["environment"]["docker_image"]
         want = own / sif_name(ref)
@@ -59,9 +60,10 @@ def main() -> None:
             linked += 1
         else:
             missing[ref] = want.name
+            missing_tasks.setdefault(ref, []).append(task_dir.name)
     print(f"images: {present} present, {linked} linked, {len(missing)} to pull", file=sys.stderr)
     for ref, sif in sorted(missing.items()):
-        print(f"{ref}\t{sif}")
+        print(f"{ref}\t{sif}\t{','.join(missing_tasks[ref])}")
 
 
 if __name__ == "__main__":

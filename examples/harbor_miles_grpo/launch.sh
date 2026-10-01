@@ -82,16 +82,36 @@ if [ "${DRY_RUN}" = 0 ]; then
     # Registry credentials in the environment (the cluster layer maps a GitLab token to APPTAINER_DOCKER_*)
     # belong to that registry only: Docker Hub refs (no registry host) are pulled anonymously.
     pull_one() {
-        local ref="$1" sif="$2" creds=()
+        local ref="$1" sif="$2" creds=() try
         case "${ref%%/*}" in *.*|*:*|localhost) ;; *) creds=(env -u APPTAINER_DOCKER_USERNAME -u APPTAINER_DOCKER_PASSWORD -u SINGULARITY_DOCKER_USERNAME -u SINGULARITY_DOCKER_PASSWORD) ;; esac
-        echo "  pulling ${ref} -> ${sif}"
-        "${creds[@]}" "${POLAR_APPTAINER_BIN}" pull "${APPTAINER_IMAGE_DIR}/${sif}.part.$$" "docker://${ref}" >/dev/null 2>"${APPTAINER_IMAGE_DIR}/${sif}.pull.log" \
-            && mv "${APPTAINER_IMAGE_DIR}/${sif}.part.$$" "${APPTAINER_IMAGE_DIR}/${sif}" || echo "  FAILED ${ref} (${APPTAINER_IMAGE_DIR}/${sif}.pull.log)"
+        for try in 1 2 3; do   # registry streams drop now and then (INTERNAL_ERROR mid-layer)
+            echo "  pulling ${ref} -> ${sif} (try ${try})"
+            "${creds[@]}" "${POLAR_APPTAINER_BIN}" pull --force "${APPTAINER_IMAGE_DIR}/${sif}.part.$$" "docker://${ref}" >/dev/null 2>"${APPTAINER_IMAGE_DIR}/${sif}.pull.log" \
+                && mv "${APPTAINER_IMAGE_DIR}/${sif}.part.$$" "${APPTAINER_IMAGE_DIR}/${sif}" && return 0
+            sleep $((30 * try))
+        done
+        echo "  FAILED ${ref} (${APPTAINER_IMAGE_DIR}/${sif}.pull.log)"
     }
     export -f pull_one; export APPTAINER_IMAGE_DIR POLAR_APPTAINER_BIN
     NCPU="$(nproc 2>/dev/null || echo 8)"; JOBS="${APPTAINER_JOBS:-6}"
     export APPTAINER_MKSQUASHFS_PROCS="${APPTAINER_MKSQUASHFS_PROCS:-$(( NCPU / JOBS > 0 ? NCPU / JOBS : 1 ))}"
-    tr '\t' ' ' < "${to_pull}" | xargs -r -P "${JOBS}" -L 1 bash -c 'pull_one "$0" "$1"'
+    cut -f1,2 "${to_pull}" | tr '\t' ' ' | xargs -r -P "${JOBS}" -L 1 bash -c 'pull_one "$0" "$1"'
+    # Tasks whose image still could not be staged are left out of this run (listed), not fatal.
+    config_python "${HERE}/internal/stage_images.py" --tasks-dir "${TASKS_DIR}" --image-dir "${APPTAINER_IMAGE_DIR}" \
+        --shared-dir "${SHARED_IMAGE_DIR}" "${select[@]:2}" > "${to_pull}"
+    if [ -s "${to_pull}" ]; then
+        skip="${RUN_DIR}/tasks_without_image.txt"
+        cut -f3 "${to_pull}" | tr ',' '\n' > "${skip}"
+        [ -n "${EXCLUDE_IDS_FILE}" ] && cat "${EXCLUDE_IDS_FILE}" >> "${skip}"
+        echo "  WARNING: $(cut -f3 "${to_pull}" | tr ',' '\n' | wc -l) task(s) without an image are excluded: ${skip}"
+        sel=(); skip_next=0
+        for a in "${select[@]}"; do   # replace any --exclude-ids-file with the merged list
+            if [ "${skip_next}" = 1 ]; then skip_next=0; continue; fi
+            if [ "${a}" = --exclude-ids-file ]; then skip_next=1; continue; fi
+            sel+=("${a}")
+        done
+        select=("${sel[@]}" --exclude-ids-file "${skip}")
+    fi
     select+=(--image-dir "${APPTAINER_IMAGE_DIR}")
 fi
 config_python "${SHARED}/internal/prepare_tasks.py" --tasks-dir "${TASKS_DIR}" --output-jsonl "${RUN_DIR}/train.jsonl" "${select[@]}"
