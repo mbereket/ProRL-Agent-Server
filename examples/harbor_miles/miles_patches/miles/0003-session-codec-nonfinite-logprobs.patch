@@ -1,0 +1,21 @@
+diff --git a/miles/rollout/session/samples/codec.py b/miles/rollout/session/samples/codec.py
+index fa06884..646f7ff 100644
+--- a/miles/rollout/session/samples/codec.py
++++ b/miles/rollout/session/samples/codec.py
+@@ -86,6 +86,16 @@ def _asarray_wire(field: str, value, dtype: np.dtype) -> np.ndarray:
+     if arr.dtype == dtype:
+         return arr
+     converted = arr.astype(dtype)
++    if np.issubdtype(dtype, np.floating):
++        # harbor_miles 0003: a non-finite float (NaN, or a None that astype maps to NaN, e.g. a missing engine logprob)
++        # must survive the wire. Plain array_equal treats NaN != NaN and fails the whole session reply (HTTP 500, job
++        # exit). The driver quarantines such samples (hm_rollout: excluded from the loss, counted per step).
++        ref = arr
++        if arr.dtype == object:
++            ref = np.array([np.nan if v is None else v for v in arr.ravel().tolist()], dtype=np.float64).reshape(arr.shape)
++        if not np.array_equal(converted, ref, equal_nan=True):
++            raise ValueError(f"{field} values do not fit wire dtype {dtype}")
++        return converted
+     if not np.array_equal(converted, arr):
+         raise ValueError(f"{field} values do not fit wire dtype {dtype}")
+     return converted
