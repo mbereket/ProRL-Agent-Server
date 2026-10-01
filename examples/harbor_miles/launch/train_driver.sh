@@ -141,7 +141,7 @@ args=(
     --custom-agent-function-path hm_agent.run
     --custom-rm-path hm_rollout.reward_func
     --custom-reward-post-process-path hm_rollout.post_process_rewards
-    # harbor/* metrics in every mode's perf line + quarantine of non-finite rollout logprobs (nan_logprob_*)
+    # harbor/* metrics in every mode's perf line (incl. harbor/nan_* alarms); any non-finite rollout logprob is a HARD STOP
     --custom-rollout-log-function-path hm_rollout.log_rollout_data
     --tito-model "${TITO_MODEL:-qwen35}" --use-session-server
     # The TITO family's parsers are NOT applied to the engines automatically: without them the

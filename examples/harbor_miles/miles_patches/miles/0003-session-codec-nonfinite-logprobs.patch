@@ -62,7 +62,7 @@ index fa06884..de34dce 100644
 +    if np.issubdtype(dtype, np.floating):
 +        # harbor_miles 0003: a non-finite float (NaN, or a None that astype maps to NaN, e.g. a missing engine logprob)
 +        # must survive the wire. Plain array_equal treats NaN != NaN and fails the whole session reply (HTTP 500, job
-+        # exit). The driver quarantines such samples (hm_rollout: excluded from the loss, counted per step).
++        # exit). The value reaches hm_rollout, which hard-stops the job (a NaN policy, FINDINGS F66; nan_* metrics).
 +        ref = arr
 +        if arr.dtype == object:
 +            ref = np.array([np.nan if v is None else v for v in arr.ravel().tolist()], dtype=np.float64).reshape(arr.shape)

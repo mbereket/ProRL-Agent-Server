@@ -1,0 +1,384 @@
+diff --git a/miles/backends/megatron_utils/lora/utils.py b/miles/backends/megatron_utils/lora/utils.py
+index 30357abd9..3beac7e0d 100644
+--- a/miles/backends/megatron_utils/lora/utils.py
++++ b/miles/backends/megatron_utils/lora/utils.py
+@@ -2,6 +2,7 @@
+ 
+ import json
+ import logging
++import os
+ from argparse import Namespace
+ from collections.abc import Sequence
+ from pathlib import Path
+@@ -165,6 +166,193 @@ def create_lora_instance(args: Namespace, *, target_modules):
+ # ---------------------------------------------------------------------------
+ # Checkpoint save/load
+ # ---------------------------------------------------------------------------
++#
++# harbor_miles 0004 (bridge-LoRA resume): Megatron's DistributedOptimizer.state_dict() deliberately omits the
++# per-parameter state (fp32 master shards, exp_avg, exp_avg_sq); Megatron saves it separately
++# (save_parameter_state / sharded_state_dict), and its load_state_dict() allocates the moments with torch.empty,
++# "to be overwritten by load_parameter_state()". The LoRA checkpoint saved only state_dict(), so every resume
++# stepped Adam on uninitialized memory (NaN adapters, served to the engines). The fp32 masters were also stale:
++# they were refreshed from the model BEFORE the adapter was copied in, so the first step() wrote
++# fresh-init + one update over the loaded adapter.
++# Now each rank saves its own shards (same layout on resume, matched by parameter name) in
++# optimizer_state_rank{r}.pt; on load the masters are refreshed after the adapter copy and then overwritten by the
++# saved fp32 masters, the restored state is verified to equal the saved one exactly (masters, moments, step, adapter;
++# bf16(master) == adapter), and every optimizer load ends in assert_optimizer_state_finite (finite masters/moments,
++# exp_avg_sq >= 0). A checkpoint WITHOUT optimizer state (saved by pre-fix code, or pruned) refuses to resume.
++
++OPTIMIZER_STATE_FILE = "optimizer_state_rank{rank}.pt"
++LORA_TRAINING_STATE_VERSION = 2
++# Keep the (large) optimizer-state shards of the newest N checkpoints only (resume uses the newest); older iterations
++# keep adapter + training state (weights-only eval works; resuming from them fails loudly). 0 keeps all.
++KEEP_OPTIMIZER_STATE_ENV = "MILES_LORA_KEEP_OPTIMIZER_STATE"
++
++
++def _optimizer_children(optimizer: Any) -> list:
++    return list(getattr(optimizer, "chained_optimizers", None) or [optimizer])
++
++
++def _is_distributed_optimizer(child: Any) -> bool:
++    return hasattr(child, "gbuf_ranges") and hasattr(child, "_get_main_param_and_optimizer_states")
++
++
++def _iter_distopt_params(child: Any):
++    """(model_param, param_range_map) in the DistributedOptimizer's own (deterministic) shard order."""
++    for gbuf_range_maps in child.gbuf_ranges:
++        for gbuf_range_map_for_all_buckets in gbuf_range_maps.values():
++            for gbuf_range_map in gbuf_range_map_for_all_buckets:
++                yield from gbuf_range_map["param_map"].items()
++
++
++def _param_names(model: Sequence[torch.nn.Module]) -> dict[int, str]:
++    return {id(param): name for chunk in model for name, param in chunk.named_parameters()}
++
++
++def _optimizer_param_state(model: Sequence[torch.nn.Module], optimizer: Any) -> list[dict | None]:
++    """This rank's fp32 master shards + Adam moments, per chained DistributedOptimizer, keyed by parameter name."""
++    names = _param_names(model)
++    out: list[dict | None] = []
++    for child in _optimizer_children(optimizer):
++        if not _is_distributed_optimizer(child):
++            out.append(None)  # non-distributed optimizers keep their state in state_dict()
++            continue
++        entries = {}
++        for model_param, range_map in _iter_distopt_params(child):
++            tensors = child._get_main_param_and_optimizer_states(model_param)
++            entry = {k: v.detach().to("cpu", copy=True) for k, v in tensors.items() if torch.is_tensor(v)}
++            entry["_range"] = (range_map["param"].start, range_map["param"].end)
++            entries[names[id(model_param)]] = entry
++        out.append(entries)
++    return out
++
++
++def _restore_optimizer_param_state(model: Sequence[torch.nn.Module], optimizer: Any, saved: list) -> int:
++    names = _param_names(model)
++    children = _optimizer_children(optimizer)
++    if len(saved) != len(children):
++        raise RuntimeError(
++            f"optimizer state holds {len(saved)} chained optimizers, this run has {len(children)}: "
++            "the checkpoint was saved under a different optimizer/parallel layout"
++        )
++    restored = 0
++    for idx, (child, entries) in enumerate(zip(children, saved, strict=True)):
++        if not _is_distributed_optimizer(child):
++            continue
++        if entries is None:
++            raise RuntimeError(f"chained optimizer {idx} is distributed but the checkpoint has no state for it")
++        for model_param, range_map in _iter_distopt_params(child):
++            name = names[id(model_param)]
++            entry = entries.get(name)
++            if entry is None:
++                raise RuntimeError(f"optimizer state has no entry for {name}: different model or layout")
++            want = (range_map["param"].start, range_map["param"].end)
++            if tuple(entry["_range"]) != want:
++                raise RuntimeError(
++                    f"optimizer shard of {name} covers {tuple(entry['_range'])}, this rank owns {want}: "
++                    "the checkpoint was saved under a different parallel layout"
++                )
++            dst = child._get_main_param_and_optimizer_states(model_param)
++            src = {}
++            for key, cur in dst.items():
++                if not torch.is_tensor(cur):
++                    src[key] = cur
++                    continue
++                if key not in entry:
++                    raise RuntimeError(f"optimizer state of {name} lacks {key!r}")
++                if entry[key].numel() != cur.numel():
++                    raise RuntimeError(f"optimizer state {name}.{key}: {entry[key].numel()} vs {cur.numel()} elements")
++                src[key] = entry[key].to(device=cur.device, dtype=cur.dtype).view_as(cur)
++            child._set_main_param_and_optimizer_states(model_param, src)
++            restored += 1
++    return restored
++
++
++def _verify_restored_param_state(model: Sequence[torch.nn.Module], optimizer: Any, saved: list, steps: list) -> str:
++    """Exact check after a restore: live fp32 masters / moments == the saved tensors, bf16(master) == the loaded
++    adapter shard (Bug A), Adam step == the saved step. Cheap at LoRA size. Raises on any mismatch."""
++    names = _param_names(model)
++    n_tensors = 0
++    problems = []
++    for child, entries in zip(_optimizer_children(optimizer), saved, strict=True):
++        if not _is_distributed_optimizer(child):
++            continue
++        for model_param, range_map in _iter_distopt_params(child):
++            name = names[id(model_param)]
++            live = child._get_main_param_and_optimizer_states(model_param)
++            for key, value in live.items():
++                if torch.is_tensor(value) and key in entries[name]:
++                    n_tensors += 1
++                    if not torch.equal(value.detach().cpu().view(-1), entries[name][key].view(-1).to(value.dtype)):
++                        problems.append(f"{name}.{key} != saved")
++            shard = model_param.detach().view(-1)[range_map["param"].start : range_map["param"].end]
++            if not torch.equal(live["param"].detach().view(-1).to(shard.dtype), shard):
++                problems.append(f"{name}: bf16(master) != adapter")
++    live_steps = sorted({g.get("step") for c in _optimizer_children(optimizer) for g in getattr(c, "param_groups", [])
++                         if "step" in g} - {None})
++    if steps and live_steps and live_steps != steps:  # torch Adam keeps its step in the state (compared above)
++        problems.append(f"Adam step {live_steps} != saved {steps}")
++    if problems:
++        raise RuntimeError(f"LoRA resume verification FAILED: {len(problems)} mismatches, e.g. {problems[:6]}")
++    return f"{n_tensors} tensors exact, bf16(master) == adapter, Adam step {live_steps or steps}"
++
++
++def assert_optimizer_state_finite(
++    optimizer: Any, where: str, model: Sequence[torch.nn.Module] | None = None
++) -> None:
++    """Collective. Fail if any master param or optimizer state tensor is non-finite, or exp_avg_sq < 0, on any rank
++    (and, with ``model``, any trainable parameter). Called after every optimizer load and (LoRA) every step."""
++    labels: list[str] = []
++    flags: list[torch.Tensor] = []
++    device = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
++    for idx, child in enumerate(_optimizer_children(optimizer)):
++        inner = getattr(child, "optimizer", None)
++        if inner is None or not hasattr(inner, "param_groups"):
++            continue
++        for gi, group in enumerate(inner.param_groups):
++            for pi, param in enumerate(group["params"]):
++                tensors = [("master", param.detach())]
++                tensors += [(k, v) for k, v in inner.state.get(param, {}).items() if torch.is_tensor(v)]
++                for key, value in tensors:
++                    if value.numel() == 0 or not value.is_floating_point():
++                        continue
++                    ok = torch.isfinite(value).all()
++                    if key == "exp_avg_sq":
++                        ok = ok & (value >= 0).all()
++                    labels.append(f"opt{idx}.group{gi}.param{pi}.{key}")
++                    flags.append(ok.to(device))
++    if model is not None:
++        for chunk in model:
++            for name, param in chunk.named_parameters():
++                if param.requires_grad and param.numel() > 0:
++                    labels.append(name)
++                    flags.append(torch.isfinite(param.detach()).all().to(device))
++    local = torch.stack(flags) if flags else torch.ones(1, dtype=torch.bool, device=device)
++    ok_all = local.all().to(torch.int32).reshape(1)
++    if dist.is_initialized():
++        dist.all_reduce(ok_all, op=dist.ReduceOp.MIN)
++    if int(ok_all.item()) == 1:
++        return
++    bad = [labels[i] for i, flag in enumerate(local.tolist()) if not flag] if flags else []
++    rank = dist.get_rank() if dist.is_initialized() else 0
++    msg = (
++        f"FATAL ({where}): non-finite optimizer/adapter state or negative exp_avg_sq; rank {rank}: "
++        f"{len(bad)} bad tensors {bad[:12]}{' ...' if len(bad) > 12 else ''}. Refusing to continue (a NaN policy "
++        "would be saved and served)."
++    )
++    logger.error(msg)
++    raise RuntimeError(msg)
++
++
++def _prune_optimizer_state(save_dir: Path, rank: int) -> None:
++    keep = int(os.environ.get(KEEP_OPTIMIZER_STATE_ENV, "2"))
++    if keep <= 0:
++        return
++    pattern = f"iter_*/adapter/{OPTIMIZER_STATE_FILE.format(rank=rank)}"
++    files = sorted(save_dir.parent.parent.glob(pattern), key=lambda p: p.parent.parent.name)
++    for old in files[:-keep]:
++        try:
++            old.unlink()
++        except OSError:
++            logger.warning(f"could not prune {old}", exc_info=True)
+ 
+ 
+ def save_lora_checkpoint(
+@@ -188,13 +376,18 @@ def save_lora_checkpoint(
+             if _is_adapter_param_name(name)
+         }
+         training_state = None
++        param_state = None
+         if optimizer is not None:
+             save_optimizer = not getattr(args, "no_save_optim", False)
+             training_state = {
+                 "iteration": iteration,
+                 "optimizer": optimizer.state_dict() if save_optimizer else None,
+                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
++                "format_version": LORA_TRAINING_STATE_VERSION,
+             }
++            if save_optimizer:
++                param_state = _optimizer_param_state(model, optimizer)
++                training_state["optimizer_state_file"] = OPTIMIZER_STATE_FILE.format(rank=global_rank)
+ 
+         if args.megatron_to_hf_mode == "raw":
+             if global_rank == 0:
+@@ -210,10 +403,14 @@ def save_lora_checkpoint(
+             except Exception:
+                 logger.warning("HF adapter export failed; saving native checkpoint only", exc_info=True)
+         torch.save(adapter_state, checkpoint_dir / f"adapter_megatron_rank{global_rank}.pt")
++        if param_state is not None:  # before training_state: launchers treat training_state_rank0.pt as "complete"
++            torch.save(param_state, checkpoint_dir / OPTIMIZER_STATE_FILE.format(rank=global_rank))
+         if training_state is not None:
+             torch.save(training_state, checkpoint_dir / f"training_state_rank{global_rank}.pt")
+ 
+     write_checkpoint_dir(save_dir, write_shards)
++    if optimizer is not None and not getattr(args, "no_save_optim", False):
++        _prune_optimizer_state(Path(save_dir), global_rank)
+     return str(save_dir)
+ 
+ 
+@@ -265,6 +462,12 @@ def load_lora_adapter(
+                 f"Adapter checkpoint {native_path} does not match the model's adapter parameters: "
+                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+             )
++        nonfinite = sorted(name for name, t in state_dict.items() if t.is_floating_point() and not torch.isfinite(t).all())
++        if nonfinite:
++            raise RuntimeError(
++                f"Adapter checkpoint {native_path} holds non-finite values in {len(nonfinite)} tensors "
++                f"(e.g. {nonfinite[:4]}): it is poisoned; resume from an earlier iteration"
++            )
+         for name, param in adapter_params.items():
+             param.data.copy_(state_dict[name].to(device=param.device))
+         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
+@@ -272,6 +475,12 @@ def load_lora_adapter(
+         iteration, optimizer_restored = _load_training_state(
+             adapter_dir, optimizer, opt_param_scheduler, load_optimizer
+         )
++        if optimizer is not None:
++            # Fix A: the fp32 masters were refreshed from the model before the adapter existed; refresh them now
++            # (the inkling path does the same), or the first step() writes init + one update over the adapter.
++            optimizer.reload_model_params()
++            _restore_param_state(model, optimizer, adapter_dir, optimizer_restored)
++            assert_optimizer_state_finite(optimizer, f"after loading {adapter_dir}", model=model)
+         return True, iteration, optimizer_restored
+ 
+     if any((adapter_dir / name).exists() for name in ("adapter_model.safetensors", "adapter_model.bin")):
+@@ -315,9 +524,41 @@ def _load_training_state(
+ 
+     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
+         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
++        # model.py must not step the restored scheduler again by iteration x GBS (double count)
++        opt_param_scheduler.miles_restored_from_lora_checkpoint = True
+         logger.info("Restored LR scheduler state from LoRA checkpoint")
+ 
+     iteration = training_state.get("iteration")
+     if iteration is not None:
+         logger.info(f"Resuming LoRA training from iteration {iteration}")
+     return iteration, optimizer_restored
++
++
++def _restore_param_state(model: Sequence[torch.nn.Module], optimizer: Any, adapter_dir: Path, optimizer_restored: bool) -> None:
++    """After optimizer.load_state_dict(): restore this rank's fp32 masters + Adam moments and verify them exactly.
++    A DistributedOptimizer's load_state_dict leaves torch.empty moments behind, so a checkpoint without
++    optimizer_state_rank*.pt (pre-fix code, or pruned) must not resume."""
++    if not optimizer_restored:
++        return
++    if not any(_is_distributed_optimizer(child) for child in _optimizer_children(optimizer)):
++        return  # non-distributed optimizers restore their state in load_state_dict()
++    rank = dist.get_rank() if dist.is_initialized() else 0
++    path = adapter_dir / OPTIMIZER_STATE_FILE.format(rank=rank)
++    have = torch.tensor([int(path.exists())], dtype=torch.int32, device=torch.cuda.current_device() if torch.cuda.is_available() else "cpu")
++    if dist.is_initialized():
++        dist.all_reduce(have, op=dist.ReduceOp.MIN)  # every rank restores, or every rank fails
++    if int(have.item()) != 1:
++        raise RuntimeError(
++            f"LoRA checkpoint {adapter_dir} has no optimizer state ({OPTIMIZER_STATE_FILE.format(rank='*')} missing on "
++            "at least one rank): it was saved by pre-fix code (harbor_miles miles_patches < 0004) or its optimizer "
++            "state was pruned, so its Adam moments cannot be restored. Start a fresh run (new RUN_NAME); the adapter "
++            "itself can still be evaluated (weights-only)."
++        )
++    saved = torch.load(path, map_location="cpu", weights_only=True)
++    n = _restore_optimizer_param_state(model, optimizer, saved)
++    ts = torch.load(adapter_dir / f"training_state_rank{rank}.pt", map_location="cpu", weights_only=False)
++    groups = ts["optimizer"] if isinstance(ts["optimizer"], list) else [ts["optimizer"]]
++    steps = sorted({g.get("step") for sd in groups for g in sd.get("optimizer", {}).get("param_groups", []) if "step" in g}
++                   - {None})
++    verdict = _verify_restored_param_state(model, optimizer, saved, steps)
++    logger.info(f"Restored fp32 master + Adam moments of {n} parameter shards from {path}; resume verification: {verdict}")
+diff --git a/miles/backends/megatron_utils/model.py b/miles/backends/megatron_utils/model.py
+index 6316dfa70..b4c807679 100644
+--- a/miles/backends/megatron_utils/model.py
++++ b/miles/backends/megatron_utils/model.py
+@@ -53,7 +53,7 @@ from .ci_utils import (
+     save_model_hashes,
+ )
+ from .initialize import is_first_replica_megatron_main_rank
+-from .lora.utils import is_lora_enabled, is_lora_model
++from .lora.utils import assert_optimizer_state_finite, is_lora_enabled, is_lora_model
+ from .model_provider import get_model_provider_func
+ from .parallel import get_packed_seq_params
+ 
+@@ -603,16 +603,20 @@ def train_one_step(
+             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
+             valid_step = False
+ 
+-    if (not disable_optimizer) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
++    # harbor_miles 0004: the grad norm is checked BEFORE every optimizer step (upstream did this only with
++    # --no-check-for-nan-in-loss-and-grad). bf16 has no grad scaler, and Megatron's step() clips with a NaN norm and
++    # writes NaN params; a non-finite norm skips the step and aborts the job below (no checkpoint, no weight sync).
++    nonfinite_grad_norm = None
++    if (not disable_optimizer) and valid_step:
+         found_inf_flag = optimizer.prepare_grads()
+         if found_inf_flag:
+             valid_step = False
+         else:
+             grad_norm = optimizer.get_grad_norm()
+-            if isinstance(grad_norm, torch.Tensor):
+-                valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
+-            else:
+-                valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
++            grad_norm_value = float(grad_norm)
++            valid_step = math.isfinite(grad_norm_value)
++            if not valid_step:
++                nonfinite_grad_norm = grad_norm_value
+ 
+     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
+     # This check must happen before optimizer.step() as gradients may be modified during step
+@@ -631,9 +635,21 @@ def train_one_step(
+         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+         assert update_successful
+         opt_param_scheduler.step(increment=num_rollouts)
++        if is_lora_enabled(args):
++            # cheap for adapters: masters, moments and trainable params finite, exp_avg_sq >= 0 (collective)
++            assert_optimizer_state_finite(optimizer, f"after the optimizer step of rollout {rollout_id} step {step_id}", model=model)
+ 
+     _zero_grads(model, optimizer, disable_optimizer)
+ 
++    if nonfinite_grad_norm is not None:
++        msg = (
++            f"FATAL: non-finite grad_norm {nonfinite_grad_norm} at rollout {rollout_id} step {step_id}: the optimizer "
++            "step was skipped and the job aborts (bf16 has no grad scaler; one occurrence is enough). The weights are "
++            "unchanged since the last checkpoint."
++        )
++        logger.error(msg)
++        raise RuntimeError(msg)
++
+     log_structured(
+         logger.info,
+         tag="train",
+@@ -1014,7 +1030,13 @@ def load_model_state(
+ 
+     # Megatron checkpoint loads can restore scheduler state directly. In that
+     # case, stepping by the checkpoint iteration here would double-count.
+-    if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
++    # A LoRA checkpoint restores the scheduler itself (load_state_dict steps it to the saved num_steps): stepping it
++    # again by iteration x GBS would double-count (harbor_miles 0004).
++    if (
++        opt_param_scheduler is not None
++        and not (args.use_checkpoint_opt_param_scheduler and iteration > 0)
++        and not getattr(opt_param_scheduler, "miles_restored_from_lora_checkpoint", False)
++    ):
+         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
+ 
+     if args.finetune and not is_lora_enabled(args):

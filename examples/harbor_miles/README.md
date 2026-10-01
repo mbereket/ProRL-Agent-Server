@@ -40,6 +40,15 @@ tokens/logprobs the agent's model calls produced. No Polar, no Docker.
 | 0001 singularity | offline bootstrap: the in-sandbox exec server runs on a host python (fastapi+uvicorn) bind-mounted read-only — no apt/pip per sandbox start (hel: 9-11 s start at 32-64 concurrent); node-local `--overlay` dirs instead of the 64 MB `--writable-tmpfs`; prebuilt-SIF lookup (Harbor cache names and polar's `ref-<sha>` names) in read-only dirs; 600 s start window; task files bound read-only; server log + `sandbox_startup.json` per trial; teardown kills the whole container process tree (apptainer's FUSE/fakeroot helpers otherwise outlive a forced stop) |
 | 0002 agent server | `HARBOR_ENV_TYPE=singularity`; each trial in its own process group — `/flush` and `/flush_all` SIGTERM the worker (trial cancelled → sandbox stopped cleanly), SIGKILL the group after 45 s; per-request `agent_import_path` / `agent_kwargs` / `agent_env`; `/stats`; failure attribution (`exception_type`, `agent_started`) and context-overflow → `SequenceLengthLimitExceeded` |
 
+## Miles patches (`miles_patches/miles/`, applied at the pinned Miles commit by `miles_runtime/mrun`)
+
+| patch | what |
+|---|---|
+| 0001 responses | session server `/v1/responses` (codex) with exact replay |
+| 0002 lora resume | a bridge-LoRA resume keeps `--start-rollout-id` and its dataset state |
+| 0003 codec | non-finite rollout logprobs survive the session wire (diagnostic `hm codec nonfinite` line) so they reach hm_rollout's HARD STOP |
+| 0004 lora optimizer state | the LoRA checkpoint saves each rank's fp32 masters + Adam moments (`optimizer_state_rank*.pt`; Megatron's DistributedOptimizer.state_dict() omits them, and its load left torch.empty moments: NaN after every resume, FINDINGS F66); masters refreshed after the adapter copy; exact verification on load; a checkpoint without optimizer state refuses to resume; non-finite grad_norm skips the step and aborts; finite-state check after every LoRA step; no scheduler double count. `MILES_LORA_KEEP_OPTIMIZER_STATE` (default 2) prunes older optimizer shards |
+
 Agents (`harbor_miles_agents/`): `opencode_agents.PreinstalledOpenCode` (the image's opencode, no
 per-trial npm install), `BbhOpenCode` (starts the BBH MCP server in agent setup, where the task env
 with the judge key is applied; stops opencode after `submit_answer`, same as eval-v2).
